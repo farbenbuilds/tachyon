@@ -42,8 +42,20 @@ No uWebZockets source is vendored or linked.
 - License: MIT
 - Use: compiler, standard library, and build system.
 
+## Agent skill pack
+
+The shared skill files under `.agents/skills/` are vendored from the sources
+recorded in `skills-lock.json`, including `zigcc/skills`,
+`full-stack-skills/zig-skills`, `mattpocock/skills`, `caldoai/skills`, and the
+other entries in that lock file. Each skill retains its upstream license and
+attribution. Graphify copies under `.opencode/skills/graphify/` and
+`.codex/skills/graphify/` are version-stamped `0.9.92`.
+
+The Code of Conduct is adapted from Contributor Covenant 2.1. The commit
+convention is adapted from the Angular commit convention.
+
 ## Nix inputs
 
-The flake pins nixpkgs, flake-parts, the mitchellh Zig overlay, and the zslay
-v0.4.0 release archive. Those inputs retain their own licenses and notices.
+The flake pins nixpkgs, flake-parts, the mitchellh Zig overlay, zon2nix, and the
+zslay v0.4.0 release archive. Those inputs retain their own licenses and notices.
 `flake.lock` is the authoritative revision list.
