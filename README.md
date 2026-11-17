@@ -16,10 +16,11 @@ close handling, fragmentation, handshakes, and stream adapters.
 
 ## Current State
 
-This change establishes the project environment and documentation: the Nix
-flake, the shared `.envrc`, pre-commit configuration, human guides, agent rules,
-the vendored skill pack, and matching agent definitions. It does not add Zig
-sources, a build graph, or a library artifact.
+The project now bootstraps its Zig package: `build.zig` defines the public
+`tachyon` module and static library, `src/root.zig` is the module entry point,
+and zslay is pinned in `build.zig.zon` for frame coding. The generated zon2nix
+views feed the offline Nix test and package builds. Connection, fragmentation,
+handshake, upgrade, and split modules are not implemented yet.
 
 ## Targets
 
@@ -50,7 +51,8 @@ git clone https://github.com/farbenbuilds/tachyon.git
 cd tachyon
 direnv allow          # or: nix develop
 zig version           # 0.17.1
-nix flake check       # Nix formatting check
+nix flake check       # formatting and test checks
+nix build             # static library through zon2nix-prefetched packages
 ```
 
 Library commands:

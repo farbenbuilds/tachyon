@@ -1,0 +1,19 @@
+.{
+    .name = .tachyon,
+    .version = "0.0.0",
+    .fingerprint = 0x75ac4d200e89d061, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{
+        .zslay = .{
+            .url = "https://github.com/farbenbuilds/zslay/archive/refs/tags/v0.5.0.tar.gz",
+            .hash = "zslay-0.5.0-OB-IfNPdAwBop3keTCGtEZgxns_R4LkP1mbtUMzFvxHD",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}
