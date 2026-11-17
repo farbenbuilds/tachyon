@@ -6,10 +6,12 @@ How to set up, develop, test, commit, and release tachyon. For architecture see
 
 ## Repository Scope
 
-This change contains the environment, documentation, agent rules, and skill
-pack. It does not contain Zig sources or a build graph. The library commands
-below describe the project workflow; environment and documentation changes use
-the flake, formatting, and hygiene checks.
+The repository currently contains the environment, documentation, agent
+rules, skill pack, and Zig package bootstrap. `build.zig` defines the public
+module, static library, test, and check steps; `src/root.zig` exposes the
+pinned zslay codec. Frame and connection modules are not implemented yet. The
+library commands below describe the project workflow and work against the
+current bootstrap.
 
 ## Local Setup
 
@@ -56,9 +58,10 @@ from it; see [AGENTS.md](AGENTS.md).
 
 ## Testing
 
-Tests use the built-in Zig test runner and live in `src/test.zig`. The test step
-runs the suite twice, once with Debug safety and once with ReleaseSafe, so
-overflow and bounds behavior in release mode is exercised before review.
+Tests use the built-in Zig test runner. The bootstrap dependency test lives in
+`src/root.zig`; protocol tests will live in `src/test.zig`. The test step runs
+the suite twice, once with Debug safety and once with ReleaseSafe, so overflow
+and bounds behavior in release mode is exercised before review.
 
 There is no numeric coverage target. Changed behavior needs a focused test,
 including malformed input and length boundaries. The connection layer adds
@@ -73,11 +76,10 @@ pre-commit install
 pre-commit run --all-files
 ```
 
-The hooks run `zig fmt`, trailing-whitespace checks, end-of-file-fixer, YAML
-validation, large-file checks, and merge-conflict detection. The `zon2nix` hook
-regenerates `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt`
-whenever `build.zig.zon` changes. Add the `zig-build-test` hook when the build
-graph lands.
+The hooks run `zig fmt`, `zig build test`, trailing-whitespace checks,
+end-of-file-fixer, YAML validation, large-file checks, and merge-conflict
+detection. The `zon2nix` hook regenerates `build.zig.zon.nix`,
+`build.zig.zon.json`, and `build.zig.zon.txt` whenever `build.zig.zon` changes.
 
 ## Branch and Commit Convention
 

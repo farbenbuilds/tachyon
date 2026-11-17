@@ -9,6 +9,10 @@ This project follows semantic versioning.
 
 ### Added
 
+- Zig 0.17.1 package scaffold with a public `tachyon` module, static library,
+  Debug and ReleaseSafe test steps, and a `check` step.
+- zslay dependency pinned in `build.zig.zon` and exposed from `src/root.zig`,
+  plus the generated `build.zig.zon.nix`, `.json`, and `.txt` views.
 - Nix flake and lock file for the Zig 0.17.1 development shell, Nix formatting
   check, musl shell, and zon2nix.
 - Shared `.envrc` matching the zslay and uWebZockets direnv setup.
@@ -34,6 +38,9 @@ This project follows semantic versioning.
 
 ### Changed
 
+- `nix flake check` now runs the Debug and ReleaseSafe suites natively and in
+  the musl shell using the zon2nix-prefetched packages, and `nix build`
+  produces `libtachyon.a`.
 - Dependency metadata now lives in `build.zig.zon`; the flake no longer pins
   zslay directly, and the zon2nix pre-commit hook generates the Nix, JSON, and
   text views.

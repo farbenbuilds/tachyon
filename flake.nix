@@ -32,6 +32,7 @@
         zig = inputs.zig-overlay.packages.${system}."0.17.1";
         # zon2nix does not publish packages for every supported Darwin system.
         zon2nixPackage = (inputs.zon2nix.packages.${system} or {}).zon2nix or null;
+        zigPackages = pkgs.callPackage ./build.zig.zon.nix {};
 
         mkDevShell = packagePkgs:
           packagePkgs.mkShell {
@@ -46,16 +47,52 @@
               (zon2nixPackage != null && packagePkgs.stdenv.hostPlatform.isGnu)
               zon2nixPackage;
           };
+
+        mkTestCheck = name: packagePkgs:
+          packagePkgs.stdenv.mkDerivation {
+            inherit name;
+            src = ./.;
+            nativeBuildInputs = [zig];
+            buildPhase = ''
+              export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+              zig build test --system ${zigPackages} --summary all
+            '';
+            installPhase = "touch $out";
+          };
       in {
         formatter = pkgs.alejandra;
 
-        checks.format =
-          pkgs.runCommand "tachyon-nix-format" {
-            nativeBuildInputs = [pkgs.alejandra];
-          } ''
-            alejandra --check ${./flake.nix}
-            touch $out
+        checks =
+          {
+            format =
+              pkgs.runCommand "tachyon-nix-format" {
+                nativeBuildInputs = [pkgs.alejandra];
+              } ''
+                alejandra --check ${./flake.nix}
+                touch $out
+              '';
+
+            test-default = mkTestCheck "tachyon-test-default" pkgs;
+          }
+          // pkgs.lib.optionalAttrs isLinux {
+            test-musl = mkTestCheck "tachyon-test-musl" pkgsMusl;
+          };
+
+        packages.default = pkgs.stdenv.mkDerivation {
+          pname = "tachyon";
+          version = "0.0.0";
+          src = ./.;
+          nativeBuildInputs = [zig];
+          buildPhase = ''
+            export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+            zig build -Doptimize=ReleaseSafe --system ${zigPackages}
           '';
+          installPhase = ''
+            mkdir -p $out
+            cp -r zig-out/lib $out/lib
+            test -n "$(ls -A $out/lib)"
+          '';
+        };
 
         devShells =
           {

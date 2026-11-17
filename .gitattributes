@@ -6,6 +6,11 @@
 # Generated knowledge-graph output is not source.
 graphify-out/** linguist-generated
 
+# Generated dependency views come from build.zig.zon through zon2nix.
+build.zig.zon.nix linguist-generated
+build.zig.zon.json linguist-generated
+build.zig.zon.txt linguist-generated
+
 # Documentation and Zig package metadata.
 *.md linguist-documentation
 *.zon linguist-language=Zig

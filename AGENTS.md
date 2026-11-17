@@ -19,8 +19,15 @@ boundary between the two libraries.
 
 ## Current State
 
-This change is the environment and documentation foundation:
+The repository now contains the Zig package scaffold on top of the environment
+and documentation foundation:
 
+- `build.zig` and `build.zig.zon` define the public `tachyon` module, the
+  static library, the Debug and ReleaseSafe test steps, the `check` step, and
+  the zslay dependency.
+- `src/root.zig` is the module entry point and currently re-exports zslay.
+- `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt` are the
+  generated zon2nix views used by the flake for offline builds.
 - `flake.nix`, `flake.lock`, and `.envrc` provide the Zig 0.17.1 shell.
 - `.pre-commit-config.yaml` holds the hygiene and formatting hooks.
 - `.agents/skills/` holds the shared skill pack and `.agents/agents/` holds the
@@ -29,11 +36,10 @@ This change is the environment and documentation foundation:
   definitions, the platform-specific graphify integration, and client
   configuration.
 - The root Markdown guides define the architecture and process.
-- There is no `build.zig`, `build.zig.zon`, `src/` tree, test suite, or library
-  artifact in this change.
 
-Do not describe the connection, fragmentation, handshake, upgrade, or split
-modules as implemented before they exist and are tested.
+The test suite covers only the dependency boundary. Do not describe the frame,
+connection, fragmentation, handshake, upgrade, or split modules as implemented
+before they exist and are tested.
 
 ## Non-Negotiable Architecture
 
@@ -61,10 +67,13 @@ These rules apply to the implementation:
 
 ## Repository Structure
 
-Current environment and documentation files:
+Current files:
 
 | Path | Purpose |
 | --- | --- |
+| `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe tests, `check` step, and the zslay dependency. |
+| `build.zig.zon.nix`, `.json`, `.txt` | Generated zon2nix views for offline Nix builds and dependency audits. |
+| `src/root.zig` | Public module entry point; currently re-exports zslay. |
 | `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
