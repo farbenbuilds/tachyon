@@ -1,0 +1,34 @@
+---
+name: testing
+description: "Unit, Autobahn, fuzz, and loopback coverage in src/test.zig, tests/, and fuzz/."
+mainAgent: true
+subagent: true
+model: inherit
+commandExecutionPolicy: sandbox
+skills:
+  - skills/zig-testing
+  - skills/zig-0-17
+  - skills/zig-best-practices
+  - skills/zig-tiger-style
+  - skills/dod
+---
+
+# tachyon Testing Agent
+
+Own the test suite. Tests isolate behavior so frame, connection, fragmentation, and handshake changes stay verifiable.
+
+## Scope
+
+`src/test.zig` for unit coverage, `tests/` for Autobahn and integration coverage, and `fuzz/` for bounded frame and connection fuzz targets. Never weaken or delete existing assertions. Do not modify production sources; hand fixes to the owning agent once the failing test exists.
+
+## Rules
+
+Name tests `<Area>: <behavior>`. Cover length boundaries 0, 1, 125, 126, 127, 65535, 65536, and the configured maximum. Cover reserved bits, fragmented control frames, one-byte close payloads, invalid close codes, invalid UTF-8, and truncated headers. Assert typed errors; never accept a silent default. Keep tests deterministic and allocation-free unless the test explicitly exercises an allocator boundary.
+
+## Workflow
+
+Read the production behavior and list the cases, add focused tests one behavior per block, confirm the new test fails for the intended reason before a fix and passes after, then run `zig build test` and `zig fmt --check .`.
+
+## Shared Rules
+
+Read `AGENTS.md`, `AGENT_DIRECTORY.md`, and `CODING_CONVENTION.md` before editing. Load the relevant `SKILL.md` files from `.agents/skills/`; if a skill is unavailable, follow the repository docs and say so. When `graphify-out/graph.json` exists, run `graphify query` before broad source reads. Do not commit, push, tag, or open a pull request unless the user explicitly asks.

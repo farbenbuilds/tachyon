@@ -1,0 +1,28 @@
+# nix/direnv
+.direnv/
+.envrc.cache
+.envrc.local
+
+# zig
+.zig-cache/
+zig-out/
+zig-cache/
+zig-pkg/
+
+# build artifacts
+*.o
+*.a
+*.so
+*.lib
+result
+result-*
+
+# generated knowledge graph (graphify)
+graphify-out/
+
+# os / editors
+.DS_Store
+.vscode/
+*.swp
+.cache/
+compile_flags.txt

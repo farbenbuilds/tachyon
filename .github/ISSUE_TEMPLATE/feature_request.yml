@@ -1,0 +1,49 @@
+name: Feature Request
+description: Suggest a fastwebsockets-compatible capability or Zig API improvement for tachyon
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Feature Request
+        Thank you for contributing to **tachyon**.
+
+        New features must preserve the zero-allocation, I/O-agnostic core and
+        the fastwebsockets behavior target. permessage-deflate is intentionally
+        out of scope unless that decision is revisited.
+  - type: input
+    id: feature-description
+    attributes:
+      label: Feature Description
+      description: A short description of the feature or API enhancement.
+      placeholder: E.g. Add split read and write halves.
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this needed? Does it improve parity, compliance, or usability?
+    validations:
+      required: true
+  - type: textarea
+    id: desired-solution
+    attributes:
+      label: Desired Solution
+      description: How should this work in Zig without hidden allocation or transport coupling?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Could this live in the caller, in zslay, or in an adapter instead?
+    validations:
+      required: false
+  - type: textarea
+    id: additional-info
+    attributes:
+      label: Additional Information
+      description: Link RFC sections, fastwebsockets behavior, or API sketches.
+    validations:
+      required: false

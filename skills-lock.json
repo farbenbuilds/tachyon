@@ -1,0 +1,128 @@
+{
+  "version": 2,
+  "skills": {
+    "Pragmatic Functional Programming": {
+      "source": "whatiskadudoing/fp-ts-skills",
+      "sourceType": "github",
+      "skillPath": "skills/fp-pragmatic/SKILL.md",
+      "computedHash": "3e63a5d1c67f5491396c21fec2d11a3c002fdadcc1f55c62902b713d3c2b3ff7"
+    },
+    "caveman": {
+      "source": "juliusbrussee/caveman",
+      "sourceType": "github",
+      "skillPath": "skills/caveman/SKILL.md",
+      "computedHash": "0687ec30c7445c1a0127e947b202ce395f9d8d8140d6ce63df2400325837d217"
+    },
+    "codebase-design": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/codebase-design/SKILL.md",
+      "computedHash": "721a6a709001482b70d4ecd3a7880a84ec158170236b999b1f14a8a321e20059"
+    },
+    "context7": {
+      "source": "intellectronica/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/context7/SKILL.md",
+      "computedHash": "51cc1def928376ae10c8ad2044bf38fecf5a50d785fc63441a7a9092761a06fc"
+    },
+    "dod": {
+      "source": "cielixer/my-skills",
+      "sourceType": "github",
+      "skillPath": "dod/SKILL.md",
+      "computedHash": "56240963490675738eaa6380162de33c5a7f1def19c14f08dac5b259deaf9636"
+    },
+    "domain-modeling": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/domain-modeling/SKILL.md",
+      "computedHash": "b78689833404148c769077355e12dbe5ad996a158a1e21e58ddf169e439d9d8c"
+    },
+    "github-git": {
+      "source": "./.agents/skills/github-git",
+      "sourceType": "local",
+      "skillPath": "SKILL.md",
+      "computedHash": "bb79c141b7dd1311aa7bb467ce56ac66ad6bb4049f0cb0dc72cd338a7a378e45"
+    },
+    "grill-me": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/productivity/grill-me/SKILL.md",
+      "computedHash": "88e67a6007fa92f845cb51a202cfd48c091e468c501df2e17f4f85dd27e0c224"
+    },
+    "grilling": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/productivity/grilling/SKILL.md",
+      "computedHash": "20274b5b12c57210fafeed62c0c42e1f219ddf8bfc6c8718cc091380331f04d3"
+    },
+    "herdr": {
+      "source": "./.agents/skills/herdr",
+      "sourceType": "local",
+      "skillPath": "SKILL.md",
+      "computedHash": "a3b59317f60f6ecdb8bbc537e340faaf9dd08826fd30c84ed947eaa7a28db91b"
+    },
+    "improve-codebase-architecture": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/improve-codebase-architecture/SKILL.md",
+      "computedHash": "4f76836837f1c3e2641f50cdfeef79fd269a9ac7e1a16b9bdb1dec4cbd6a0ac2"
+    },
+    "nix-best-practices": {
+      "source": "0xbigboss/claude-code",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/nix-best-practices/SKILL.md",
+      "computedHash": "84624e28d5cfceb7b67c44a704f7c45ac60c7a802da90094ecb5ce40ae7a0347"
+    },
+    "nix-hermetic": {
+      "source": "./.agents/skills/nix-hermetic",
+      "sourceType": "local",
+      "skillPath": "SKILL.md",
+      "computedHash": "90cca93b5a69fc550eb262aa20ed501bf496145ab34477ffe24fee6201d0ed7b"
+    },
+    "ponytail": {
+      "source": "dietrichgebert/ponytail",
+      "sourceType": "github",
+      "skillPath": "skills/ponytail/SKILL.md",
+      "computedHash": "3af42a29c072819c06c2827b1de7b1f0b8537cb6307e4ae2669010fd17c489bb"
+    },
+    "thermo-nuclear-code-quality-review": {
+      "source": "cursor/plugins",
+      "sourceType": "github",
+      "skillPath": "cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md",
+      "computedHash": "0d3357638a2239a7b22348628b8856150881d8b7c79236101ca8dbac62078993"
+    },
+    "untangle-codebase": {
+      "source": "caldoai/skills",
+      "commit": "2e157218049708bf337717847bc1b2a971203e3f",
+      "sourceType": "github",
+      "skillPath": "skills/untangle-codebase/SKILL.md",
+      "computedHash": "73791c30d4da2e001bc095732771966338b764e2e7b57bb30a81439cff85aef4"
+    },
+    "zig-0-17": {
+      "source": "zigcc/skills",
+      "sourceType": "github",
+      "skillPath": "zig-0-17/SKILL.md",
+      "computedHash": "803e3961b5aba568e310215093809d2a008dcf9a27426c77660a351908d7a937"
+    },
+    "zig-best-practices": {
+      "source": "0xbigboss/claude-code",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/zig-best-practices/SKILL.md",
+      "computedHash": "3951311c090064401c3bac00d1d06c15bc6d56e8c34c37d6b785aeb162d66574"
+    },
+    "zig-testing": {
+      "source": "mohitmishra786/low-level-dev-skills",
+      "sourceType": "github",
+      "skillPath": "skills/zig/zig-testing/SKILL.md",
+      "computedHash": "2d918da07b2a50f4bee367e86cd388cb8f6c96f2d1713b670bfbac005f69f3f0"
+    },
+    "zig-tiger-style": {
+      "source": "full-stack-skills/zig-skills",
+      "commit": "d0d7affe825d7ed4720ce7998e81d0610d07f651",
+      "sourceType": "github",
+      "skillPath": "skills/zig-tiger-style/SKILL.md",
+      "computedHash": "7f65f4a9d73dd50d48ec09e4c4856388c903e012ed3d8b12bdb95b426fa0d853",
+      "installMode": "copy"
+    }
+  }
+}
