@@ -25,15 +25,21 @@ Security-relevant areas include:
 - masking direction and key handling,
 - fragmentation and message-size accounting,
 - close-code and UTF-8 reason validation,
-- HTTP upgrade and client handshake validation,
+- incremental UTF-8 validation of text messages across frame boundaries,
+- HTTP upgrade, client handshake, and WebSocket extension negotiation,
+- permessage-deflate decompression bombs and unbounded output,
+- backpressure, slow-consumer, and pub/sub fanout limits,
+- native stream adapter lifetimes and read/write cancellation,
 - denial of service through unbounded lengths, loops, or buffering,
 - memory-safety failures in Zig safety modes.
 
-zslay owns the frame codec primitives. A defect that reproduces in zslay alone
-should also be reported to
+zslay owns header coding, length handling, masking, the close predicate and
+payload validation, masking direction, fragment ordering, limits, and the
+bounded connection state machine.
+A defect that reproduces in zslay alone should also be reported to
 [farbenbuilds/zslay](https://github.com/farbenbuilds/zslay/security/advisories/new).
-A defect in tachyon's connection policy, handshake, fragmentation, or stream
-adapter belongs here.
+A defect in tachyon's fastwebsockets policy, fragment buffering, UTF-8 text
+validation, handshake, upgrade, or stream adapter belongs here.
 
 ## Supported Versions
 

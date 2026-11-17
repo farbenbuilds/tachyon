@@ -7,15 +7,21 @@ tachyon is a Zig 0.17.1 recreation of
 behavioral target is the fastwebsockets 0.10.0 surface: raw frame reads and
 writes, automatic close and pong handling, automatic mask application, maximum
 message limits, vectored writes, fragmentation collection, HTTP server upgrade,
-client handshake, and split read/write halves. permessage-deflate is out of
-scope, matching upstream.
+client handshake, and split read/write halves. The 0.10.0 surface is the parity
+baseline, not the ceiling: backpressure, streaming messages, native `std.Io`
+transport, incremental UTF-8 validation, permessage-deflate (RFC 7692), and
+pub/sub are planned post-parity extensions documented in `CODEBASE.md`.
 
 The framing engine is
 [farbenbuilds/zslay](https://github.com/farbenbuilds/zslay). It is declared in
 `build.zig.zon`, and `zon2nix` generates `build.zig.zon.nix` for offline Nix
 builds. tachyon must not reimplement zslay's header codec, length validation,
-close-payload validation, or XOR masking. Read `CODEBASE.md` before changing the
-boundary between the two libraries.
+close predicate or payload validator, or XOR masking. The same rule covers
+zslay's `Conn` state machine: masking direction, fragment ordering, frame and
+message limits, close-code policy, and the bounded transmit queue stay in
+zslay. tachyon calls the close validator on inbound frames and owns the echo
+obligation. Read `CODEBASE.md`, especially the Compatibility Notes, before
+changing the boundary between the two libraries.
 
 ## Current State
 
@@ -47,11 +53,24 @@ These rules apply to the implementation:
 
 - Keep the frame layer pure. Given the same input it returns the same output and
   writes only into caller-owned memory.
-- Keep zslay as the only frame codec. Do not duplicate header parsing, length
-  decoding, masking, or close validation in tachyon.
+- Keep zslay as the only frame codec and wire-state owner. Do not duplicate
+  header parsing, length decoding, masking, close validation, masking direction,
+  fragment ordering, frame/message limits, or the bounded transmit queue in
+  tachyon.
+- Keep optional extensions at the edge. Backpressure, streaming, native stream,
+  UTF-8, deflate, and pub/sub must not add allocation, I/O, or negotiation
+  state to the frame core.
 - The protocol core is zero-allocation and I/O-agnostic. Allocators belong in
   examples, tests, or an explicit caller-owned buffer boundary, never in frame
   or connection state transitions.
+- Backpressure is explicit: bounded queues and watermarks, no unbounded
+  buffering, no dropped frames, and no busy waiting.
+- Compression is fail-closed: bound decompressed output by the configured
+  message limit before delivery, and never apply compression to control frames.
+  permessage-deflate is blocked on zslay negotiated RSV1 support; land the codec
+  change in zslay before enabling the extension in tachyon.
+- Text UTF-8 validation is incremental and zero-allocation; it must handle code
+  points split across frames and must never substitute replacement characters.
 - Transport work belongs at the edge. The planned connection layer consumes
   caller-provided readers and writers; it does not open sockets or spawn tasks.
 - Use Zig 0.17.1 `std.Io` asynchronous I/O for the transport and example
@@ -92,16 +111,31 @@ Target source layout, in dependency order:
 | --- | --- |
 | `build.zig`, `build.zig.zon` | Public module, static library, tests, and the zslay dependency. |
 | `src/root.zig` | Public module entry point and re-exports. |
-| `src/frame.zig` | `Frame`, `OpCode`, `Payload`, header-length calculation, zslay encode bridge. |
-| `src/close.zig` | RFC 6455 close code enum, conversion, and allowed-value policy. |
-| `src/mask.zig` | Thin masking wrapper over zslay's wide-word implementation. |
-| `src/error.zig` | `WebSocketError` set matching the fastwebsockets failure model. |
-| `src/connection.zig` | Role-aware read/write state, auto-pong, auto-close, mask direction, limits. |
-| `src/fragment.zig` | `FragmentCollector` and split-read collector state. |
-| `src/handshake.zig` | Client request and response verification, key generation. |
-| `src/upgrade.zig` | Server upgrade validation and response construction. |
+| `src/frame.zig` | `Frame`, `Payload`, `OpCode` alias, `CloseCode` alias and conversions, `unmask`/`unmask_at`, header-length bridge. |
+| `src/utf8.zig` | Planned extension: incremental zero-allocation UTF-8 validation for text messages. |
+| `src/error.zig` | `WebSocketError` set matching the fastwebsockets failure model, plus `zslay.Error` mapping. |
+| `src/backpressure.zig` | Planned extension: byte/frame watermarks and admission policy over zslay's bounded queue. |
+| `src/connection.zig` | Role-aware `WebSocket` policy over `zslay.Conn`: read/write loops, auto-pong, auto-close, mask option, limits, vectored writes. |
+| `src/fragment.zig` | `FragmentCollector`, split-read collector, fragment buffering, streaming UTF-8. |
+| `src/stream.zig` | Planned extension: chunked message reader/writer for large messages. |
 | `src/split.zig` | Read and write halves plus split constructors. |
-| `src/test.zig` | Unit tests for all protocol layers. |
+| `src/native_stream.zig` | Planned extension: `std.Io.Reader`/`std.Io.Writer` adapter for `std.Io.net.Stream`. |
+| `src/deflate.zig` | Planned extension: RFC 7692 permessage-deflate state and context takeover. |
+| `src/pubsub.zig` | Planned extension: bounded topic hub and fanout over the frame/stream API. |
+| `src/handshake.zig` | Client request and response verification, key generation, planned extension negotiation. |
+| `src/upgrade.zig` | Server upgrade validation, response construction, planned extension negotiation. |
+| `src/test.zig` | Unit tests for all protocol layers and extensions. |
+
+There is no target `src/close.zig` or `src/mask.zig`. zslay already owns the
+close predicate, payload validator, outgoing close validation, and masking;
+tachyon applies inbound close policy, owns the echo, and exposes aliases plus
+one-line delegations from `src/frame.zig`. Do not create a second enum, range
+table, or XOR loop. See `CODEBASE.md#compatibility-notes` before adapting a
+zslay behavior.
+
+Planned extension rows are roadmap items; their files do not exist yet. Extend
+the planned owner in `AGENT_DIRECTORY.md` and the matching agent definitions
+before creating one of these modules.
 
 Keep one owner per file. Cross-scope work is handed to the owning agent or
 reviewer instead of edited in the same pass.
@@ -117,9 +151,10 @@ behavior belongs to the connection layer and must be explicit in its parameters.
 - Keep mutation narrow: an operation may mutate only the buffer or state record
   named in its contract.
 - Do not add logging, clocks, randomness, environment reads, or allocation to
-  frame parsing. Randomness for client keys belongs in the handshake boundary.
-- Compile-time assertions should prove header sizes, close ranges, and layout
-  relationships.
+  frame parsing. Randomness for client keys belongs in the connection or
+  handshake boundary.
+- Compile-time assertions should prove header sizes and layout relationships;
+  zslay owns close-range policy and its own layout invariants.
 
 ## Build, Test, and Development Commands
 
@@ -193,7 +228,8 @@ Use Zig `test` blocks in `src/test.zig`, named `<Area>: <behavior>`, for example
 - Enforce client-to-server masking and server-to-client unmasked frames.
 - Reject nonzero RSV bits until an extension is negotiated.
 - Reject fragmented control frames and control payloads above 125 bytes.
-- Validate close length, close code, and UTF-8 reason before echoing.
+- Validate close length, close code, and UTF-8 reason before echoing. Never
+  reuse unvalidated reason bytes in a 1002 reply.
 - Cap message size before buffering or indexing.
 - Treat every peer-supplied length as untrusted, including extended lengths.
 - Do not log payload bytes at any severity.

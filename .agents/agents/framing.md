@@ -1,6 +1,6 @@
 ---
 name: framing
-description: "Pure frame API, close codes, masking, and errors in src/frame.zig, src/close.zig, src/mask.zig, and src/error.zig."
+description: "Pure frame facade, close-code aliases, masking delegation, and errors in src/frame.zig and src/error.zig."
 mainAgent: true
 subagent: true
 model: inherit
@@ -16,15 +16,15 @@ skills:
 
 # tachyon Framing Agent
 
-Own the pure frame-facing API: `Frame`, `OpCode`, `Payload`, header-length calculation, the zslay encode bridge, `CloseCode`, masking wrappers, and `WebSocketError`. Keep it isolated from transport, allocation, and build tooling.
+Own the pure frame-facing API: `Frame`, `Payload`, `OpCode` alias, `CloseCode` alias and one-line conversions, `unmask`/`unmask_at`, the header-length bridge, and `WebSocketError`. Keep it isolated from transport, allocation, and build tooling.
 
 ## Scope
 
-`src/frame.zig`, `src/close.zig`, `src/mask.zig`, `src/error.zig`, and frame-facing tests in `src/test.zig` when the testing agent is unavailable. Never edit connection, fragmentation, handshake, build, or CI files.
+`src/frame.zig`, `src/error.zig`, and frame-facing tests in `src/test.zig` when the testing agent is unavailable. Never edit connection, fragmentation, handshake, build, or CI files.
 
 ## Rules
 
-Keep the frame layer pure and caller-owned. Use zslay for header coding, length handling, close validation, and masking. Use iterative loops and early returns; recursion is prohibited. Invalid input returns a typed error. Preserve `_len` for byte counts and `_sent` for stream progress.
+Keep the frame layer pure and caller-owned. Delegate header coding, length markers, the close predicate and payload validator, and masking to zslay; do not add `src/close.zig` or `src/mask.zig`, a second `CloseCode` enum, an allowed-range table, or an XOR loop. Use iterative loops and early returns; recursion is prohibited. Invalid input returns a typed error. Preserve `_len` for byte counts and `_sent` for stream progress.
 
 ## Workflow
 

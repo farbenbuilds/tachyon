@@ -38,6 +38,20 @@ This project follows semantic versioning.
 
 ### Changed
 
+- Documented the zslay ownership boundary: header coding, length handling,
+  masking, the close predicate and payload validator, masking direction,
+  fragment ordering, limits, and the bounded connection state machine are
+  delegated. Added compatibility notes for close echoes, message limits,
+  masking, raw fragment order, and handshake verification. Removed
+  `src/close.zig` and `src/mask.zig` from the target layout in favor of aliases
+  and one-line delegates in `src/frame.zig`.
+- Corrected the `CODING_CONVENTION.md` header example to use zslay's length
+  marker instead of copying the raw payload length into `FrameHeader`.
+- Added the post-parity extension roadmap: backpressure, streaming messages,
+  native `std.Io` transport, incremental UTF-8 validation, RFC 7692
+  permessage-deflate, and pub/sub. The roadmap records module ownership,
+  dependency order, and fail-closed limits. permessage-deflate now requires a
+  zslay RSV1 extension before tachyon can advertise it.
 - `nix flake check` now runs the Debug and ReleaseSafe suites natively and in
   the musl shell using the zon2nix-prefetched packages, and `nix build`
   produces `libtachyon.a`.
