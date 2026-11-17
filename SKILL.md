@@ -17,6 +17,21 @@ skills.
 - **Delivery**: `CONTRIBUTE.md` and `CI_CD_PIPELINE.md` define checks, commits,
   and release expectations.
 
+## Agent Definitions
+
+The same twelve plain role names are defined for every client: `architect`,
+`developer`, `reviewer`, `integrator`, `framing`, `connection`, `fragments`,
+`handshake`, `testing`, `review`, `release`, and `docs`.
+
+- `.agents/agents/<name>.md` is the agy definition.
+- `.opencode/agents/<name>.md` is the OpenCode specialist definition, with team
+  roles under `.opencode/agents/team/`.
+- `.codex/agents/<name>.toml` is the Codex definition, with the shared procedure
+  in `.codex/TEAM_WORKFLOW.md`.
+
+No role carries a project prefix. `AGENT_DIRECTORY.md` owns the roster,
+ownership boundaries, and skill coverage.
+
 ## Zig and Systems Skills
 
 - **zig-0-17**: Zig 0.17.1 API guidance, including `@backingInt`,

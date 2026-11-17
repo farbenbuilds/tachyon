@@ -10,12 +10,12 @@ message limits, vectored writes, fragmentation collection, HTTP server upgrade,
 client handshake, and split read/write halves. permessage-deflate is out of
 scope, matching upstream.
 
-The framing engine will be
-[farbenbuilds/zslay v0.4.0](https://github.com/farbenbuilds/zslay/releases/tag/v0.4.0),
-pinned by release archive and package hash in `build.zig.zon` once the Zig
-package lands. tachyon must not reimplement zslay's header codec, length
-validation, close-payload validation, or XOR masking. Read `CODEBASE.md` before
-changing the boundary between the two libraries.
+The framing engine is
+[farbenbuilds/zslay](https://github.com/farbenbuilds/zslay). It is declared in
+`build.zig.zon`, and `zon2nix` generates `build.zig.zon.nix` for offline Nix
+builds. tachyon must not reimplement zslay's header codec, length validation,
+close-payload validation, or XOR masking. Read `CODEBASE.md` before changing the
+boundary between the two libraries.
 
 ## Current State
 
@@ -23,8 +23,11 @@ This change is the environment and documentation foundation:
 
 - `flake.nix`, `flake.lock`, and `.envrc` provide the Zig 0.17.1 shell.
 - `.pre-commit-config.yaml` holds the hygiene and formatting hooks.
-- `.agents/skills/`, `.opencode/`, and `.codex/` hold the shared skill pack and
-  the platform-specific graphify integration.
+- `.agents/skills/` holds the shared skill pack and `.agents/agents/` holds the
+  agy agent definitions.
+- `.opencode/` and `.codex/` hold the matching OpenCode and Codex agent
+  definitions, the platform-specific graphify integration, and client
+  configuration.
 - The root Markdown guides define the architecture and process.
 - There is no `build.zig`, `build.zig.zon`, `src/` tree, test suite, or library
   artifact in this change.
@@ -62,20 +65,23 @@ Current environment and documentation files:
 
 | Path | Purpose |
 | --- | --- |
-| `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and the pinned zslay source input. |
+| `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
-| `.pre-commit-config.yaml` | Formatting and generic hygiene hooks. |
+| `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
+| `scripts/update_zon_files.sh` | Regenerates `build.zig.zon.nix`, `.json`, and `.txt` with zon2nix. |
 | `.agents/skills/`, `skills-lock.json` | Shared skill pack and lock file. |
+| `.agents/agents/`, `.opencode/agents/`, `.codex/agents/` | Matching agent definitions for agy, OpenCode, and Codex. |
+| `.codex/TEAM_WORKFLOW.md` | Codex team procedure and handoff contract. |
 | `.opencode/`, `.codex/` | Graphify skill copies, hooks, and client configuration. |
 | `.gitattributes` | Linguist rules for agent tooling, generated output, docs, and `.zon` files. |
 | `.gitignore` | Nix, Zig, build, graph, and editor output. |
-| Root `*.md` | Architecture, contributor, security, release, and agent guides. |
+| `README.md`, root `*.md` | Banner, architecture, contributor, security, release, and agent guides. |
 
 Target source layout, in dependency order:
 
 | Path | Purpose |
 | --- | --- |
-| `build.zig`, `build.zig.zon` | Public module, static library, tests, and the zslay v0.4.0 pin. |
+| `build.zig`, `build.zig.zon` | Public module, static library, tests, and the zslay dependency. |
 | `src/root.zig` | Public module entry point and re-exports. |
 | `src/frame.zig` | `Frame`, `OpCode`, `Payload`, header-length calculation, zslay encode bridge. |
 | `src/close.zig` | RFC 6455 close code enum, conversion, and allowed-value policy. |
@@ -130,16 +136,12 @@ zig fmt --check .           # formatting gate
 Use `zig fmt .` to apply formatting. Do not install project tools globally with
 `apt`, `brew`, or `npm`.
 
-The flake keeps the zslay v0.4.0 release source as an input so the build can seed
-Zig's package cache without network access in the Nix sandbox. When the pin
-changes, update all of these together:
-
-- the release archive URL in `build.zig.zon`,
-- the package hash in `build.zig.zon`,
-- the generated `build.zig.zon.nix` from `zon2nix`,
-- the `zslay` input in `flake.nix`,
-- any cache-seed archive name in `flake.nix`,
-- the lock file and this document when the version changes.
+zslay is declared in `build.zig.zon`. The `zon2nix` pre-commit hook regenerates
+`build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt` whenever
+`build.zig.zon` changes. The flake consumes the generated Nix expression so the
+build has no network access and no duplicated version pin. When the dependency
+changes, update `build.zig.zon`, run `pre-commit run zon2nix --all-files` (or
+`sh scripts/update_zon_files.sh`), and commit the generated files with it.
 
 ## Coding Style and Naming
 
@@ -213,11 +215,11 @@ asked for it.
 ## Sub-Agent Directory and Workflow
 
 The shared ownership map and review workflow live in
-[AGENT_DIRECTORY.md](AGENT_DIRECTORY.md). Platform-specific specialist
-definitions, when present, live under `.opencode/agents/`, `.codex/agents/`, and
-`.agents/agents/`. The shared skill pack is vendored under `.agents/skills/` and
-pinned by `skills-lock.json`; an agent must not reference a definition or skill
-that is not present in the repository.
+[AGENT_DIRECTORY.md](AGENT_DIRECTORY.md). Matching definitions live under
+`.agents/agents/`, `.opencode/agents/`, and `.codex/agents/`; Codex also reads
+`.codex/TEAM_WORKFLOW.md`. The shared skill pack is vendored under
+`.agents/skills/` and pinned by `skills-lock.json`; an agent must not reference a
+definition or skill that is not present in the repository.
 
 For coordinated work, follow this sequence:
 

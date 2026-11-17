@@ -13,3 +13,11 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
       - id: check-merge-conflict
+  - repo: local
+    hooks:
+      - id: zon2nix
+        name: zon2nix
+        entry: sh scripts/update_zon_files.sh
+        language: system
+        files: ^build\.zig\.zon$
+        pass_filenames: false

@@ -7,13 +7,6 @@
     zig-overlay.url = "github:mitchellh/zig-overlay";
     zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
     zon2nix.url = "github:jcollie/zon2nix";
-
-    # Pinned framing engine. Keeping the release source as a flake input lets
-    # the build seed Zig's cache without network access in the Nix sandbox.
-    zslay = {
-      url = "https://github.com/farbenbuilds/zslay/archive/refs/tags/v0.4.0.tar.gz";
-      flake = false;
-    };
   };
 
   outputs = inputs @ {flake-parts, ...}:

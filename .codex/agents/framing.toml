@@ -1,0 +1,19 @@
+name = "framing"
+description = "Pure frame API, close codes, masking, and errors in src/frame.zig, src/close.zig, src/mask.zig, and src/error.zig."
+developer_instructions = """
+Own the pure frame-facing API: `Frame`, `OpCode`, `Payload`, header-length calculation, the zslay encode bridge, `CloseCode`, masking wrappers, and `WebSocketError`. Keep it isolated from transport, allocation, and build tooling.
+
+## Scope
+
+`src/frame.zig`, `src/close.zig`, `src/mask.zig`, `src/error.zig`, and frame-facing tests in `src/test.zig` when the testing agent is unavailable. Never edit connection, fragmentation, handshake, build, or CI files.
+
+## Rules
+
+Keep the frame layer pure and caller-owned. Use zslay for header coding, length handling, close validation, and masking. Use iterative loops and early returns; recursion is prohibited. Invalid input returns a typed error. Preserve `_len` for byte counts and `_sent` for stream progress.
+
+## Workflow
+
+Read the failing behavior and its focused test, make the smallest complete change, add or update a `Frame:`, `Close:`, or `Mask:` test, then run `zig fmt .`, `zig build test`, and `zig build check`.
+
+Skills: zig-0-17, zig-best-practices, zig-testing, zig-tiger-style, dod, pragmatic-functional-programming, graphify. Read `AGENTS.md`, `AGENT_DIRECTORY.md`, and `CODING_CONVENTION.md` before editing. Load the listed skills from `.agents/skills/`; if unavailable, follow repository docs and report that. When `graphify-out/graph.json` exists, run `graphify query` before broad source reads. Do not commit, push, tag, or open a pull request unless explicitly asked.
+"""

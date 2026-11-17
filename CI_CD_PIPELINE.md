@@ -41,7 +41,7 @@ The test flake performs:
 - native and cross-target package builds when requested.
 
 `zig build test` runs the suite in Debug and ReleaseSafe. The Nix check
-derivations seed Zig's package cache from the pinned zslay v0.4.0 flake input
+derivations seed Zig's package cache from the generated `build.zig.zon.nix`
 because the build sandbox has no network access.
 
 ## Path Filters

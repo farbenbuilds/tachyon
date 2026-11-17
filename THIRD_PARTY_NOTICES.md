@@ -6,11 +6,10 @@ around zslay for frame coding.
 ## farbenbuilds/zslay
 
 - Repository: https://github.com/farbenbuilds/zslay
-- Version: [v0.4.0](https://github.com/farbenbuilds/zslay/releases/tag/v0.4.0)
 - License: MIT
 - Use: runtime dependency for RFC 6455 frame header coding, length handling,
-  close validation, and masking. The release archive is pinned as a source-only
-  flake input, and `build.zig.zon` uses the same release URL and package hash.
+  close validation, and masking. The dependency is declared in `build.zig.zon`
+  and locked by the generated zon2nix views.
 
 zslay is a pure Zig port inspired by wslay. Its own repository retains the
 wslay attribution and license details.
@@ -56,6 +55,7 @@ convention is adapted from the Angular commit convention.
 
 ## Nix inputs
 
-The flake pins nixpkgs, flake-parts, the mitchellh Zig overlay, zon2nix, and the
-zslay v0.4.0 release archive. Those inputs retain their own licenses and notices.
-`flake.lock` is the authoritative revision list.
+The flake pins nixpkgs, flake-parts, the mitchellh Zig overlay, and zon2nix.
+Those inputs retain their own licenses and notices. `flake.lock` is the
+authoritative revision list; Zig package dependencies are locked separately by
+`build.zig.zon` and the generated zon2nix views.

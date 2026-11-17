@@ -50,8 +50,9 @@ zig build check             # type-check library and tests
 zig fmt .                   # apply formatting
 ```
 
-The zslay release URL, package hash, flake input, generated `build.zig.zon.nix`,
-and cache seed must stay aligned as described in [AGENTS.md](AGENTS.md).
+The zslay dependency lives in `build.zig.zon`. The `zon2nix` pre-commit hook
+regenerates `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt`
+from it; see [AGENTS.md](AGENTS.md).
 
 ## Testing
 
@@ -73,8 +74,10 @@ pre-commit run --all-files
 ```
 
 The hooks run `zig fmt`, trailing-whitespace checks, end-of-file-fixer, YAML
-validation, large-file checks, and merge-conflict detection. Add the
-`zig-build-test` hook when the build graph lands.
+validation, large-file checks, and merge-conflict detection. The `zon2nix` hook
+regenerates `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt`
+whenever `build.zig.zon` changes. Add the `zig-build-test` hook when the build
+graph lands.
 
 ## Branch and Commit Convention
 
@@ -96,9 +99,9 @@ feat(connection): add automatic pong replies
 fix(frame): reject fragmented control frames
 ```
 
-Keep one scope per pull request. A pull request that changes the zslay pin, the
-flake seed, and the lock file is one coherent build-scope change. Do not mix it
-with unrelated protocol work.
+Keep one scope per pull request. A pull request that changes the zslay
+dependency, the generated zon2nix views, and the lock file is one coherent
+build-scope change. Do not mix it with unrelated protocol work.
 
 ## Pull Request Checklist
 
@@ -110,8 +113,7 @@ Before opening a pull request:
 - [ ] `zig build check` for code changes
 - [ ] `zig build test --summary all` for code changes
 - [ ] documentation links and code fences checked for documentation changes
-- [ ] zslay release URL, hash, flake input, generated zon2nix file, and archive
-  seed agree
+- [ ] `build.zig.zon` and the generated zon2nix views agree
 - [ ] no generated output, payload dumps, or secrets committed
 - [ ] changelog updated for user-visible behavior
 
@@ -122,11 +124,13 @@ documentation or branding changes.
 ## AI Agent Workflow
 
 The canonical rules are in [AGENTS.md](AGENTS.md); the roster is in
-[AGENT_DIRECTORY.md](AGENT_DIRECTORY.md). Shared skills live in
-`.agents/skills/` and are pinned by `skills-lock.json`. Graphify is installed
-for OpenCode under `.opencode/skills/graphify/` with its plugin at
-`.opencode/plugins/graphify.js`, and for Codex under `.codex/skills/graphify/`
-with its hook at `.codex/hooks.json`.
+[AGENT_DIRECTORY.md](AGENT_DIRECTORY.md). Matching definitions live in
+`.agents/agents/`, `.opencode/agents/`, and `.codex/agents/`; Codex also reads
+`.codex/TEAM_WORKFLOW.md`. Shared skills live in `.agents/skills/` and are
+pinned by `skills-lock.json`. Graphify is installed for OpenCode under
+`.opencode/skills/graphify/` with its plugin at `.opencode/plugins/graphify.js`,
+and for Codex under `.codex/skills/graphify/` with its hook at
+`.codex/hooks.json`.
 
 For multi-part work, follow the architect -> developer -> reviewer -> integrator
 sequence. The reviewer is read-only. The integrator verifies the combined diff
@@ -153,11 +157,8 @@ Actions workflows are not included in this change. Until they exist, attach the
 - zslay is the only framing dependency.
 - Use Zig 0.17.1 `std.Io` asynchronous I/O for transport. Do not add libxev or
   another event-loop dependency.
-- Pin a published release archive and its package hash. Do not pin a branch or a
-  mutable URL.
-- Update the flake input, `build.zig.zon`, generated `build.zig.zon.nix`, cache
-  seed, lock file, and documentation in one pull request.
+- Declare the dependency in `build.zig.zon`; do not duplicate its version or
+  package hash in `flake.nix` or the documentation.
+- Regenerate `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt`
+  with the `zon2nix` pre-commit hook whenever `build.zig.zon` changes.
 - Never edit `zig-pkg/` or the Nix store directly.
-- If zslay changes its package name, version, archive hash, or published paths,
-  regenerate the hash with `zig fetch` from the release URL, run `zon2nix
-  build.zig.zon > build.zig.zon.nix`, and update every reference together.

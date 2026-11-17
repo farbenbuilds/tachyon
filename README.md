@@ -1,11 +1,15 @@
+<p align="center">
+  <img src="misc/tachyon-banner.png" alt="tachyon banner">
+</p>
+
 # tachyon
 
 A fast RFC 6455 WebSocket implementation in Zig.
 
 tachyon recreates the public surface and observable behavior of
 [denoland/fastwebsockets](https://github.com/denoland/fastwebsockets) in Zig
-0.17.1. Framing will be delegated to
-[farbenbuilds/zslay v0.4.0](https://github.com/farbenbuilds/zslay/releases/tag/v0.4.0),
+0.17.1. Framing is delegated to
+[farbenbuilds/zslay](https://github.com/farbenbuilds/zslay),
 a pure, I/O-agnostic frame codec. tachyon owns the connection state that zslay
 deliberately leaves to its caller: role-aware masking, automatic ping/pong and
 close handling, fragmentation, handshakes, and stream adapters.
@@ -14,18 +18,15 @@ close handling, fragmentation, handshakes, and stream adapters.
 
 This change establishes the project environment and documentation: the Nix
 flake, the shared `.envrc`, pre-commit configuration, human guides, agent rules,
-and the vendored skill pack. It does not add Zig sources, a build graph, or a
-library artifact.
-
-The framing target is
-[zslay v0.4.0](https://github.com/farbenbuilds/zslay/releases/tag/v0.4.0).
+the vendored skill pack, and matching agent definitions. It does not add Zig
+sources, a build graph, or a library artifact.
 
 ## Targets
 
 | Area | Target |
 | --- | --- |
 | `Frame`, `OpCode`, `Payload`, `CloseCode`, `WebSocketError` | fastwebsockets-compatible surface |
-| zslay header encode/decode, length handling, close validation, masking | Delegated to zslay v0.4.0 |
+| zslay header encode/decode, length handling, close validation, masking | Delegated to zslay |
 | `WebSocket` read/write loop, auto-close, auto-pong, max message size | Planned |
 | `FragmentCollector` | Planned |
 | HTTP server upgrade and client handshake | Planned |
