@@ -9,7 +9,7 @@ skills.
 - **Repository rules**: `AGENTS.md` is canonical. `CLAUDE.md` imports it for
   Claude Code.
 - **Architecture**: `CODEBASE.md` defines the zslay boundary, target modules,
-  and fastwebsockets parity map.
+  fastwebsockets parity map, and post-parity extension roadmap.
 - **Style**: `CODING_CONVENTION.md` defines Zig 0.17.1 style, naming, purity,
   allocation, error, and test rules.
 - **Workflow**: `AGENT_DIRECTORY.md` defines ownership and the
@@ -30,7 +30,8 @@ The same twelve plain role names are defined for every client: `architect`,
   in `.codex/TEAM_WORKFLOW.md`.
 
 No role carries a project prefix. `AGENT_DIRECTORY.md` owns the roster,
-ownership boundaries, and skill coverage.
+ownership boundaries, and skill coverage. A future `pubsub` role is planned
+with that module and is not defined yet.
 
 ## Zig and Systems Skills
 

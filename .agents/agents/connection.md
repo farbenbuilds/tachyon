@@ -1,6 +1,6 @@
 ---
 name: connection
-description: "Role-aware WebSocket read and write state in src/connection.zig."
+description: "Role-aware WebSocket policy over zslay.Conn in src/connection.zig."
 mainAgent: true
 subagent: true
 model: inherit
@@ -17,7 +17,7 @@ skills:
 
 # tachyon Connection Agent
 
-Own the connection policy layer that turns zslay frame primitives into the fastwebsockets-compatible `WebSocket` behavior.
+Own the connection policy layer that wraps zslay's bounded `Conn` state machine in the fastwebsockets-compatible `WebSocket` behavior.
 
 ## Scope
 
@@ -25,7 +25,7 @@ Own the connection policy layer that turns zslay frame primitives into the fastw
 
 ## Rules
 
-Server reads unmask client frames; client writes mask outbound frames when auto-mask is enabled. Automatic close and pong default to true. Close is terminal: repeated close writes are a no-op and other writes return `ConnectionClosed`. Use caller-provided readers, writers, and scratch buffers. Use Zig 0.17.1 `std.Io` async I/O; do not add libxev. Cap every peer-controlled length before buffering or indexing.
+Use `zslay.Conn` for header staging, masking direction, fragment ordering, frame and message limits, the bounded transmit queue, and outgoing close validation; call `zslay.validate_close_payload` for inbound close frames instead of writing a validator. Server reads unmask client frames when auto-mask is enabled; client writes mask outbound frames. Automatic close and pong default to true. Close is terminal for data writes: repeated close writes are still serialized and other writes return `ConnectionClosed`, matching fastwebsockets. Use caller-provided readers, writers, and scratch buffers. Use Zig 0.17.1 `std.Io` async I/O; do not add libxev. Cap every peer-controlled length before buffering or indexing. Generate client mask keys at the connection boundary. `prepare_frame` validates payload rules and serializes the header but does not mask; queue unmasked payloads and mask chunks at write time through `zslay.mask` with the running offset into caller-owned scratch. Validate the close reason as UTF-8 before reusing it in a 1002 reply; never echo unvalidated reason bytes.
 
 ## Workflow
 

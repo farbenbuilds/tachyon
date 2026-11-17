@@ -1,15 +1,17 @@
 # Third-Party Notices
 
 tachyon is MIT-licensed. It references the following projects and is designed
-around zslay for frame coding.
+around zslay for framing and wire-state validation.
 
 ## farbenbuilds/zslay
 
 - Repository: https://github.com/farbenbuilds/zslay
 - License: MIT
 - Use: runtime dependency for RFC 6455 frame header coding, length handling,
-  close validation, and masking. The dependency is declared in `build.zig.zon`
-  and locked by the generated zon2nix views.
+  the close predicate and payload validation, masking, masking direction,
+  fragment ordering, limits, and the bounded connection state machine. The
+  dependency is declared in `build.zig.zon` and locked by the generated zon2nix
+  views.
 
 zslay is a pure Zig port inspired by wslay. Its own repository retains the
 wslay attribution and license details.
@@ -39,7 +41,8 @@ No uWebZockets source is vendored or linked.
 
 - Repository: https://github.com/ziglang/zig
 - License: MIT
-- Use: compiler, standard library, and build system.
+- Use: compiler, standard library (including `std.Io` and
+  `std.compress.flate`), and build system.
 
 ## Agent skill pack
 

@@ -156,9 +156,13 @@ Actions workflows are not included in this change. Until they exist, attach the
 
 ## Dependency Policy
 
-- zslay is the only framing dependency.
+- zslay is the only framing dependency. Do not duplicate its header, close,
+  masking, fragment-order, limit, or connection-state logic in tachyon.
 - Use Zig 0.17.1 `std.Io` asynchronous I/O for transport. Do not add libxev or
   another event-loop dependency.
+- Use `std.compress.flate` for RFC 7692 permessage-deflate; do not add zlib,
+  miniz, or another compression package. zslay must gain negotiated RSV1
+  support before tachyon advertises the extension.
 - Declare the dependency in `build.zig.zon`; do not duplicate its version or
   package hash in `flake.nix` or the documentation.
 - Regenerate `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt`

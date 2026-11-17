@@ -29,9 +29,9 @@ The names are the same in every client: `architect`, `developer`, `reviewer`,
 
 | Agent | Area | Owned paths |
 | --- | --- | --- |
-| `framing` | Frame API, close codes, masking, errors | `src/frame.zig`, `src/close.zig`, `src/mask.zig`, `src/error.zig` |
-| `connection` | Connection state, control replies, limits | `src/connection.zig` |
-| `fragments` | Message collection and split reads | `src/fragment.zig`, `src/split.zig` |
+| `framing` | Frame facade, close-code aliases, masking delegation, errors | `src/frame.zig`, `src/error.zig` |
+| `connection` | Connection policy over `zslay.Conn`, control replies, limits | `src/connection.zig` |
+| `fragments` | Message buffering, UTF-8 streaming, split reads | `src/fragment.zig`, `src/split.zig` |
 | `handshake` | Client handshake and server upgrade | `src/handshake.zig`, `src/upgrade.zig` |
 | `testing` | Unit, Autobahn, fuzz, and echo coverage | `src/test.zig`, `tests/`, `fuzz/` |
 | `review` | Read-only review | any changed file |
@@ -42,16 +42,34 @@ The names are the same in every client: `architect`, `developer`, `reviewer`,
 | `reviewer` | Read-only quality gate | any changed file |
 | `integrator` | Findings, final diff, verification | affected paths through owners |
 
+## Planned Extension Ownership
+
+These modules are roadmap items, not current files. Existing agent definitions
+remain scoped to current files; expand the owner and matching definition before
+implementation.
+
+| Module | Planned owner | Dependency |
+| --- | --- | --- |
+| `src/utf8.zig` | `framing` | `std.unicode` for contiguous slices |
+| `src/backpressure.zig` | `connection` | `zslay.Queue` and connection state |
+| `src/native_stream.zig` | `connection` | Zig 0.17.1 `std.Io.Reader`/`Writer` |
+| `src/stream.zig` | `fragments` | connection, UTF-8, backpressure |
+| `src/deflate.zig` | `connection`; `handshake` owns negotiation | zslay negotiated RSV1, `std.compress.flate`, stream |
+| `src/pubsub.zig` | new `pubsub` specialist when the module starts | stream, backpressure |
+
+A new `pubsub` definition must be added to `.agents/agents/`, `.opencode/agents/`,
+and `.codex/agents/`, plus the roster and `SKILL.md`, before `src/pubsub.zig` is
+created.
+
 ## Current Change Ownership
 
-This change owns the banner, documentation, flake, `.envrc`, `.github`
-metadata, skill pack, agent definitions, and zon2nix pre-commit flow. The root
-agent owns the combined diff. The architect, developer, reviewer, and integrator
-roles are filled by the root agent and an independent read-only review pass.
-
-Documentation work may combine architect and developer phases. It still needs a
-reviewer pass for link accuracy, scope, and consistency with the target
-architecture.
+This documentation change owns `CODEBASE.md`, `AGENTS.md`,
+`AGENT_DIRECTORY.md`, `README.md`, `CHANGELOG.md`, `CODING_CONVENTION.md`,
+`CONTRIBUTE.md`, `SECURITY.md`, `THIRD_PARTY_NOTICES.md`, `SKILL.md`, and the
+matching framing, connection, and fragments agent definitions. The roots stay
+aligned with the zslay boundary and extension roadmap in `CODEBASE.md`. An
+independent read-only review pass checks links, scope, and consistency with the
+target architecture.
 
 ## Delivery Rules
 

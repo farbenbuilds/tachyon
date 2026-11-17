@@ -99,10 +99,21 @@ see [CONTRIBUTE.md](CONTRIBUTE.md).
 - Defaults must match fastwebsockets: automatic close, automatic pong, automatic
   mask application, and a 64 MiB maximum message size unless a later decision
   records a different bound.
+- Close-code and masking APIs are aliases or delegates to zslay. Do not define a
+  second `CloseCode` enum, allowed-range table, close-payload validator, or XOR
+  loop.
+- Optional extensions stay at the edge. Backpressure, streaming, native stream,
+  UTF-8, deflate, and pub/sub must not add allocation, I/O, or negotiation state
+  to the frame core.
+- Bound decompressed output by the configured message limit before delivery, and
+  never compress control frames.
+- Validate text incrementally across frames and fail closed on invalid UTF-8;
+  never substitute replacement characters.
 - A client masks outbound frames; a server unmasks inbound frames. Role is part
   of the connection state, not a hidden global.
-- A close write is terminal. Repeated close writes are a no-op; other writes
-  after close return `error.ConnectionClosed`.
+- A close write is terminal for data writes. Repeated close writes are still
+  serialized, matching fastwebsockets; other writes after close return
+  `error.ConnectionClosed`.
 - Reading after close may deliver the peer close frame, but must not deliver
   application data.
 
@@ -161,9 +172,10 @@ pub fn checked_payload_len(payload_len: usize, max_len: usize) !usize {
 }
 
 // Encodes a masked text header from caller-owned storage.
+// The length marker is part of the RFC 6455 header, not the raw payload length.
 pub fn encode_text_header(
     out: []u8,
-    payload_len: usize,
+    payload_len: u64,
     key: zslay.MaskingKey,
 ) !usize {
     const header = zslay.FrameHeader{
@@ -172,7 +184,7 @@ pub fn encode_text_header(
         .rsv2 = false,
         .rsv1 = false,
         .fin = true,
-        .payload_len = @intCast(payload_len),
+        .payload_len = zslay.frame.length_marker(payload_len),
         .mask = true,
     };
 
