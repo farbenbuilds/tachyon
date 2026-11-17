@@ -1,0 +1,69 @@
+name: Bug Report
+description: Submit a protocol, API, build, or documentation bug for tachyon
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Bug Report
+        Thank you for reporting an issue in **tachyon**.
+
+        If this may be a security issue, including memory corruption, denial of
+        service, or a parser panic, do not open a public issue. Follow the
+        private reporting instructions in `SECURITY.md`.
+  - type: input
+    id: bug-description
+    attributes:
+      label: Bug Description
+      description: A concise description of the bug.
+      placeholder: E.g. Frame header encoding rejects a valid 126-byte payload.
+    validations:
+      required: true
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Provide a minimal Zig test, a frame sequence, or exact commands.
+      placeholder: |
+        1. Enter the shell with `nix develop`
+        2. Build with `zig build test`
+        3. Feed the following frame bytes: `81 85 37 fa 21 3d 7f 9f 4d 51 58`
+        4. Observe the result
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: What should happen according to RFC 6455 or the documented API?
+    validations:
+      required: true
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual Behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment and Toolchain
+      description: Zig version, OS, architecture, and integration method.
+      placeholder: E.g. Zig 0.17.1, NixOS x86_64, static library via C FFI.
+    validations:
+      required: true
+  - type: textarea
+    id: logs-and-dumps
+    attributes:
+      label: Logs, Stack Traces, or Hex Dumps
+      description: Paste build errors or compiler traces inside code blocks.
+    validations:
+      required: false
+  - type: textarea
+    id: additional-info
+    attributes:
+      label: Additional Information
+      description: Any other context, optimization mode, or target constraints.
+    validations:
+      required: false
