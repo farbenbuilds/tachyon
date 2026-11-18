@@ -153,9 +153,11 @@ Releases use semantic versioning and a `v*` tag. The version in
 4. Run the full checks.
 5. Tag the release commit and push the tag.
 
-The release pipeline is specified in [CI_CD_PIPELINE.md](CI_CD_PIPELINE.md).
-Actions workflows are not included in this change. Until they exist, attach the
-`libtachyon.a` artifacts produced by the build to the GitHub release manually.
+The release pipeline is specified in [CI_CD_PIPELINE.md](CI_CD_PIPELINE.md). The
+lint workflow runs `zig fmt --check .` on pull requests into `main` that change
+`.zig`, `.zon`, or `build.zig` files; the test and publish workflows are not
+implemented yet. Until the publish workflow exists, attach the `libtachyon.a`
+artifacts produced by the build to the GitHub release manually.
 
 ## Dependency Policy
 

@@ -474,8 +474,8 @@ Build files:
   roster and workflow.
 - `CODING_CONVENTION.md` defines the Zig style and safety contract.
 - `CONTRIBUTE.md` covers setup, checks, commits, and releases.
-- `CI_CD_PIPELINE.md` records the pipeline contract. Actions workflows are not
-  included in this change.
+- `CI_CD_PIPELINE.md` records the pipeline contract, including the implemented
+  `.github/workflows/lint.yml` and the planned test and publish workflows.
 - `SECURITY.md` covers reporting and supported versions.
 - `CHANGELOG.md` records landed changes.
 - `THIRD_PARTY_NOTICES.md` records fastwebsockets, zslay, and uWebZockets
@@ -493,3 +493,5 @@ Build files:
 - `misc/tachyon-banner.png` is the README banner asset.
 - `.github/` holds the pull request template, commit convention, code of
   conduct, issue forms, and funding metadata.
+- `.github/workflows/lint.yml` runs `zig fmt --check .` for pull requests into
+  `main` that change a `.zig` file, a `.zon` file, or `build.zig`.

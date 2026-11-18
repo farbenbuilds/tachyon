@@ -1,23 +1,26 @@
 # tachyon - CI/CD Pipeline
 
-Contract for the GitHub Actions pipelines. This change intentionally does not
-add workflow files. The sections below define the formatting, test, and release
-pipelines.
+Contract for the GitHub Actions pipelines. The lint workflow is implemented in
+`.github/workflows/lint.yml`; the test and release workflows are specified here
+and remain planned.
 
-## Planned Workflows
+## Workflows
 
-| Workflow | Trigger | Purpose |
+| Workflow | Trigger | Status and purpose |
 | --- | --- | --- |
-| `.github/workflows/lint.yml` | Pull request into `main` touching Zig or build files | `zig fmt --check .` with Zig 0.17.1. |
-| `.github/workflows/test.yml` | Pull request into `main` and push to `main` | Formatting plus `nix flake check` for native and musl test derivations. |
-| `.github/workflows/publish.yml` | Push of a `v*` tag | Verify version and changelog, build cross-target packages, publish release assets. |
+| `.github/workflows/lint.yml` | Pull request into `main` changing `.zig`, `.zon`, or `build.zig` files | Implemented. `zig fmt --check .` with Zig 0.17.1. |
+| `.github/workflows/test.yml` | Pull request into `main` and push to `main` | Planned. Formatting plus `nix flake check` for native and musl test derivations. |
+| `.github/workflows/publish.yml` | Push of a `v*` tag | Planned. Verify version and changelog, build cross-target packages, publish release assets. |
 
 ## Lint Pipeline
 
-Runs on pull requests that modify `.zig`, `.zon`, or `build.zig` files.
+Implemented in `.github/workflows/lint.yml`. Runs on pull requests into `main`
+that change a `.zig` file, a `.zon` file, or `build.zig`. The workflow requests
+`contents: read` and defines one job, `fmt`, named `Check Zig Formatting`, on
+`ubuntu-latest` in the `Linting` environment.
 
-1. Check out the repository.
-2. Install Zig 0.17.1 with `mlugg/setup-zig`.
+1. Check out the repository with `actions/checkout` v7.
+2. Install Zig 0.17.1 with `mlugg/setup-zig` v2.
 3. Run `zig fmt --check .`.
 
 The lint job does not use Nix, so formatting failures surface quickly without
@@ -25,7 +28,8 @@ waiting for a full flake evaluation.
 
 ## Test Pipeline
 
-Runs on pull requests into `main` and pushes to `main`.
+Planned. When implemented, runs on pull requests into `main` and pushes to
+`main`.
 
 1. Check out the repository.
 2. Install Nix with flakes enabled.
@@ -46,7 +50,7 @@ because the build sandbox has no network access.
 
 ## Path Filters
 
-The test workflow should run when any of these change:
+When implemented, the test workflow should run when any of these change:
 
 - `**/*.zig`
 - `**/*.zon`
@@ -59,7 +63,7 @@ The test workflow should run when any of these change:
 
 ## Release Pipeline
 
-Releases are tag-driven, not push-to-main-driven.
+Planned. Releases are tag-driven, not push-to-main-driven.
 
 ### Verify
 
@@ -91,10 +95,12 @@ Releases are tag-driven, not push-to-main-driven.
 | Name | Use |
 | --- | --- |
 | `GITHUB_TOKEN` | Release creation and asset upload; provided by GitHub. |
-| `contents: read` | Checkout, flake checks, and test jobs. |
+| `contents: read` | Checkout, lint, flake checks, and test jobs. |
 | `contents: write` | Release job only. |
 
-No third-party registry credentials are required.
+The lint workflow requests `contents: read`. The remaining entries apply to the
+planned test and release workflows. No third-party registry credentials are
+required.
 
 ## Versioning Rules
 
