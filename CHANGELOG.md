@@ -27,6 +27,10 @@ This project follows semantic versioning.
   Antigravity, including platform skills, the OpenCode plugin, Codex and Claude
   Code hooks, Antigravity rules and workflow, and reproducible install and
   check scripts.
+- Claude Code agent definitions for the full twelve-role roster under
+  `.claude/agents/`, with read-only tool sets for `architect`, `review`, and
+  `reviewer`, inherited models, and the `graphify` skill preloaded for every
+  role.
 - `.github` contribution metadata: pull request template, commit convention,
   code of conduct, issue forms, and funding configuration.
 - `CLAUDE.md` entry point that imports the canonical `AGENTS.md` rules.
@@ -35,7 +39,7 @@ This project follows semantic versioning.
 - README banner at the top of the page, matching the zslay and uWebZockets
   layout.
 - Matching architect, developer, reviewer, integrator, and specialist agent
-  definitions for agy, OpenCode, and Codex.
+  definitions for agy, OpenCode, Codex, and Claude Code.
 - `.codex/TEAM_WORKFLOW.md` with the shared handoff procedure.
 
 ### Changed

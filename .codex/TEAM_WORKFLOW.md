@@ -1,9 +1,9 @@
 # Codex Agent Team
 
 Codex custom agents in `.codex/agents/` mirror the specialists in
-`.opencode/agents/` and `.agents/agents/` and add the four workflow roles.
-Root project instructions remain in `AGENTS.md`; the ownership map remains in
-`AGENT_DIRECTORY.md`.
+`.opencode/agents/`, `.claude/agents/`, and `.agents/agents/` and add the four
+workflow roles. Root project instructions remain in `AGENTS.md`; the ownership
+map remains in `AGENT_DIRECTORY.md`.
 
 ## Procedure
 

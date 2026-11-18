@@ -11,6 +11,7 @@ Matching definitions exist for every role:
 | `.opencode/agents/<name>.md` | OpenCode specialist definitions. |
 | `.opencode/agents/team/<name>.md` | OpenCode architect, developer, reviewer, and integrator roles. |
 | `.codex/agents/<name>.toml` | Codex project agents. |
+| `.claude/agents/<name>.md` | Claude Code project subagents. |
 | `.codex/TEAM_WORKFLOW.md` | Codex team procedure and handoff contract. |
 | `.agents/skills/<name>/SKILL.md` | Shared project skills pinned in `skills-lock.json`, plus the Antigravity graphify copy. |
 | `.opencode/skills/graphify/` | Graphify skill for OpenCode. |
@@ -32,6 +33,11 @@ Matching definitions exist for every role:
 The names are the same in every client: `architect`, `developer`, `reviewer`,
 `integrator`, `framing`, `connection`, `fragments`, `handshake`, `testing`,
 `review`, `release`, and `docs`. They never carry a project prefix.
+
+Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
+`review`, and `reviewer` roles restrict `tools` to `Read`, `Grep`, `Glob`, and
+`Bash`; every definition uses `model: inherit` and preloads the project
+`graphify` skill.
 
 ## Roster
 
@@ -66,18 +72,19 @@ implementation.
 | `src/pubsub.zig` | new `pubsub` specialist when the module starts | stream, backpressure |
 
 A new `pubsub` definition must be added to `.agents/agents/`, `.opencode/agents/`,
-and `.codex/agents/`, plus the roster and `SKILL.md`, before `src/pubsub.zig` is
-created.
+`.codex/agents/`, and `.claude/agents/`, plus the roster and `SKILL.md`, before
+`src/pubsub.zig` is created.
 
 ## Current Change Ownership
 
 This agent-tooling change owns `.agents/agents/`, `.opencode/agents/`,
-`.codex/agents/`, `.codex/TEAM_WORKFLOW.md`, the OpenCode, Codex, Claude Code,
-and Antigravity graphify integration files, `scripts/install_graphify_integrations.sh`,
+`.codex/agents/`, `.claude/agents/`, `.codex/TEAM_WORKFLOW.md`, the OpenCode,
+Codex, Claude Code, and Antigravity graphify integration files,
+`scripts/install_graphify_integrations.sh`,
 `scripts/check_graphify_integrations.sh`, `.pre-commit-config.yaml`,
 `.gitattributes`, and the root guides. The roots stay aligned with the zslay
-boundary and extension roadmap in `CODEBASE.md`. An independent read-only review
-pass checks links, scope, and consistency with the target architecture.
+boundary and extension roadmap in `CODEBASE.md`. An independent read-only
+review pass checks links, scope, and consistency with the target architecture.
 
 ## Delivery Rules
 

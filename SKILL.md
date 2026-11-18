@@ -28,6 +28,9 @@ The same twelve plain role names are defined for every client: `architect`,
   roles under `.opencode/agents/team/`.
 - `.codex/agents/<name>.toml` is the Codex definition, with the shared procedure
   in `.codex/TEAM_WORKFLOW.md`.
+- `.claude/agents/<name>.md` is the Claude Code subagent definition. Read-only
+  roles restrict `tools` to `Read`, `Grep`, `Glob`, and `Bash`; every definition
+  uses `model: inherit` and preloads the project `graphify` skill.
 
 No role carries a project prefix. `AGENT_DIRECTORY.md` owns the roster,
 ownership boundaries, and skill coverage. A future `pubsub` role is planned
@@ -122,6 +125,6 @@ generated and gitignored. Do not edit or commit it by hand.
    `skills-lock.json`.
 2. Add any platform-specific copy only where the client requires it.
 3. Add the matching agent definition under `.opencode/agents/`,
-   `.codex/agents/`, or `.agents/agents/`.
+   `.codex/agents/`, `.claude/agents/`, or `.agents/agents/`.
 4. Update `AGENT_DIRECTORY.md` and this file in the same change.
 5. Do not list a skill or agent that is not present in the repository.
