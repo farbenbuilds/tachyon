@@ -29,6 +29,8 @@ The project now bootstraps its Zig package: `build.zig` defines the public
 `tachyon` module and static library, `src/root.zig` is the module entry point,
 and zslay is pinned in `build.zig.zon` for framing and wire-state validation.
 The generated zon2nix views feed the offline Nix test and package builds.
+`src/error.zig` implements the fastwebsockets 0.10.0 error taxonomy, zslay
+boundary normalization, `std.Io` transport mappings, and the close-code policy.
 Connection, fragmentation, handshake, upgrade, and split modules are not
 implemented yet. No separate close or masking module is planned; zslay owns the
 close predicate, payload validator, and mask routine. The extension roadmap
@@ -39,7 +41,8 @@ permessage-deflate, and pub/sub after the parity baseline lands.
 
 | Area | Target |
 | --- | --- |
-| `Frame`, `OpCode`, `Payload`, `CloseCode`, `WebSocketError` | fastwebsockets-compatible surface |
+| `Frame`, `OpCode`, `Payload`, `CloseCode` | fastwebsockets-compatible surface |
+| `WebSocketError` | fastwebsockets 0.10.0 error taxonomy with zslay and `std.Io` mappings |
 | zslay header coding, length handling, masking, fragment ordering, limits | Delegated to zslay |
 | Close predicate and payload validator | zslay; inbound policy and echo in tachyon |
 | `WebSocket` read/write loop, auto-close, auto-pong, max message size | Planned |
