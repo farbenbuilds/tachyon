@@ -15,6 +15,10 @@ This project follows semantic versioning.
   normalization, `std.Io.Reader`/`Writer`/`StreamError` mappings, the
   `InvalidStatusCode` out-parameter helper, close-code policy, and
   classification helpers, exported from `src/root.zig`.
+- `src/frame.zig` with the `Frame` facade, `Payload`, `OpCode` and `CloseCode`
+  aliases and conversions, `unmask`/`unmask_at` delegations, the header-length
+  bridge, `std.Io.Writer` vectored writes, and caller-buffer writes, exported
+  from `src/root.zig`.
 - zslay dependency pinned in `build.zig.zon` and exposed from `src/root.zig`,
   plus the generated `build.zig.zon.nix`, `.json`, and `.txt` views.
 - Nix flake and lock file for the Zig 0.17.1 development shell, Nix formatting

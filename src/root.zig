@@ -1,8 +1,28 @@
 //! tachyon public module.
 //!
-//! Re-exports the pinned zslay codec and the WebSocket error model.
+//! Re-exports the pinned zslay codec, the frame facade, and the WebSocket
+//! error model.
 
 pub const zslay = @import("zslay");
+
+pub const frame = @import("frame.zig");
+pub const Frame = frame.Frame;
+pub const Payload = frame.Payload;
+pub const OpCode = frame.OpCode;
+pub const CloseCode = frame.CloseCode;
+pub const MaskingKey = frame.MaskingKey;
+pub const MaxHeadSize = frame.MaxHeadSize;
+pub const unmask = frame.unmask;
+pub const unmask_at = frame.unmask_at;
+pub const header_len = frame.header_len;
+pub const opcode_from_u8 = frame.opcode_from_u8;
+pub const opcode_to_u8 = frame.opcode_to_u8;
+pub const close_code_from_u16 = frame.close_code_from_u16;
+pub const close_code_to_u16 = frame.close_code_to_u16;
+pub const is_valid_close_code = frame.is_valid_close_code;
+pub const is_allowed = frame.is_allowed;
+pub const is_control = frame.is_control;
+pub const validate_close_payload = frame.validate_close_payload;
 
 pub const errors = @import("error.zig");
 pub const WebSocketError = errors.WebSocketError;
@@ -41,8 +61,21 @@ test "Dependency: zslay encodes an unmasked text frame header" {
         .mask = false,
     };
 
-    const header_len = try zslay.encode_header(&header_buffer, header, 5, null);
+    const encoded_len = try zslay.encode_header(&header_buffer, header, 5, null);
 
-    try std.testing.expectEqual(@as(usize, 2), header_len);
-    try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x05 }, header_buffer[0..header_len]);
+    try std.testing.expectEqual(@as(usize, 2), encoded_len);
+    try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x05 }, header_buffer[0..encoded_len]);
+}
+
+test "Frame: public module re-exports the facade" {
+    const std = @import("std");
+
+    var payload = [_]u8{ 'o', 'k' };
+    const f = Frame.text(&payload);
+
+    try std.testing.expectEqual(OpCode.text, f.opcode);
+    try std.testing.expectEqual(@as(usize, 2), try header_len(payload.len, false));
+    try std.testing.expectEqual(CloseCode.normal_closure, close_code_from_u16(1000));
+    try std.testing.expect(is_control(.ping));
+    try std.testing.expect(f.is_utf8());
 }

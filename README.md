@@ -31,6 +31,11 @@ and zslay is pinned in `build.zig.zon` for framing and wire-state validation.
 The generated zon2nix views feed the offline Nix test and package builds.
 `src/error.zig` implements the fastwebsockets 0.10.0 error taxonomy, zslay
 boundary normalization, `std.Io` transport mappings, and the close-code policy.
+`src/frame.zig` implements the fastwebsockets-compatible frame facade: `Frame`,
+`Payload`, the `OpCode` and `CloseCode` aliases with conversions,
+`unmask`/`unmask_at` delegations, the header-length bridge, `std.Io.Writer`
+vectored writes, and caller-buffer writes. `src/root.zig` re-exports the facade
+and the error model.
 Connection, fragmentation, handshake, upgrade, and split modules are not
 implemented yet. No separate close or masking module is planned; zslay owns the
 close predicate, payload validator, and mask routine. The extension roadmap
@@ -41,7 +46,7 @@ permessage-deflate, and pub/sub after the parity baseline lands.
 
 | Area | Target |
 | --- | --- |
-| `Frame`, `OpCode`, `Payload`, `CloseCode` | fastwebsockets-compatible surface |
+| `Frame`, `OpCode`, `Payload`, `CloseCode` | Implemented fastwebsockets-compatible surface over zslay |
 | `WebSocketError` | fastwebsockets 0.10.0 error taxonomy with zslay and `std.Io` mappings |
 | zslay header coding, length handling, masking, fragment ordering, limits | Delegated to zslay |
 | Close predicate and payload validator | zslay; inbound policy and echo in tachyon |
