@@ -44,7 +44,7 @@ for path in .agents/agents/*.md; do
     grep -q 'skills/graphify' "$path" || fail "$path does not load skills/graphify"
 done
 
-for path in .agents/agents/*.md .opencode/agents/*.md .opencode/agents/team/*.md .codex/agents/*.toml; do
+for path in .agents/agents/*.md .opencode/agents/*.md .opencode/agents/team/*.md .codex/agents/*.toml .claude/agents/*.md; do
     grep -q 'graphify affected' "$path" || fail "$path lacks the graph-first rule"
 done
 

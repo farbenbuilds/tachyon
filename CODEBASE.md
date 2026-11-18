@@ -460,8 +460,8 @@ Build files:
   attribution.
 - `SKILL.md` summarizes the vendored skill pack and graphify setup.
 - `.agents/skills/` and `skills-lock.json` hold the shared skill pack.
-- `.agents/agents/`, `.opencode/agents/`, and `.codex/agents/` hold the matching
-  agent definitions.
+- `.agents/agents/`, `.opencode/agents/`, `.codex/agents/`, and `.claude/agents/`
+  hold the matching agent definitions.
 - `.codex/TEAM_WORKFLOW.md` defines the Codex team procedure.
 - `.opencode/`, `.codex/`, and `.claude/` hold the graphify skill copies,
   plugin, hooks, and client configuration. `.agents/rules/` and

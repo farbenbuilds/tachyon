@@ -39,9 +39,9 @@ and documentation foundation:
 - `.agents/skills/` holds the shared skill pack and `.agents/agents/` holds the
   agy agent definitions.
 - `.opencode/`, `.codex/`, and `.claude/` hold the matching OpenCode, Codex,
-  and Claude Code definitions and platform-specific graphify skills, plugins,
-  hooks, and settings. `.agents/rules/` and `.agents/workflows/` carry the
-  Google Antigravity graphify integration.
+  and Claude Code agent definitions, plus platform-specific graphify skills,
+  plugins, hooks, and settings. `.agents/rules/` and `.agents/workflows/` carry
+  the Google Antigravity graphify integration.
 - The root Markdown guides define the architecture and process.
 
 The test suite covers only the dependency boundary. Do not describe the frame,
@@ -99,7 +99,7 @@ Current files:
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
 | `scripts/update_zon_files.sh` | Regenerates `build.zig.zon.nix`, `.json`, and `.txt` with zon2nix. |
 | `.agents/skills/`, `skills-lock.json` | Shared skill pack, lock file, and the Antigravity graphify skill copy. |
-| `.agents/agents/`, `.opencode/agents/`, `.codex/agents/` | Matching agent definitions for agy, OpenCode, and Codex. |
+| `.agents/agents/`, `.opencode/agents/`, `.codex/agents/`, `.claude/agents/` | Matching agent definitions for agy, OpenCode, Codex, and Claude Code. |
 | `.agents/rules/`, `.agents/workflows/` | Google Antigravity graphify always-on rules and workflow. |
 | `.codex/TEAM_WORKFLOW.md` | Codex team procedure and handoff contract. |
 | `.opencode/`, `.codex/`, `.claude/` | Graphify skill copies, plugins, hooks, and client configuration. |
@@ -265,10 +265,10 @@ asked for it.
 
 The shared ownership map and review workflow live in
 [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md). Matching definitions live under
-`.agents/agents/`, `.opencode/agents/`, and `.codex/agents/`; Codex also reads
-`.codex/TEAM_WORKFLOW.md`. The shared skill pack is vendored under
-`.agents/skills/` and pinned by `skills-lock.json`; an agent must not reference a
-definition or skill that is not present in the repository.
+`.agents/agents/`, `.opencode/agents/`, `.codex/agents/`, and `.claude/agents/`;
+Codex also reads `.codex/TEAM_WORKFLOW.md`. The shared skill pack is vendored
+under `.agents/skills/` and pinned by `skills-lock.json`; an agent must not
+reference a definition or skill that is not present in the repository.
 
 For coordinated work, follow this sequence:
 

@@ -14,8 +14,11 @@ rules; when the two disagree, `AGENTS.md` wins.
 - Use the architect -> developer -> reviewer -> integrator sequence from
   `AGENT_DIRECTORY.md` for multi-part work. Use the plain role names from that
   roster, without a project prefix, and do not invent specialist agent names
-  that are not present under `.opencode/agents/`, `.codex/agents/`, or
-  `.agents/agents/`.
+  that are not present under `.opencode/agents/`, `.codex/agents/`,
+  `.claude/agents/`, or `.agents/agents/`.
+- Claude Code project subagents live in `.claude/agents/`. The architect,
+  `review`, and `reviewer` definitions are read-only; every definition inherits
+  the parent model and preloads the project `graphify` skill.
 - Do not add comments that narrate the diff. Comments explain protocol
   invariants, byte values, ownership, or a deliberate divergence.
 - Do not commit, push, tag, or open a pull request unless the user explicitly
