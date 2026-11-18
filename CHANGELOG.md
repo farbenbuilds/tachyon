@@ -49,6 +49,9 @@ This project follows semantic versioning.
 - Matching architect, developer, reviewer, integrator, and specialist agent
   definitions for agy, OpenCode, Codex, and Claude Code.
 - `.codex/TEAM_WORKFLOW.md` with the shared handoff procedure.
+- `.github/workflows/lint.yml` runs `zig fmt --check .` on pull requests into
+  `main` that change Zig files, `.zon` files, or `build.zig`, using Zig 0.17.1
+  through `mlugg/setup-zig`.
 
 ### Changed
 
