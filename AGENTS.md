@@ -31,7 +31,11 @@ and documentation foundation:
 - `build.zig` and `build.zig.zon` define the public `tachyon` module, the
   static library, the Debug and ReleaseSafe test steps, the `check` step, and
   the zslay dependency.
-- `src/root.zig` is the module entry point and currently re-exports zslay.
+- `src/root.zig` is the module entry point; it re-exports zslay and the
+  WebSocket error model.
+- `src/error.zig` implements the fastwebsockets 0.10.0 error taxonomy, zslay
+  boundary normalization, `std.Io` reader/writer/stream mappings, the status
+  out-parameter helper, and the close-code policy.
 - `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt` are the
   generated zon2nix views used by the flake for offline builds.
 - `flake.nix`, `flake.lock`, and `.envrc` provide the Zig 0.17.1 shell.
@@ -44,9 +48,9 @@ and documentation foundation:
   the Google Antigravity graphify integration.
 - The root Markdown guides define the architecture and process.
 
-The test suite covers only the dependency boundary. Do not describe the frame,
-connection, fragmentation, handshake, upgrade, or split modules as implemented
-before they exist and are tested.
+The test suite covers the dependency boundary and the error model. Do not
+describe the frame, connection, fragmentation, handshake, upgrade, or split
+modules as implemented before they exist and are tested.
 
 ## Non-Negotiable Architecture
 
@@ -93,7 +97,9 @@ Current files:
 | --- | --- |
 | `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe tests, `check` step, and the zslay dependency. |
 | `build.zig.zon.nix`, `.json`, `.txt` | Generated zon2nix views for offline Nix builds and dependency audits. |
-| `src/root.zig` | Public module entry point; currently re-exports zslay. |
+| `src/root.zig` | Public module entry point; re-exports zslay and the error model. |
+| `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
+| `src/test.zig` | Unit tests for the error model; expanded as protocol layers land. |
 | `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
@@ -115,9 +121,9 @@ Target source layout, in dependency order:
 | --- | --- |
 | `build.zig`, `build.zig.zon` | Public module, static library, tests, and the zslay dependency. |
 | `src/root.zig` | Public module entry point and re-exports. |
+| `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` alias, `CloseCode` alias and conversions, `unmask`/`unmask_at`, header-length bridge. |
 | `src/utf8.zig` | Planned extension: incremental zero-allocation UTF-8 validation for text messages. |
-| `src/error.zig` | `WebSocketError` set matching the fastwebsockets failure model, plus `zslay.Error` mapping. |
 | `src/backpressure.zig` | Planned extension: byte/frame watermarks and admission policy over zslay's bounded queue. |
 | `src/connection.zig` | Role-aware `WebSocket` policy over `zslay.Conn`: read/write loops, auto-pong, auto-close, mask option, limits, vectored writes. |
 | `src/fragment.zig` | `FragmentCollector`, split-read collector, fragment buffering, streaming UTF-8. |

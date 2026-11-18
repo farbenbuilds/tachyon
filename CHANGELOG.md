@@ -11,6 +11,10 @@ This project follows semantic versioning.
 
 - Zig 0.17.1 package scaffold with a public `tachyon` module, static library,
   Debug and ReleaseSafe test steps, and a `check` step.
+- `src/error.zig` with the fastwebsockets 0.10.0 error taxonomy, zslay boundary
+  normalization, `std.Io.Reader`/`Writer`/`StreamError` mappings, the
+  `InvalidStatusCode` out-parameter helper, close-code policy, and
+  classification helpers, exported from `src/root.zig`.
 - zslay dependency pinned in `build.zig.zon` and exposed from `src/root.zig`,
   plus the generated `build.zig.zon.nix`, `.json`, and `.txt` views.
 - Nix flake and lock file for the Zig 0.17.1 development shell, Nix formatting
