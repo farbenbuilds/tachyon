@@ -9,8 +9,10 @@ writes, automatic close and pong handling, automatic mask application, maximum
 message limits, vectored writes, fragmentation collection, HTTP server upgrade,
 client handshake, and split read/write halves. The 0.10.0 surface is the parity
 baseline, not the ceiling: backpressure, streaming messages, native `std.Io`
-transport, incremental UTF-8 validation, permessage-deflate (RFC 7692), and
-pub/sub are planned post-parity extensions documented in `CODEBASE.md`.
+transport, permessage-deflate (RFC 7692), and pub/sub are planned post-parity
+extensions documented in `CODEBASE.md`. Incremental UTF-8 validation is
+implemented in `src/utf8.zig`; its connection-level read path and collector call
+sites land with the connection and fragment layers.
 
 The framing engine is
 [farbenbuilds/zslay](https://github.com/farbenbuilds/zslay). It is declared in
@@ -32,7 +34,7 @@ and documentation foundation:
   static library, the Debug and ReleaseSafe test steps, the `check` step, and
   the zslay dependency.
 - `src/root.zig` is the module entry point; it re-exports zslay, the frame
-  facade, and the WebSocket error model.
+  facade, the UTF-8 validator, and the WebSocket error model.
 - `src/frame.zig` implements the frame facade: `Frame`, `Payload`, the `OpCode`
   and `CloseCode` aliases with conversions, `unmask`/`unmask_at` delegations,
   the header-length bridge, `std.Io.Writer` vectored writes, and caller-buffer
@@ -40,6 +42,10 @@ and documentation foundation:
 - `src/error.zig` implements the fastwebsockets 0.10.0 error taxonomy, zslay
   boundary normalization, `std.Io` reader/writer/stream mappings, the status
   out-parameter helper, and the close-code policy.
+- `src/utf8.zig` implements incremental zero-allocation text validation:
+  complete ranges use `std.unicode`, split code points stay in a `State` value,
+  `validate_reader` adapts arbitrary `std.Io.Reader` chunk sizes, and
+  `Frame.is_utf8` delegates to the same validator.
 - `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt` are the
   generated zon2nix views used by the flake for offline builds.
 - `flake.nix`, `flake.lock`, and `.envrc` provide the Zig 0.17.1 shell.
@@ -52,9 +58,10 @@ and documentation foundation:
   the Google Antigravity graphify integration.
 - The root Markdown guides define the architecture and process.
 
-The test suite covers the dependency boundary, the error model, and the frame
-facade. Do not describe the connection, fragmentation, handshake, upgrade, or
-split modules as implemented before they exist and are tested.
+The test suite covers the dependency boundary, the error model, the frame
+facade, and the incremental UTF-8 validator. Do not describe the connection,
+fragmentation, handshake, upgrade, or split modules as implemented before they
+exist and are tested.
 
 ## Non-Negotiable Architecture
 
@@ -101,10 +108,11 @@ Current files:
 | --- | --- |
 | `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe tests, `check` step, and the zslay dependency. |
 | `build.zig.zon.nix`, `.json`, `.txt` | Generated zon2nix views for offline Nix builds and dependency audits. |
-| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, and the error model. |
+| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, and the error model. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` and `CloseCode` aliases with conversions, `unmask`/`unmask_at`, the header-length bridge, and write paths. |
 | `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
-| `src/test.zig` | Unit tests for the error model and frame facade; expanded as protocol layers land. |
+| `src/utf8.zig` | Incremental UTF-8 validation: `std.unicode` complete ranges, split code-point `State`, and a `std.Io.Reader` adapter. |
+| `src/test.zig` | Unit tests for the error model, frame facade, and UTF-8 validator; expanded as protocol layers land. |
 | `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
@@ -129,7 +137,7 @@ Target source layout, in dependency order:
 | `src/root.zig` | Public module entry point and re-exports. |
 | `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` alias, `CloseCode` alias and conversions, `unmask`/`unmask_at`, header-length bridge, and write paths. |
-| `src/utf8.zig` | Planned extension: incremental zero-allocation UTF-8 validation for text messages. |
+| `src/utf8.zig` | Incremental zero-allocation UTF-8 validation for text messages: `std.unicode` complete ranges, split code-point `State`, and a `std.Io.Reader` adapter. |
 | `src/backpressure.zig` | Planned extension: byte/frame watermarks and admission policy over zslay's bounded queue. |
 | `src/connection.zig` | Role-aware `WebSocket` policy over `zslay.Conn`: read/write loops, auto-pong, auto-close, mask option, limits, vectored writes. |
 | `src/fragment.zig` | `FragmentCollector`, split-read collector, fragment buffering, streaming UTF-8. |

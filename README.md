@@ -13,12 +13,14 @@ Zig 0.17.1. Framing is delegated to
 I/O-agnostic framing engine with a bounded connection state machine. zslay owns
 header coding, masking, the close predicate and payload validator, masking
 direction, fragment ordering, and frame/message limits. tachyon applies inbound
-close policy, owns the close echo, and adds the fastwebsockets API surface:
+close policy, owns the close echo, and targets the fastwebsockets API surface:
 automatic ping/pong and close handling, fragment buffering and UTF-8 checks,
 handshakes, and stream adapters. The 0.10.0 surface is the parity baseline;
-backpressure, streaming messages, native `std.Io` transport, incremental UTF-8,
-permessage-deflate, and pub/sub are planned post-parity extensions. Deliberate
-hardening and compatibility exceptions are recorded in
+backpressure, streaming messages, native `std.Io` transport, permessage-deflate,
+and pub/sub are planned post-parity extensions. Incremental UTF-8 validation is
+implemented in `src/utf8.zig`; its connection-level read path and collector call
+sites land with the connection and fragment layers. Deliberate hardening and compatibility
+exceptions are recorded in
 [CODEBASE.md](CODEBASE.md#compatibility-notes); the extension order and
 constraints are in
 [CODEBASE.md](CODEBASE.md#extension-roadmap).
@@ -34,12 +36,16 @@ boundary normalization, `std.Io` transport mappings, and the close-code policy.
 `src/frame.zig` implements the fastwebsockets-compatible frame facade: `Frame`,
 `Payload`, the `OpCode` and `CloseCode` aliases with conversions,
 `unmask`/`unmask_at` delegations, the header-length bridge, `std.Io.Writer`
-vectored writes, and caller-buffer writes. `src/root.zig` re-exports the facade
-and the error model.
+vectored writes, and caller-buffer writes. `src/utf8.zig` adds incremental
+zero-allocation text validation: complete ranges go through `std.unicode`,
+split code points are carried across `std.Io` read chunks, and `Frame.is_utf8`
+delegates to the same validator. `src/root.zig` re-exports the facade, the
+error model, and the UTF-8 validator.
+
 Connection, fragmentation, handshake, upgrade, and split modules are not
 implemented yet. No separate close or masking module is planned; zslay owns the
-close predicate, payload validator, and mask routine. The extension roadmap
-adds backpressure, streaming, native `std.Io` transport, incremental UTF-8,
+close predicate, payload validator, and mask routine. The remaining extension
+roadmap adds backpressure, streaming, native `std.Io` transport,
 permessage-deflate, and pub/sub after the parity baseline lands.
 
 ## Targets
@@ -55,7 +61,7 @@ permessage-deflate, and pub/sub after the parity baseline lands.
 | HTTP server upgrade and client handshake | Planned |
 | Split read/write halves | Planned |
 | Backpressure and bounded write watermarks | Planned extension |
-| Incremental UTF-8 validation across fragments | Planned extension |
+| Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig`; collector integration lands with the fragment layer |
 | Streaming message reader/writer | Planned extension |
 | Native `std.Io.Reader`/`Writer` transport adapter | Planned extension |
 | permessage-deflate (RFC 7692) | Planned extension beyond 0.10.0 parity |

@@ -1,7 +1,7 @@
 //! tachyon public module.
 //!
-//! Re-exports the pinned zslay codec, the frame facade, and the WebSocket
-//! error model.
+//! Re-exports the pinned zslay codec, the frame facade, the incremental UTF-8
+//! validator, and the WebSocket error model.
 
 pub const zslay = @import("zslay");
 
@@ -23,6 +23,12 @@ pub const is_valid_close_code = frame.is_valid_close_code;
 pub const is_allowed = frame.is_allowed;
 pub const is_control = frame.is_control;
 pub const validate_close_payload = frame.validate_close_payload;
+
+pub const utf8 = @import("utf8.zig");
+pub const Utf8State = utf8.State;
+pub const validate_utf8 = utf8.validate;
+pub const is_valid_utf8 = utf8.is_valid;
+pub const validate_utf8_reader = utf8.validate_reader;
 
 pub const errors = @import("error.zig");
 pub const WebSocketError = errors.WebSocketError;
@@ -78,4 +84,19 @@ test "Frame: public module re-exports the facade" {
     try std.testing.expectEqual(CloseCode.normal_closure, close_code_from_u16(1000));
     try std.testing.expect(is_control(.ping));
     try std.testing.expect(f.is_utf8());
+}
+
+test "UTF-8: public module re-exports the validator" {
+    const std = @import("std");
+
+    try std.testing.expect(is_valid_utf8("ok"));
+
+    var state: Utf8State = .{};
+    state = try state.feed("o");
+    state = try state.feed("k");
+    try state.finish();
+
+    var buffer: [4]u8 = undefined;
+    var reader = std.Io.Reader.fixed("ok");
+    try validate_utf8_reader(&reader, &buffer);
 }

@@ -19,6 +19,12 @@ This project follows semantic versioning.
   aliases and conversions, `unmask`/`unmask_at` delegations, the header-length
   bridge, `std.Io.Writer` vectored writes, and caller-buffer writes, exported
   from `src/root.zig`.
+- `src/utf8.zig` with an incremental zero-allocation UTF-8 validator: complete
+  ranges use `std.unicode`, split code points stay in a pure `State` value,
+  `validate_reader` adapts arbitrary `std.Io.Reader` chunk sizes, failures use
+  `zslay.Error.InvalidUtf8`, and `Frame.is_utf8` delegates to the same
+  validator. Exported from `src/root.zig` with focused Debug and ReleaseSafe
+  tests.
 - zslay dependency pinned in `build.zig.zon` and exposed from `src/root.zig`,
   plus the generated `build.zig.zon.nix`, `.json`, and `.txt` views.
 - Nix flake and lock file for the Zig 0.17.1 development shell, Nix formatting
@@ -72,6 +78,9 @@ This project follows semantic versioning.
   permessage-deflate, and pub/sub. The roadmap records module ownership,
   dependency order, and fail-closed limits. permessage-deflate now requires a
   zslay RSV1 extension before tachyon can advertise it.
+- Marked `src/utf8.zig` implemented in the extension roadmap, moved it into the
+  `framing` owner roster, and updated the matching agent definitions with the
+  `std.unicode` and `std.Io.Reader` boundaries.
 - `nix flake check` now runs the Debug and ReleaseSafe suites natively and in
   the musl shell using the zon2nix-prefetched packages, and `nix build`
   produces `libtachyon.a`.

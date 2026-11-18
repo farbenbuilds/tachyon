@@ -43,9 +43,9 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 
 | Agent | Area | Owned paths |
 | --- | --- | --- |
-| `framing` | Frame facade, close-code aliases, masking delegation, errors | `src/frame.zig`, `src/error.zig` |
+| `framing` | Frame facade, close-code aliases, masking delegation, errors, incremental UTF-8 | `src/frame.zig`, `src/error.zig`, `src/utf8.zig` |
 | `connection` | Connection policy over `zslay.Conn`, control replies, limits | `src/connection.zig` |
-| `fragments` | Message buffering, UTF-8 streaming, split reads | `src/fragment.zig`, `src/split.zig` |
+| `fragments` | Message buffering, shared UTF-8 streaming, split reads | `src/fragment.zig`, `src/split.zig` |
 | `handshake` | Client handshake and server upgrade | `src/handshake.zig`, `src/upgrade.zig` |
 | `testing` | Unit, Autobahn, fuzz, and echo coverage | `src/test.zig`, `tests/`, `fuzz/` |
 | `review` | Read-only review | any changed file |
@@ -60,11 +60,11 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 
 These modules are roadmap items, not current files. Existing agent definitions
 remain scoped to current files; expand the owner and matching definition before
-implementation.
+implementation. `src/utf8.zig` has landed under the `framing` owner, so it is
+removed from this list.
 
 | Module | Planned owner | Dependency |
 | --- | --- | --- |
-| `src/utf8.zig` | `framing` | `std.unicode` for contiguous slices |
 | `src/backpressure.zig` | `connection` | `zslay.Queue` and connection state |
 | `src/native_stream.zig` | `connection` | Zig 0.17.1 `std.Io.Reader`/`Writer` |
 | `src/stream.zig` | `fragments` | connection, UTF-8, backpressure |
@@ -75,9 +75,9 @@ A new `pubsub` definition must be added to `.agents/agents/`, `.opencode/agents/
 `.codex/agents/`, and `.claude/agents/`, plus the roster and `SKILL.md`, before
 `src/pubsub.zig` is created.
 
-## Current Change Ownership
+## Agent Tooling Change Ownership
 
-This agent-tooling change owns `.agents/agents/`, `.opencode/agents/`,
+This historical agent-tooling change owns `.agents/agents/`, `.opencode/agents/`,
 `.codex/agents/`, `.claude/agents/`, `.codex/TEAM_WORKFLOW.md`, the OpenCode,
 Codex, Claude Code, and Antigravity graphify integration files,
 `scripts/install_graphify_integrations.sh`,
@@ -85,6 +85,10 @@ Codex, Claude Code, and Antigravity graphify integration files,
 `.gitattributes`, and the root guides. The roots stay aligned with the zslay
 boundary and extension roadmap in `CODEBASE.md`. An independent read-only
 review pass checks links, scope, and consistency with the target architecture.
+
+The UTF-8 extension change owns `src/utf8.zig`, `src/frame.zig`, `src/root.zig`,
+`src/test.zig`, the root guides, `CHANGELOG.md`, and the framing and fragments
+definitions.
 
 ## Delivery Rules
 
