@@ -1,7 +1,4 @@
 //! Unit tests for the tachyon WebSocket error model.
-//!
-//! Every behavioral change needs a focused regression test here, named
-//! `<Area>: <behavior>`, per CODING_CONVENTION.md section 9.
 
 const std = @import("std");
 const zslay = @import("zslay");
