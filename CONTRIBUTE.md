@@ -9,9 +9,10 @@ How to set up, develop, test, commit, and release tachyon. For architecture see
 The repository currently contains the environment, documentation, agent
 rules, skill pack, and Zig package bootstrap. `build.zig` defines the public
 module, static library, test, and check steps; `src/root.zig` exposes the
-pinned zslay codec. Frame and connection modules are not implemented yet. The
-library commands below describe the project workflow and work against the
-current bootstrap.
+pinned zslay codec, the frame facade, and the error model. `src/frame.zig`
+implements the frame facade. Connection, fragmentation, handshake, upgrade,
+and split modules are not implemented yet. The library commands below describe
+the project workflow and work against the current tree.
 
 ## Local Setup
 

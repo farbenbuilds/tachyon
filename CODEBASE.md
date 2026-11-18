@@ -25,8 +25,12 @@ documentation foundation:
 - `build.zig` and `build.zig.zon` define the public `tachyon` module, the
   `libtachyon.a` static library, Debug and ReleaseSafe test steps, the `check`
   step, and the pinned zslay dependency.
-- `src/root.zig` is the module entry point; it re-exports zslay and the
-  WebSocket error model.
+- `src/root.zig` is the module entry point; it re-exports zslay, the frame
+  facade, and the WebSocket error model.
+- `src/frame.zig` implements the frame facade: `Frame`, `Payload`, the `OpCode`
+  and `CloseCode` aliases with conversions, `unmask`/`unmask_at` delegations,
+  the header-length bridge, `std.Io.Writer` vectored writes, and caller-buffer
+  writes.
 - `src/error.zig` implements the fastwebsockets 0.10.0 error taxonomy, zslay
   boundary normalization, `std.Io` reader/writer/stream mappings, the status
   out-parameter helper, and the close-code policy.
@@ -40,9 +44,9 @@ documentation foundation:
 - The root guides, shared skill pack, graphify integration, agent definitions,
   `.github` metadata, and project banner document and support the project.
 
-The frame, connection, fragmentation, handshake, upgrade, and split modules are
-not implemented yet. The test suite covers the dependency boundary and the
-error model.
+The connection, fragmentation, handshake, upgrade, and split modules are not
+implemented yet. The test suite covers the dependency boundary, the error model,
+and the frame facade.
 
 ## Target Runtime Flow
 
@@ -55,6 +59,12 @@ masking-key consistency. Callers either set `FrameHeader.payload_len` with
 `zslay.frame.length_marker` or use `zslay.Conn.prepare_frame`, which validates
 the payload rules and serializes the header. `queue_frame` is the call that
 enforces fragment order and queue capacity; preparing a frame alone does not.
+
+`Frame.writev` serializes the header into a stack buffer and drains header and
+payload with one `std.Io.Writer.writeVecAll`, which retries partial writes so
+neither byte range is dropped. `Frame.write` copies the header and payload into
+a caller-owned buffer and returns the written slice, rejecting a short buffer
+with `BufferTooShort`. Neither path allocates.
 
 ### Frame masking
 
@@ -140,8 +150,9 @@ Using the `Conn` transmit path adds ping/pong preemption, `QueueFull`,
 outgoing fragment-order and size checks, and close-payload validation. Those are
 deliberate hardening beyond fastwebsockets 0.10.0. A close write is terminal for
 data writes, but repeated close writes are still serialized, matching upstream.
-Raw `encode_header` does not validate a close payload; always send close frames
-through `prepare_frame` and `queue_frame`.
+Raw `encode_header` does not validate a close payload; `Frame.write` and
+`Frame.writev` do not either. Always send close frames through `prepare_frame`
+and `queue_frame`.
 
 ### Handshake and upgrade
 
@@ -175,7 +186,7 @@ half.
 | File | Purpose |
 | --- | --- |
 | `src/root.zig` | Public module entry point and re-exports. |
-| `src/frame.zig` | `Frame`, `Payload`, `OpCode` alias, `CloseCode` alias and one-line conversions, `unmask`/`unmask_at`, and the header-length bridge. |
+| `src/frame.zig` | `Frame` facade, `Payload`, `OpCode`/`CloseCode` aliases and conversions, masking delegates, header-length bridge, and write paths. |
 | `src/utf8.zig` | Planned extension: incremental zero-allocation UTF-8 validation for text messages. |
 | `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
 | `src/backpressure.zig` | Planned extension: byte/frame watermarks and admission policy over zslay's bounded queue. |
@@ -211,12 +222,12 @@ of these modules.
 
 | fastwebsockets | tachyon | Status |
 | --- | --- | --- |
-| `Frame` | `Frame` facade over zslay headers | Target |
-| `OpCode` | `OpCode` alias of `zslay.Opcode` | Reuse |
-| `Payload` | `Payload` (caller-owned slice) | Target |
-| `CloseCode` | `CloseCode` alias of `zslay.StatusCode` plus one-line conversions | Reuse |
+| `Frame` | `Frame` facade over zslay headers | Implemented |
+| `OpCode` | `OpCode` alias of `zslay.Opcode` | Implemented (alias) |
+| `Payload` | `Payload` (caller-owned slice) | Implemented |
+| `CloseCode` | `CloseCode` alias of `zslay.StatusCode` plus one-line conversions | Implemented (alias) |
 | `WebSocketError` | `WebSocketError`, mapped from `zslay.Error` | Implemented |
-| `unmask` | `unmask` wrapper over `zslay.mask` | Reuse |
+| `unmask` | `unmask` wrapper over `zslay.mask` | Implemented (delegation) |
 | `Role` | `Role` alias or mapping of `zslay.EndpointRole` | Reuse with connection layer |
 | `WebSocket` | `WebSocket` wrapping `zslay.Conn` | Planned |
 | `FragmentCollector` | `FragmentCollector` over zslay fragment state | Planned |
@@ -278,7 +289,7 @@ These differences are deliberate and must stay visible in tests and reviews:
 | Topic | fastwebsockets 0.10.0 | tachyon with zslay |
 | --- | --- | --- |
 | Close taxonomy and names | `CloseCode` uses PascalCase and preserves `Bad`, `Reserved`, `Iana`, and `Library` variants | `CloseCode` aliases `zslay.StatusCode` (snake_case, non-exhaustive); unknown values round-trip through `u16`. Add named constants if parity requires them; do not add a second range table. |
-| Close code 1014 | `CloseCode::from(1014)` produces `Bad(1014)`, so `is_allowed` rejects it | `is_valid_close_code` accepts 1014; tachyon follows RFC 6455/IANA and accepts it |
+| Close code 1014 | `CloseCode::from(1014)` produces `Bad(1014)`, so `is_allowed` rejects it | `is_valid_close_code` accepts 1014; tachyon follows the IANA registry and accepts it |
 | Inbound close validation and echo | With `auto_close` on, an invalid code returns `InvalidCloseCode` and obligates `close(1002, reason)`; a valid close returns the frame and obligates an exact-payload echo. With `auto_close` off, code and UTF-8 are unchecked and a 1-byte close is delivered. | `decode_header` always rejects one-byte and extended/oversized control payloads. tachyon checks reason UTF-8 first, then uses zslay's code predicate and validator, and synthesizes both the 1002 reply and the valid raw echo. Never echo unvalidated reason bytes. |
 | Close error precedence | Invalid UTF-8 is checked before code allowance | `zslay.validate_close_payload` checks code before UTF-8. tachyon performs the UTF-8 check first at the policy boundary, then applies zslay's code predicate, so the error and reply order match fastwebsockets. |
 | Control-frame length | Ping above 125 bytes is rejected explicitly; close and pong lengths are not checked there | Any control frame with an extended-length marker or payload above 125 bytes is rejected |
@@ -286,6 +297,12 @@ These differences are deliberate and must stay visible in tests and reviews:
 | Maximum message size | Per frame with `payload_len >= max_message_size`, so equality is rejected; fragment totals are not summed; a configured zero maximum rejects empty frames | Clamp to `zslay.MaxPayloadLen`, set `max_frame_len` to `max_message_size - 1` when nonzero, and reject every frame when the maximum is zero. `Conn` still owns the accounting; `max_message_len` adds cumulative hardening. |
 | Masking direction | Not enforced on read or write; `auto_apply_mask` controls application, so a client with it disabled writes an unmasked frame | `Conn` always requires client-to-server masked and server-to-client unmasked frames; client writes with auto-mask disabled fail with `PayloadNotMasked` |
 | Mask application | Client masks writes and server unmasks reads when `auto_apply_mask` is on | `Conn` validates direction and exposes key/offset but never XORs; tachyon calls `zslay.mask` with the running offset |
+| Frame construction | `Frame::new` accepts a mask and assumes the payload already matches it | `Frame.init` uses the same contract; `Frame.mask(key)` is the safe path for plaintext payloads and asserts the frame is unmasked |
+| Mask key generation | `Frame::mask()` draws a random key when the frame has none | `Frame.mask(key)` requires a caller-supplied key; randomness belongs to the connection or handshake boundary |
+| Unmask state | `Frame::unmask` leaves the mask key set, so a second call masks the payload again | `Frame.unmask` applies the stored key once and clears it, so it is idempotent |
+| Header formatting failure | `Frame::fmt_head` panics when the head buffer is too short | `Frame.fmt_head` returns `zslay.Error`, including `BufferTooShort` |
+| Frame write target | `Frame::write` grows a `Vec`; `Frame::writev` takes an `AsyncWriteExt` stream | `Frame.write` needs a caller buffer and returns `BufferTooShort`; `Frame.writev` takes `*std.Io.Writer` |
+| Facade close writes | `write_frame` sends the close payload without code or UTF-8 validation | `Frame.write` and `Frame.writev` encode any close payload; send close frames through `prepare_frame` and `queue_frame` |
 | Ping delivery | `auto_pong` on suppresses the ping from the application and queues a pong; off delivers it | `Conn` always emits the ping; tachyon must suppress and queue the pong when `auto_pong` is on |
 | Transmit validation and queue | No close/code/UTF-8 validation, fragment-order or size checks, or control-FIN rejection; repeated close writes are sent again | `prepare_frame` and `queue_frame` add validation, ping/pong preemption, and `QueueFull`; repeated close writes are still serialized |
 | Read after close | After a close write, non-close reads return `ConnectionClosed`; the peer close frame remains deliverable | `Conn` has no closed flag; tachyon tracks it and gates both reads and writes |
