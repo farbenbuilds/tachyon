@@ -84,9 +84,23 @@ with that module and is not defined yet.
 ## graphify
 
 Graphify is installed for OpenCode at `.opencode/skills/graphify/` with the
-reminder plugin at `.opencode/plugins/graphify.js`. Codex uses
-`.codex/skills/graphify/` and `.codex/hooks.json`. Install graphify as a host
-tool if the user wants a knowledge graph.
+reminder plugin at `.opencode/plugins/graphify.js`, for Codex at
+`.codex/skills/graphify/` with `.codex/hooks.json`, for Claude Code at
+`.claude/skills/graphify/` with `.claude/settings.json` hooks, and for Google
+Antigravity at `.agents/skills/graphify/` with `.agents/rules/graphify.md` and
+`.agents/workflows/graphify.md`. Every agent definition loads `graphify`.
+Platform setup references: [OpenCode](https://graphify.com/integrations/opencode),
+[Claude Code](https://graphify.com/integrations/claude-code),
+[Codex](https://graphify.com/integrations/codex), and
+[Google Antigravity](https://graphify.com/integrations/google-antigravity).
+Install graphify as a host tool if the user wants a knowledge graph, then
+refresh the checked-in integrations:
+
+```sh
+uv tool install graphifyy
+sh scripts/install_graphify_integrations.sh
+sh scripts/check_graphify_integrations.sh
+```
 
 When `graphify-out/graph.json` exists, query it before broad source reads:
 
@@ -94,10 +108,13 @@ When `graphify-out/graph.json` exists, query it before broad source reads:
 graphify query "<question>"
 graphify path "<A>" "<B>"
 graphify explain "<concept>"
+graphify affected "<node>"
+graphify god-nodes
 graphify update .
 ```
 
-`graphify-out/` is generated and gitignored. Do not edit or commit it by hand.
+Pass the graph-first rule into every subagent prompt. `graphify-out/` is
+generated and gitignored. Do not edit or commit it by hand.
 
 ## Adding a Skill or Agent
 

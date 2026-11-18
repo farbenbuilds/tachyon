@@ -463,8 +463,11 @@ Build files:
 - `.agents/agents/`, `.opencode/agents/`, and `.codex/agents/` hold the matching
   agent definitions.
 - `.codex/TEAM_WORKFLOW.md` defines the Codex team procedure.
-- `.opencode/` and `.codex/` hold the graphify skill copies, plugin, hooks, and
-  client configuration.
+- `.opencode/`, `.codex/`, and `.claude/` hold the graphify skill copies,
+  plugin, hooks, and client configuration. `.agents/rules/` and
+  `.agents/workflows/` hold the Google Antigravity integration.
+- `scripts/install_graphify_integrations.sh` refreshes the four integrations;
+  `scripts/check_graphify_integrations.sh` is the pre-commit consistency gate.
 - `misc/tachyon-banner.png` is the README banner asset.
 - `.github/` holds the pull request template, commit convention, code of
   conduct, issue forms, and funding metadata.

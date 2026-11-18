@@ -26,3 +26,9 @@ repos:
         language: system
         files: ^build\.zig\.zon$
         pass_filenames: false
+      - id: graphify-integrations
+        name: graphify integrations
+        entry: sh scripts/check_graphify_integrations.sh
+        language: system
+        files: ^(AGENTS\.md|CLAUDE\.md|\.agents/.*|\.claude/.*|\.codex/.*|\.opencode/.*|scripts/(install|check)_graphify_integrations\.sh)$
+        pass_filenames: false

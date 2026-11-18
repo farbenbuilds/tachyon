@@ -32,6 +32,17 @@ the project rules in `AGENTS.md`, `AGENT_DIRECTORY.md`, and
 `CODING_CONVENTION.md`. Report commands and their actual outcomes; never claim
 checks that were not run.
 
+## Graphify
+
+When `graphify-out/graph.json` exists, each phase starts codebase questions with
+`graphify query "<question>"` before broad grep or source reads. Use
+`graphify path` and `graphify explain` for relationships and concepts, and
+`graphify affected` and `graphify god-nodes` for impact and hubs. The architect
+passes this rule into every worker prompt. The developer runs `graphify update .`
+after code changes. The reviewer confirms graph use and freshness before
+reporting ready for integration. If the graph is missing or stale, say so and
+fall back to source reads.
+
 Architecture work may use `codebase-design`,
 `improve-codebase-architecture`, `domain-modeling`, and `grilling`; the
 architect owns the vocabulary and the plan. Reviewers may add
