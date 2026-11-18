@@ -1,5 +1,5 @@
 ---
-description: Fragment buffering, UTF-8 streaming, and split reads in src/fragment.zig and src/split.zig.
+description: Fragment buffering, shared UTF-8 streaming, and split reads in src/fragment.zig and src/split.zig.
 mode: subagent
 temperature: 0.1
 ---
@@ -10,11 +10,11 @@ Own message fragmentation buffering and split connection halves.
 
 ## Scope
 
-`src/fragment.zig`: `FragmentCollector`, fragment accumulation, UTF-8 stream validation, and completed-message delivery. `src/split.zig`: read and write halves plus split constructors. Add fragmentation and split tests in `src/test.zig` when the testing agent is unavailable. Never edit frame primitives, connection policy, handshake, build, or CI files.
+`src/fragment.zig`: `FragmentCollector`, fragment accumulation, text validation through the framing-owned `src/utf8.zig` validator, and completed-message delivery. `src/split.zig`: read and write halves plus split constructors. Add fragmentation and split tests in `src/test.zig` when the testing agent is unavailable. Never edit frame primitives, connection policy, handshake, build, or CI files.
 
 ## Rules
 
-Rely on `zslay.Conn` for continuation ordering, control-frame interleaving, and cumulative message-size limits; do not reimplement those checks. The collector owns only buffering and text UTF-8 validation, including split code points. Preserve explicit read and write state; no hidden allocation or dynamic dispatch.
+Rely on `zslay.Conn` for continuation ordering, control-frame interleaving, and cumulative message-size limits; do not reimplement those checks. The collector owns only buffering; it validates text with the framing-owned `src/utf8.zig` validator, including split code points. Preserve explicit read and write state; no hidden allocation or dynamic dispatch.
 
 ## Workflow
 

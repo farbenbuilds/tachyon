@@ -8,6 +8,7 @@
 const std = @import("std");
 const zslay = @import("zslay");
 const errors = @import("error.zig");
+const utf8 = @import("utf8.zig");
 
 /// Caller-owned mutable payload bytes, so masking can happen in place.
 pub const Payload = []u8;
@@ -86,10 +87,14 @@ pub const Frame = struct {
     /// Validates the payload bytes; the caller decides whether the opcode makes
     /// UTF-8 meaningful, matching the raw-frame contract.
     ///
-    /// Call this after `unmask`; masked bytes are ciphertext and are not a
-    /// meaningful UTF-8 stream.
+    /// Returns false for a masked frame: a caller must unmask first, because
+    /// masked bytes are ciphertext and are not a meaningful UTF-8 stream. Never
+    /// validate a non-FIN fragment in isolation, because a code point may span
+    /// fragments; use the incremental validator for a message assembled across
+    /// frames.
     pub fn is_utf8(self: *const Frame) bool {
-        return std.unicode.utf8ValidateSlice(self.payload);
+        if (self.masking_key != null) return false;
+        return utf8.is_valid(self.payload);
     }
 
     /// Stores `key` and masks the payload in place at byte offset zero.
