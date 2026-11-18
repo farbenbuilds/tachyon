@@ -12,12 +12,20 @@ Matching definitions exist for every role:
 | `.opencode/agents/team/<name>.md` | OpenCode architect, developer, reviewer, and integrator roles. |
 | `.codex/agents/<name>.toml` | Codex project agents. |
 | `.codex/TEAM_WORKFLOW.md` | Codex team procedure and handoff contract. |
-| `.agents/skills/<name>/SKILL.md` | Shared project skills, pinned in `skills-lock.json`. |
+| `.agents/skills/<name>/SKILL.md` | Shared project skills pinned in `skills-lock.json`, plus the Antigravity graphify copy. |
 | `.opencode/skills/graphify/` | Graphify skill for OpenCode. |
 | `.opencode/plugins/graphify.js` | OpenCode graph reminder plugin. |
 | `.codex/skills/graphify/` | Graphify skill for Codex. |
 | `.codex/hooks.json` | Codex graphify hook. |
 | `.codex/config.toml` | Codex multi-agent configuration. |
+| `.claude/skills/graphify/` | Graphify skill for Claude Code. |
+| `.claude/settings.json` | Claude Code graphify PreToolUse hooks. |
+| `.claude/CLAUDE.md` | Claude Code project skill registration. |
+| `.agents/skills/graphify/` | Graphify skill for Google Antigravity. |
+| `.agents/rules/graphify.md` | Antigravity always-on graphify rule. |
+| `.agents/workflows/graphify.md` | Antigravity graphify workflow. |
+| `scripts/install_graphify_integrations.sh` | Refresh all four project-scoped integrations. |
+| `scripts/check_graphify_integrations.sh` | Verify integration files and version parity. |
 | `AGENTS.md`, `CLAUDE.md` | Canonical agent rules and the Claude Code entry point. |
 | `SKILL.md` | Human-readable skill summary. |
 
@@ -63,13 +71,13 @@ created.
 
 ## Current Change Ownership
 
-This documentation change owns `CODEBASE.md`, `AGENTS.md`,
-`AGENT_DIRECTORY.md`, `README.md`, `CHANGELOG.md`, `CODING_CONVENTION.md`,
-`CONTRIBUTE.md`, `SECURITY.md`, `THIRD_PARTY_NOTICES.md`, `SKILL.md`, and the
-matching framing, connection, and fragments agent definitions. The roots stay
-aligned with the zslay boundary and extension roadmap in `CODEBASE.md`. An
-independent read-only review pass checks links, scope, and consistency with the
-target architecture.
+This agent-tooling change owns `.agents/agents/`, `.opencode/agents/`,
+`.codex/agents/`, `.codex/TEAM_WORKFLOW.md`, the OpenCode, Codex, Claude Code,
+and Antigravity graphify integration files, `scripts/install_graphify_integrations.sh`,
+`scripts/check_graphify_integrations.sh`, `.pre-commit-config.yaml`,
+`.gitattributes`, and the root guides. The roots stay aligned with the zslay
+boundary and extension roadmap in `CODEBASE.md`. An independent read-only review
+pass checks links, scope, and consistency with the target architecture.
 
 ## Delivery Rules
 
@@ -130,13 +138,20 @@ zig build test --summary all
 | `herdr` | architect, developer, integrator |
 | `graphify` | every code-exploration role |
 
-Graphify is installed for OpenCode and Codex under their platform skill folders.
-agy runs the `graphify` CLI directly.
+Graphify is installed for OpenCode, Codex, Claude Code, and Google Antigravity
+under their platform skill and instruction surfaces. OpenCode loads the plugin,
+Codex and Claude Code run their hook entries, and Antigravity reads the
+always-on rule and workflow. Every agent definition loads `graphify` and must
+pass the graph-first rule into subagent prompts. Refresh with
+`scripts/install_graphify_integrations.sh` and verify with
+`scripts/check_graphify_integrations.sh`.
 
 ## graphify
 
 When `graphify-out/graph.json` exists, codebase questions start with
 `graphify query "<question>"` before broad grep or source reads. Use
-`graphify path` and `graphify explain` for relationships and concepts. Refresh
-with `graphify update .` after code changes. `graphify-out/` is generated and
-gitignored.
+`graphify path` and `graphify explain` for relationships and concepts, and
+`graphify affected` and `graphify god-nodes` for impact and hubs. Every
+architect, developer, reviewer, and integrator handoff carries that rule.
+Refresh with `graphify update .` after code changes. `graphify-out/` is
+generated and gitignored.

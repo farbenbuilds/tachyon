@@ -1,5 +1,6 @@
 # Keep vendored agent tooling out of GitHub language statistics.
 .agents/** linguist-vendored
+.claude/** linguist-vendored
 .codex/** linguist-vendored
 .opencode/** linguist-vendored
 

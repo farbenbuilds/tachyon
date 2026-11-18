@@ -129,10 +129,12 @@ The canonical rules are in [AGENTS.md](AGENTS.md); the roster is in
 [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md). Matching definitions live in
 `.agents/agents/`, `.opencode/agents/`, and `.codex/agents/`; Codex also reads
 `.codex/TEAM_WORKFLOW.md`. Shared skills live in `.agents/skills/` and are
-pinned by `skills-lock.json`. Graphify is installed for OpenCode under
-`.opencode/skills/graphify/` with its plugin at `.opencode/plugins/graphify.js`,
-and for Codex under `.codex/skills/graphify/` with its hook at
-`.codex/hooks.json`.
+pinned by `skills-lock.json`. Graphify is installed for OpenCode, Codex, Claude
+Code, and Google Antigravity. Refresh the checked-in skills, plugins, hooks,
+rules, and workflows with `sh scripts/install_graphify_integrations.sh`, then
+verify them with `sh scripts/check_graphify_integrations.sh`. Every agent
+definition loads `graphify` and passes the graph-first rule into subagent
+prompts.
 
 For multi-part work, follow the architect -> developer -> reviewer -> integrator
 sequence. The reviewer is read-only. The integrator verifies the combined diff

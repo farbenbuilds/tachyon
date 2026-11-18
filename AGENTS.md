@@ -38,9 +38,10 @@ and documentation foundation:
 - `.pre-commit-config.yaml` holds the hygiene and formatting hooks.
 - `.agents/skills/` holds the shared skill pack and `.agents/agents/` holds the
   agy agent definitions.
-- `.opencode/` and `.codex/` hold the matching OpenCode and Codex agent
-  definitions, the platform-specific graphify integration, and client
-  configuration.
+- `.opencode/`, `.codex/`, and `.claude/` hold the matching OpenCode, Codex,
+  and Claude Code definitions and platform-specific graphify skills, plugins,
+  hooks, and settings. `.agents/rules/` and `.agents/workflows/` carry the
+  Google Antigravity graphify integration.
 - The root Markdown guides define the architecture and process.
 
 The test suite covers only the dependency boundary. Do not describe the frame,
@@ -97,10 +98,13 @@ Current files:
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
 | `scripts/update_zon_files.sh` | Regenerates `build.zig.zon.nix`, `.json`, and `.txt` with zon2nix. |
-| `.agents/skills/`, `skills-lock.json` | Shared skill pack and lock file. |
+| `.agents/skills/`, `skills-lock.json` | Shared skill pack, lock file, and the Antigravity graphify skill copy. |
 | `.agents/agents/`, `.opencode/agents/`, `.codex/agents/` | Matching agent definitions for agy, OpenCode, and Codex. |
+| `.agents/rules/`, `.agents/workflows/` | Google Antigravity graphify always-on rules and workflow. |
 | `.codex/TEAM_WORKFLOW.md` | Codex team procedure and handoff contract. |
-| `.opencode/`, `.codex/` | Graphify skill copies, hooks, and client configuration. |
+| `.opencode/`, `.codex/`, `.claude/` | Graphify skill copies, plugins, hooks, and client configuration. |
+| `scripts/install_graphify_integrations.sh` | Refreshes the four project-scoped graphify integrations. |
+| `scripts/check_graphify_integrations.sh` | Pre-commit gate for graphify skill, hook, and agent wiring consistency. |
 | `.gitattributes` | Linguist rules for agent tooling, generated output, docs, and `.zon` files. |
 | `.gitignore` | Nix, Zig, build, graph, and editor output. |
 | `README.md`, root `*.md` | Banner, architecture, contributor, security, release, and agent guides. |
@@ -311,9 +315,13 @@ server unless the user asked.
 ## Skills
 
 The shared skill pack lives in `.agents/skills/` and is pinned by
-`skills-lock.json`. Graphify has platform copies under `.opencode/skills/` and
-`.codex/skills/`, with the OpenCode plugin at `.opencode/plugins/graphify.js`
-and the Codex hook at `.codex/hooks.json`. [SKILL.md](SKILL.md) is the
+`skills-lock.json`. Graphify has platform copies under `.opencode/skills/`,
+`.codex/skills/`, `.claude/skills/`, and `.agents/skills/`, with the OpenCode
+plugin at `.opencode/plugins/graphify.js`, the Codex hook at
+`.codex/hooks.json`, the Claude Code hooks at `.claude/settings.json`, and the
+Antigravity rules and workflow under `.agents/rules/` and `.agents/workflows/`.
+Refresh them with `scripts/install_graphify_integrations.sh`; verify them with
+`scripts/check_graphify_integrations.sh`. [SKILL.md](SKILL.md) is the
 human-readable catalog; [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md) maps skills to
 owners.
 
@@ -331,10 +339,14 @@ and this document in sync when adding or removing a skill.
 
 ## graphify
 
-A knowledge graph may be generated under `graphify-out/`, which is gitignored.
-When `graphify-out/graph.json` exists, run `graphify query "<question>"` before
-the first broad grep, search, or source read for a codebase question, and put
-that rule in every subagent prompt that explores code. Use
-`graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"`
-for focused concepts. After code changes, run `graphify update .` to refresh the
-graph. Do not commit `graphify-out/`.
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+
+Rules:
+- When graphify-out/graph.json exists, run `graphify query "<question>"` before your first grep, search or source-file read for a codebase question, and put this rule in every subagent prompt that explores code. Read raw files only for lines the graph or an earlier read already located. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.

@@ -23,8 +23,10 @@ This project follows semantic versioning.
 - Shared skill pack for Zig 0.17.1, TigerStyle, testing, Nix, architecture,
   review, `untangle-codebase`, agents, and graphify, pinned by
   `skills-lock.json`.
-- Graphify integration for OpenCode and Codex, including skill copies, the
-  OpenCode plugin, and the Codex hook.
+- Graphify integration for OpenCode, Codex, Claude Code, and Google
+  Antigravity, including platform skills, the OpenCode plugin, Codex and Claude
+  Code hooks, Antigravity rules and workflow, and reproducible install and
+  check scripts.
 - `.github` contribution metadata: pull request template, commit convention,
   code of conduct, issue forms, and funding configuration.
 - `CLAUDE.md` entry point that imports the canonical `AGENTS.md` rules.
@@ -45,6 +47,9 @@ This project follows semantic versioning.
   masking, raw fragment order, and handshake verification. Removed
   `src/close.zig` and `src/mask.zig` from the target layout in favor of aliases
   and one-line delegates in `src/frame.zig`.
+- Every agent definition now loads `graphify` and carries a graph-first rule
+  covering `query`, `path`, `explain`, `affected`, `god-nodes`, subagent prompt
+  propagation, and `graphify update .` after code changes.
 - Corrected the `CODING_CONVENTION.md` header example to use zslay's length
   marker instead of copying the raw payload length into `FrameHeader`.
 - Added the post-parity extension roadmap: backpressure, streaming messages,
