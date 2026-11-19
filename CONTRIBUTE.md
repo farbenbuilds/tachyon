@@ -6,13 +6,14 @@ How to set up, develop, test, commit, and release tachyon. For architecture see
 
 ## Repository Scope
 
-The repository currently contains the environment, documentation, agent
-rules, skill pack, and Zig package bootstrap. `build.zig` defines the public
-module, static library, test, and check steps; `src/root.zig` exposes the
-pinned zslay codec, the frame facade, the UTF-8 validator, the error model,
-and the fragment accumulator and collector. `src/frame.zig` implements the
-frame facade, and `src/fragment.zig` implements the read-side fragment layer.
-Connection, handshake, upgrade, and split modules are not implemented yet. The
+The repository contains the environment, documentation, agent rules, skill
+pack, and Zig package. `build.zig` defines the public module, static library,
+test, and check steps; `src/root.zig` exposes the pinned zslay codec, the frame
+facade, the UTF-8 validator, the error model, the fragment accumulator and
+collector, and the connection layer. `src/frame.zig` implements the frame
+facade, `src/fragment.zig` implements the read-side fragment layer, and
+`src/connection.zig` implements the role-aware `WebSocket` policy over one
+`zslay.Conn`. Handshake, upgrade, and split modules are not implemented yet. The
 library commands below describe the project workflow and work against the
 current tree.
 
@@ -63,13 +64,15 @@ from it; see [AGENTS.md](AGENTS.md).
 
 Tests use the built-in Zig test runner. The bootstrap dependency test lives in
 `src/root.zig`; protocol tests live in `src/test.zig`, including the fragment
-accumulator and collector tests. The test step runs
-the suite twice, once with Debug safety and once with ReleaseSafe, so overflow
-and bounds behavior in release mode is exercised before review.
+accumulator and collector tests and the connection policy, mask, limit, close,
+vectored-write, and failure-latch tests. The test step runs the suite twice,
+once with Debug safety and once with ReleaseSafe, so overflow and bounds
+behavior in release mode is exercised before review.
 
 There is no numeric coverage target. Changed behavior needs a focused test,
-including malformed input and length boundaries. The connection layer adds
-Autobahn and fuzz suites; do not claim compliance before those suites pass.
+including malformed input and length boundaries. Autobahn, fuzz, and loopback
+echo suites remain planned; the connection layer has unit coverage only. Do not
+claim compliance before those suites pass.
 
 ## Pre-commit Hooks
 

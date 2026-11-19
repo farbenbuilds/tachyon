@@ -23,6 +23,7 @@ Security-relevant areas include:
 
 - frame header and extended-length parsing,
 - masking direction and key handling,
+- connection policy, close replies, and client mask-key sources,
 - fragmentation and message-size accounting,
 - close-code and UTF-8 reason validation,
 - incremental UTF-8 validation of text messages across frame boundaries,
@@ -58,6 +59,9 @@ public disclosure. Credit is given to reporters who request it.
 
 - Treat all peer-controlled lengths and opcodes as untrusted.
 - Keep the frame and connection hot paths free of allocation.
+- Seed client mask keys from a uniform, secret source in production. A
+  deterministic seed is only for tests and reproducible harnesses. The
+  connection never reads ambient randomness, so the caller owns seed sourcing.
 - Do not log payload bytes.
 - Add a regression test with every security fix.
 - Do not silence a safety check or weaken a bound to make a test pass.

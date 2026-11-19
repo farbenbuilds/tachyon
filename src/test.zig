@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const zslay = @import("zslay");
+const connection = @import("connection.zig");
 const errors = @import("error.zig");
 const fragment = @import("fragment.zig");
 const frame = @import("frame.zig");
@@ -2291,4 +2292,2046 @@ test "FragmentCollector: invalid UTF-8 close reasons pass through unvalidated" {
     // validation belongs to the connection layer, not the collector.
     try std.testing.expect(!utf8.is_valid(close.payload[2..]));
     try std.testing.expect(collector.is_at_wire_boundary());
+}
+
+/// Copies the first `limit` bytes of `data` (with `splat` repetition) to `out`.
+///
+/// Drain implementations share this so their offsets stay in wire order and a
+/// partial accept is never rewound.
+fn copy_wire_bytes(
+    out: []u8,
+    written: *usize,
+    data: []const []const u8,
+    splat: usize,
+    limit: usize,
+) void {
+    var remaining = limit;
+    for (data[0 .. data.len - 1]) |bytes| {
+        if (remaining == 0) return;
+        const take = @min(remaining, bytes.len);
+        @memcpy(out[written.*..][0..take], bytes[0..take]);
+        written.* += take;
+        remaining -= take;
+    }
+
+    const pattern = data[data.len - 1];
+    var copies: usize = 0;
+    while (copies < splat and remaining != 0) : (copies += 1) {
+        const take = @min(remaining, pattern.len);
+        @memcpy(out[written.*..][0..take], pattern[0..take]);
+        written.* += take;
+        remaining -= take;
+    }
+}
+
+/// Test-only writer that records wire bytes, drain shape, and failure controls.
+///
+/// A zero-capacity internal buffer forces every write through `drain`, so
+/// `max_iovecs` observes the actual caller slices instead of a copy into the
+/// writer buffer. `fail_after` counts accepted bytes; a failed drain still
+/// records the bytes it accepted before returning `error.WriteFailed`.
+const RecordingVecWriter = struct {
+    writer: std.Io.Writer,
+    out: []u8,
+    written: usize = 0,
+    drain_calls: usize = 0,
+    max_iovecs: usize = 0,
+    fail_after: ?usize = null,
+
+    fn init(out: []u8) RecordingVecWriter {
+        return .{
+            .writer = .{
+                .vtable = &.{
+                    .drain = drain,
+                    .flush = std.Io.Writer.noopFlush,
+                    .rebase = std.Io.Writer.failingRebase,
+                },
+                .buffer = &.{},
+            },
+            .out = out,
+        };
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *RecordingVecWriter = @alignCast(@fieldParentPtr("writer", w));
+        std.debug.assert(w.end == 0);
+        std.debug.assert(data.len > 0);
+        self.drain_calls += 1;
+
+        var nonempty: usize = 0;
+        for (data[0 .. data.len - 1]) |bytes| {
+            if (bytes.len != 0) nonempty += 1;
+        }
+        if (splat != 0 and data[data.len - 1].len != 0) nonempty += 1;
+        self.max_iovecs = @max(self.max_iovecs, nonempty);
+
+        const total = std.Io.Writer.countSplat(data, splat);
+        var accept = total;
+        var partial_failure = false;
+        if (self.fail_after) |limit| {
+            if (self.written >= limit) return error.WriteFailed;
+            const room = limit - self.written;
+            if (total > room) {
+                accept = room;
+                partial_failure = true;
+            }
+        }
+
+        std.debug.assert(self.written + accept <= self.out.len);
+        copy_wire_bytes(self.out, &self.written, data, splat, accept);
+
+        if (partial_failure) return error.WriteFailed;
+        return total;
+    }
+};
+
+/// Test-only buffered writer that fails its flush on demand.
+///
+/// Small writes stay in `writer.buffer` until `flush`, which is the case the
+/// connection's flush latch must cover.
+const FlushFailWriter = struct {
+    writer: std.Io.Writer,
+    out: []u8,
+    written: usize = 0,
+    fail_flush: bool = true,
+    flush_calls: usize = 0,
+
+    fn init(out: []u8, buffer: []u8) FlushFailWriter {
+        return .{
+            .writer = .{
+                .vtable = &.{
+                    .drain = drain,
+                    .flush = flush,
+                    .rebase = std.Io.Writer.failingRebase,
+                },
+                .buffer = buffer,
+            },
+            .out = out,
+        };
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *FlushFailWriter = @alignCast(@fieldParentPtr("writer", w));
+        const total = std.Io.Writer.countSplat(data, splat);
+
+        std.debug.assert(self.written + total <= self.out.len);
+        copy_wire_bytes(self.out, &self.written, data, splat, total);
+        return total;
+    }
+
+    fn flush(w: *std.Io.Writer) std.Io.Writer.Error!void {
+        const self: *FlushFailWriter = @alignCast(@fieldParentPtr("writer", w));
+        self.flush_calls += 1;
+        if (self.fail_flush) return error.WriteFailed;
+
+        const buffered = w.buffer[0..w.end];
+        std.debug.assert(self.written + buffered.len <= self.out.len);
+        @memcpy(self.out[self.written..][0..buffered.len], buffered);
+        self.written += buffered.len;
+        w.end = 0;
+    }
+};
+
+/// One decoded frame from a caller-owned wire buffer.
+const WireFrame = struct {
+    header: zslay.DecodedHeader,
+    payload: []const u8,
+    consumed: usize,
+};
+
+/// Parses the frame starting at `index` and advances past it.
+fn next_wire_frame(bytes: []const u8, index: *usize) !WireFrame {
+    const header = try zslay.decode_header(bytes[index.*..]);
+    const payload_start = index.* + header.header_len;
+    const payload_len = std.math.cast(usize, header.payload_len) orelse return error.UnexpectedEOF;
+    if (payload_len > bytes.len - payload_start) return error.UnexpectedEOF;
+
+    const consumed = header.header_len + payload_len;
+    index.* += consumed;
+    return .{
+        .header = header,
+        .payload = bytes[payload_start..][0..payload_len],
+        .consumed = consumed,
+    };
+}
+
+/// Caller-owned connection storage plus a recording writer.
+fn ConnectionRig(
+    comptime frame_capacity: usize,
+    comptime node_count: usize,
+    comptime write_capacity: usize,
+    comptime close_capacity: usize,
+    comptime scratch_capacity: usize,
+    comptime out_capacity: usize,
+) type {
+    return struct {
+        frame_buffer: [frame_capacity]u8 = undefined,
+        tx_nodes: [node_count]zslay.FrameNode = undefined,
+        write_buffer: [write_capacity]u8 = undefined,
+        close_buffer: [close_capacity]u8 = undefined,
+        mask_scratch: [scratch_capacity]u8 = undefined,
+        out: [out_capacity]u8 = undefined,
+        writer: RecordingVecWriter = undefined,
+        ws: connection.WebSocket = undefined,
+
+        const Self = @This();
+
+        fn init(self: *Self, reader: *std.Io.Reader, config: connection.Config) !void {
+            self.writer = RecordingVecWriter.init(&self.out);
+            self.ws = try connection.WebSocket.init(reader, &self.writer.writer, .{
+                .frame_buffer = &self.frame_buffer,
+                .tx_nodes = &self.tx_nodes,
+                .write_buffer = &self.write_buffer,
+                .close_buffer = &self.close_buffer,
+                .mask_scratch = &self.mask_scratch,
+            }, config);
+        }
+
+        fn bytes(self: *const Self) []const u8 {
+            return self.out[0..self.writer.written];
+        }
+    };
+}
+
+test "WebSocket: client masks outbound frames and server reads them back" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x42);
+    var empty = std.Io.Reader.fixed("");
+    var client: ConnectionRig(64, 2, 64, 8, 0, 64) = .{};
+    try client.init(&empty, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    var payload = [_]u8{ 'h', 'i' };
+    try client.ws.write_frame(Frame.text(&payload));
+
+    var index: usize = 0;
+    const first = try next_wire_frame(client.bytes(), &index);
+    try std.testing.expect(first.header.header.mask);
+    const key = first.header.masking_key.?;
+    try std.testing.expectEqual(@as(usize, 2), first.payload.len);
+    try std.testing.expectEqual(@as(u8, 'h' ^ key[0]), first.payload[0]);
+    try std.testing.expectEqual(@as(u8, 'i' ^ key[1]), first.payload[1]);
+    try std.testing.expectEqual(client.writer.written, index);
+
+    var plaintext: [2]u8 = undefined;
+    @memcpy(&plaintext, first.payload);
+    zslay.mask(&plaintext, key, 0);
+    try std.testing.expectEqualStrings("hi", &plaintext);
+    try std.testing.expectEqualStrings("hi", &payload);
+
+    var server_reader = std.Io.Reader.fixed(client.bytes());
+    var server: ConnectionRig(64, 2, 64, 8, 0, 64) = .{};
+    try server.init(&server_reader, .{ .role = .server });
+
+    const received = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.text, received.opcode);
+    try std.testing.expectEqual(@as(?connection.MaskingKey, null), received.masking_key);
+    try std.testing.expectEqualStrings("hi", received.payload);
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+}
+
+test "WebSocket: server writes unmasked text and close frames" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(64, 2, 64, 125, 0, 128) = .{};
+    try server.init(&empty, .{ .role = .server });
+
+    var text = [_]u8{ 'o', 'k' };
+    try server.ws.write_frame(Frame.text(&text));
+
+    var close_storage: [8]u8 = undefined;
+    const close = try Frame.close(1000, "bye", &close_storage);
+    try server.ws.write_frame(close);
+
+    var index: usize = 0;
+    const text_frame = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expect(!text_frame.header.header.mask);
+    try std.testing.expectEqual(@as(?connection.MaskingKey, null), text_frame.header.masking_key);
+    try std.testing.expectEqualStrings("ok", text_frame.payload);
+
+    const close_frame = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expect(!close_frame.header.header.mask);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, close_frame.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+    try std.testing.expect(server.ws.is_closed());
+}
+
+test "WebSocket: client rejects a masked inbound frame and latches" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x24);
+    var stream: EncodedStream(32) = .{};
+    var payload = [_]u8{'x'};
+    var masked = Frame.text(&payload);
+    masked.mask(.{ 0x01, 0x02, 0x03, 0x04 });
+    try stream.append(masked);
+
+    var reader = stream.reader();
+    var client: ConnectionRig(16, 1, 32, 8, 0, 8) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    try std.testing.expectError(error.PayloadMasked, client.ws.read_frame());
+    const seek_after_failure = reader.seek;
+    try std.testing.expectError(error.PayloadMasked, client.ws.read_frame());
+    try std.testing.expectEqual(seek_after_failure, reader.seek);
+    try std.testing.expect(!client.ws.is_at_wire_boundary());
+}
+
+test "WebSocket: server rejects an unmasked inbound frame and latches" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{'x'};
+    try stream.append(Frame.text(&payload));
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 1, 32, 8, 0, 8) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(error.PayloadNotMasked, server.ws.read_frame());
+    const seek_after_failure = reader.seek;
+    try std.testing.expectError(error.PayloadNotMasked, server.ws.read_frame());
+    try std.testing.expectEqual(seek_after_failure, reader.seek);
+}
+
+test "WebSocket: write rejects a pre-masked payload" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x33);
+    var empty = std.Io.Reader.fixed("");
+    var client: ConnectionRig(16, 2, 64, 8, 0, 32) = .{};
+    try client.init(&empty, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    var payload = [_]u8{'x'};
+    var premasked = Frame.text(&payload);
+    premasked.mask(.{ 0x11, 0x22, 0x33, 0x44 });
+
+    try std.testing.expectError(error.PayloadMasked, client.ws.write_frame(premasked));
+    try std.testing.expectEqual(@as(usize, 0), client.writer.written);
+    try std.testing.expectEqual(@as(usize, 0), client.ws.tx_pending());
+    try std.testing.expect(!client.ws.is_closed());
+}
+
+test "WebSocket: mask key source is deterministic per seed" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x11);
+    const other_seed: [connection.mask_seed_len]u8 = @splat(0x22);
+
+    var same_a = connection.MaskKeySource.from_seed(seed);
+    var same_b = connection.MaskKeySource.from_seed(seed);
+    var different = connection.MaskKeySource.from_seed(other_seed);
+
+    var saw_difference = false;
+    for (0..4) |_| {
+        const key_a = same_a.next();
+        const key_b = same_b.next();
+        const key_other = different.next();
+        try std.testing.expectEqualSlices(u8, &key_a, &key_b);
+        if (!std.mem.eql(u8, &key_a, &key_other)) saw_difference = true;
+    }
+    try std.testing.expect(saw_difference);
+}
+
+test "WebSocket: client init requires a mask source" {
+    var empty = std.Io.Reader.fixed("");
+    var out: [8]u8 = undefined;
+    var writer = RecordingVecWriter.init(&out);
+    var frame_buffer: [16]u8 = undefined;
+    var tx_nodes: [1]zslay.FrameNode = undefined;
+    var write_buffer: [16]u8 = undefined;
+    var close_buffer: [2]u8 = undefined;
+
+    try std.testing.expectError(error.MaskingKeyRequired, connection.WebSocket.init(
+        &empty,
+        &writer.writer,
+        .{
+            .frame_buffer = &frame_buffer,
+            .tx_nodes = &tx_nodes,
+            .write_buffer = &write_buffer,
+            .close_buffer = &close_buffer,
+        },
+        .{ .role = .client },
+    ));
+
+    try std.testing.expectError(error.MaskingKeyRequired, connection.WebSocket.init(
+        &empty,
+        &writer.writer,
+        .{
+            .frame_buffer = &frame_buffer,
+            .tx_nodes = &tx_nodes,
+            .write_buffer = &write_buffer,
+            .close_buffer = &close_buffer,
+        },
+        .{ .role = .client, .options = .{ .auto_apply_mask = false } },
+    ));
+}
+
+test "WebSocket: client with auto_apply_mask off cannot write" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x6e);
+    var empty = std.Io.Reader.fixed("");
+    var client: ConnectionRig(16, 2, 64, 8, 0, 32) = .{};
+    try client.init(&empty, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+    client.ws.set_auto_apply_mask(false);
+
+    var payload = [_]u8{'x'};
+    try std.testing.expectError(error.PayloadNotMasked, client.ws.write_frame(Frame.text(&payload)));
+    try std.testing.expectEqual(@as(usize, 0), client.writer.written);
+    try std.testing.expectEqual(@as(usize, 0), client.ws.tx_pending());
+    try std.testing.expect(!client.ws.is_closed());
+
+    client.ws.set_auto_apply_mask(true);
+    try client.ws.write_frame(Frame.text(&payload));
+    try std.testing.expect(client.writer.written > 0);
+}
+
+test "WebSocket: public module re-exports the connection layer" {
+    const root = @import("root.zig");
+
+    try std.testing.expect(root.WebSocket == connection.WebSocket);
+    try std.testing.expect(root.ConnectionOptions == connection.Options);
+    try std.testing.expect(root.ConnectionConfig == connection.Config);
+    try std.testing.expect(root.ConnectionStorage == connection.Storage);
+    try std.testing.expect(root.MaskKeySource == connection.MaskKeySource);
+    try std.testing.expectEqual(connection.default_max_message_size, root.default_max_message_size);
+    try std.testing.expectEqual(connection.default_writev_threshold, root.default_writev_threshold);
+}
+
+test "WebSocket: options default to fastwebsockets values" {
+    const options: connection.Options = .{};
+
+    try std.testing.expect(options.auto_apply_mask);
+    try std.testing.expect(options.auto_close);
+    try std.testing.expect(options.auto_pong);
+    try std.testing.expect(options.writev);
+    try std.testing.expectEqual(@as(usize, 1024), options.writev_threshold);
+    try std.testing.expectEqual(@as(usize, 64 << 20), options.max_message_size);
+    try std.testing.expectEqual(@as(usize, 64 << 20), connection.default_max_message_size);
+    try std.testing.expectEqual(@as(usize, 1024), connection.default_writev_threshold);
+}
+
+test "WebSocket: connection and fragment defaults agree" {
+    try std.testing.expectEqual(fragment.default_max_message_size, connection.default_max_message_size);
+}
+
+test "WebSocket: role, pending, and limit accessors track state" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 1, 64, 8, 0, 16) = .{};
+    try server.init(&empty, .{ .role = .server });
+
+    try std.testing.expectEqual(connection.Role.server, server.ws.role());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+    try std.testing.expectEqual(connection.default_max_message_size, server.ws.max_message_size());
+    try std.testing.expect(server.ws.is_at_wire_boundary());
+    try std.testing.expect(!server.ws.is_closed());
+
+    var payload = [_]u8{'x'};
+    try server.ws.write_frame(Frame.text(&payload));
+
+    try std.testing.expectEqual(connection.Role.server, server.ws.role());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+    try std.testing.expect(server.ws.is_at_wire_boundary());
+}
+
+/// Masks `f` with `key` and appends the wire bytes to an `EncodedStream`.
+fn append_masked(stream: anytype, f: Frame, key: MaskingKey) !void {
+    var masked = f;
+    masked.mask(key);
+    try stream.append(masked);
+}
+
+test "WebSocket: auto_pong suppresses ping and sends an exact pong" {
+    var stream: EncodedStream(32) = .{};
+    var ping_payload = [_]u8{ 'h', 'i' };
+    var text_payload = [_]u8{ 'o', 'k' };
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x01, 0x02, 0x03, 0x04 });
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x05, 0x06, 0x07, 0x08 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    const received = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.text, received.opcode);
+    try std.testing.expectEqualStrings("ok", received.payload);
+
+    var index: usize = 0;
+    const pong = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqual(connection.OpCode.pong, connection.OpCode.from_wire(pong.header.header.opcode).?);
+    try std.testing.expect(!pong.header.header.mask);
+    try std.testing.expectEqual(@as(?connection.MaskingKey, null), pong.header.masking_key);
+    try std.testing.expectEqualStrings("hi", pong.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: auto_pong off delivers the ping and sends nothing" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 'h', 'i' };
+    try append_masked(&stream, Frame.ping(&payload), .{ 0x09, 0x0a, 0x0b, 0x0c });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+    try server.init(&reader, .{ .role = .server, .options = .{ .auto_pong = false } });
+
+    const received = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.ping, received.opcode);
+    try std.testing.expect(received.fin);
+    try std.testing.expectEqual(@as(?connection.MaskingKey, null), received.masking_key);
+    try std.testing.expectEqualStrings("hi", received.payload);
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+}
+
+test "WebSocket: auto_apply_mask off delivers masked frames and skips control policy" {
+    const key: MaskingKey = .{ 0x11, 0x22, 0x33, 0x44 };
+    var stream: EncodedStream(64) = .{};
+    var text_payload = [_]u8{ 'h', 'i' };
+    var ping_payload = [_]u8{'p'};
+    var close_storage: [8]u8 = undefined;
+    try append_masked(&stream, Frame.text(&text_payload), key);
+    try append_masked(&stream, Frame.ping(&ping_payload), key);
+    try append_masked(&stream, try Frame.close(1000, "bye", &close_storage), key);
+
+    var reader = stream.reader();
+    var server: ConnectionRig(32, 2, 64, 8, 0, 8) = .{};
+    try server.init(&reader, .{ .role = .server, .options = .{ .auto_apply_mask = false } });
+
+    var plaintext: [8]u8 = undefined;
+
+    const text = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.text, text.opcode);
+    try std.testing.expectEqual(@as(?connection.MaskingKey, key), text.masking_key);
+    @memcpy(plaintext[0..text.payload.len], text.payload);
+    zslay.mask(plaintext[0..text.payload.len], key, 0);
+    try std.testing.expectEqualStrings("hi", plaintext[0..text.payload.len]);
+
+    const ping = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.ping, ping.opcode);
+    try std.testing.expectEqual(@as(?connection.MaskingKey, key), ping.masking_key);
+    @memcpy(plaintext[0..ping.payload.len], ping.payload);
+    zslay.mask(plaintext[0..ping.payload.len], key, 0);
+    try std.testing.expectEqualStrings("p", plaintext[0..ping.payload.len]);
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+
+    const close = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.close, close.opcode);
+    try std.testing.expectEqual(@as(?connection.MaskingKey, key), close.masking_key);
+    @memcpy(plaintext[0..close.payload.len], close.payload);
+    zslay.mask(plaintext[0..close.payload.len], key, 0);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, plaintext[0..close.payload.len]);
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+    try std.testing.expect(!server.ws.is_closed());
+}
+
+test "WebSocket: client with auto_apply_mask off delivers control frames without replying" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x3c);
+    var stream: EncodedStream(32) = .{};
+    var ping_payload = [_]u8{ 'h', 'i' };
+    var close_storage: [8]u8 = undefined;
+    var trailing_payload = [_]u8{'x'};
+    try stream.append(Frame.ping(&ping_payload));
+    try stream.append(try Frame.close(1000, "bye", &close_storage));
+    try stream.append(Frame.text(&trailing_payload));
+
+    var reader = stream.reader();
+    var client: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .options = .{ .auto_apply_mask = false },
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    const ping = try client.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.ping, ping.opcode);
+    try std.testing.expectEqualStrings("hi", ping.payload);
+    try std.testing.expectEqual(@as(usize, 0), client.writer.written);
+    try std.testing.expect(!client.ws.is_closed());
+
+    const close = try client.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.close, close.opcode);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, close.payload);
+    try std.testing.expectEqual(@as(usize, 0), client.writer.written);
+
+    // Neither an automatic pong nor a close echo may latch this client's read,
+    // but the validated close still makes the connection terminal.
+    try std.testing.expectEqual(@as(?WebSocketError, null), client.ws.read_failure);
+    try std.testing.expectEqual(@as(?WebSocketError, null), client.ws.write_failure);
+    try std.testing.expect(client.ws.is_closed());
+
+    try std.testing.expectError(error.ConnectionClosed, client.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), client.writer.written);
+}
+
+test "WebSocket: suppressed invalid close reply is terminal" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x3d);
+    var stream: EncodedStream(32) = .{};
+    var close_storage: [8]u8 = undefined;
+    var trailing_payload = [_]u8{'x'};
+    try stream.append(try Frame.close(999, "bad", &close_storage));
+    try stream.append(Frame.text(&trailing_payload));
+
+    var reader = stream.reader();
+    var client: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .options = .{ .auto_apply_mask = false },
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    try std.testing.expectError(error.InvalidCloseCode, client.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), client.writer.written);
+    try std.testing.expectEqual(@as(?WebSocketError, null), client.ws.write_failure);
+    try std.testing.expect(client.ws.is_closed());
+
+    // The invalid close was fully consumed, so the wire boundary is clean; the
+    // reset clears only the latched read failure and keeps `closed`.
+    client.ws.reset();
+
+    try std.testing.expectError(error.ConnectionClosed, client.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), client.writer.written);
+}
+
+test "WebSocket: auto_pong masks a client pong with a fresh key" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x55);
+    var stream: EncodedStream(32) = .{};
+    var ping_payload = [_]u8{ 'h', 'i' };
+    var text_payload = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.ping(&ping_payload));
+    try stream.append(Frame.text(&text_payload));
+
+    var reader = stream.reader();
+    var client: ConnectionRig(32, 2, 64, 8, 0, 64) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    var outbound = [_]u8{'a'};
+    try client.ws.write_frame(Frame.text(&outbound));
+
+    const received = try client.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.text, received.opcode);
+    try std.testing.expectEqualStrings("ok", received.payload);
+
+    var expected_keys = connection.MaskKeySource.from_seed(seed);
+    const text_key = expected_keys.next();
+    const pong_key = expected_keys.next();
+
+    var index: usize = 0;
+    const text_frame = try next_wire_frame(client.bytes(), &index);
+    try std.testing.expectEqual(connection.OpCode.text, connection.OpCode.from_wire(text_frame.header.header.opcode).?);
+    try std.testing.expectEqualSlices(u8, &text_key, &text_frame.header.masking_key.?);
+
+    const pong = try next_wire_frame(client.bytes(), &index);
+    try std.testing.expectEqual(connection.OpCode.pong, connection.OpCode.from_wire(pong.header.header.opcode).?);
+    try std.testing.expect(pong.header.header.mask);
+    const key = pong.header.masking_key.?;
+    try std.testing.expectEqualSlices(u8, &pong_key, &key);
+    try std.testing.expectEqual(@as(usize, 2), pong.payload.len);
+    try std.testing.expectEqual(@as(u8, 'h' ^ key[0]), pong.payload[0]);
+    try std.testing.expectEqual(@as(u8, 'i' ^ key[1]), pong.payload[1]);
+}
+
+test "WebSocket: auto_pong preserves an in-progress fragmented message" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{ 'h', 'e' };
+    var ping_payload = [_]u8{'p'};
+    var last = [_]u8{ 'l', 'l', 'o' };
+    try append_masked(&stream, Frame.init(false, .text, null, &first), .{ 0x01, 0x02, 0x03, 0x04 });
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x05, 0x06, 0x07, 0x08 });
+    try append_masked(&stream, Frame.init(true, .continuation, null, &last), .{ 0x09, 0x0a, 0x0b, 0x0c });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    const start = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.text, start.opcode);
+    try std.testing.expect(!start.fin);
+    try std.testing.expectEqualStrings("he", start.payload);
+    try std.testing.expectEqual(connection.OpCode.text, server.ws.conn.rx_fragment.opcode.?);
+    try std.testing.expectEqual(@as(u64, 2), server.ws.conn.rx_fragment.message_len);
+
+    const tail = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.continuation, tail.opcode);
+    try std.testing.expect(tail.fin);
+    try std.testing.expectEqualStrings("llo", tail.payload);
+    try std.testing.expectEqual(@as(?connection.OpCode, null), server.ws.conn.rx_fragment.opcode);
+    try std.testing.expectEqual(@as(u64, 0), server.ws.conn.rx_fragment.message_len);
+    try std.testing.expect(server.ws.is_at_wire_boundary());
+
+    var index: usize = 0;
+    const pong = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqual(connection.OpCode.pong, connection.OpCode.from_wire(pong.header.header.opcode).?);
+    try std.testing.expectEqualStrings("p", pong.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: ping after close is suppressed without a pong" {
+    var stream: EncodedStream(32) = .{};
+    var ping_payload = [_]u8{'?'};
+    var text_payload = [_]u8{'x'};
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x10, 0x20, 0x30, 0x40 });
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x50, 0x60, 0x70, 0x80 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    var close_storage: [2]u8 = undefined;
+    try server.ws.write_frame(try Frame.close(1000, "", &close_storage));
+    const output_after_close = server.writer.written;
+
+    try std.testing.expectError(error.ConnectionClosed, server.ws.read_frame());
+    try std.testing.expectEqual(output_after_close, server.writer.written);
+    try std.testing.expect(server.ws.is_closed());
+}
+
+test "WebSocket: valid close is returned and echoed with the exact payload" {
+    var stream: EncodedStream(32) = .{};
+    var close_storage: [8]u8 = undefined;
+    try append_masked(&stream, try Frame.close(1000, "bye", &close_storage), .{ 0xa1, 0xb2, 0xc3, 0xd4 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    const received = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.close, received.opcode);
+    try std.testing.expectEqual(@as(?connection.MaskingKey, null), received.masking_key);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, received.payload);
+    try std.testing.expect(server.ws.is_closed());
+
+    var index: usize = 0;
+    const echo = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqual(connection.OpCode.close, connection.OpCode.from_wire(echo.header.header.opcode).?);
+    try std.testing.expect(!echo.header.header.mask);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, echo.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: client echoes a valid close with a masked exact payload" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x47);
+    var stream: EncodedStream(32) = .{};
+    var close_storage: [8]u8 = undefined;
+    try stream.append(try Frame.close(1000, "bye", &close_storage));
+
+    var reader = stream.reader();
+    var client: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    const received = try client.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.close, received.opcode);
+    try std.testing.expectEqual(@as(?connection.MaskingKey, null), received.masking_key);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, received.payload);
+    try std.testing.expect(client.ws.is_closed());
+
+    var index: usize = 0;
+    const echo = try next_wire_frame(client.bytes(), &index);
+    try std.testing.expect(echo.header.header.mask);
+    const key = echo.header.masking_key.?;
+    try std.testing.expectEqual(@as(usize, 5), echo.payload.len);
+
+    var plaintext: [5]u8 = undefined;
+    @memcpy(&plaintext, echo.payload);
+    zslay.mask(&plaintext, key, 0);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, &plaintext);
+    try std.testing.expectEqual(client.writer.written, index);
+}
+
+test "WebSocket: client sends a masked 1002 for an invalid close code" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x48);
+    var stream: EncodedStream(32) = .{};
+    var payload = [_]u8{ 0x03, 0xe7, 'b', 'a', 'd' };
+    try stream.append(Frame.close_raw(&payload));
+
+    var reader = stream.reader();
+    var client: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    try std.testing.expectError(error.InvalidCloseCode, client.ws.read_frame());
+    try std.testing.expect(client.ws.is_closed());
+
+    var index: usize = 0;
+    const reply = try next_wire_frame(client.bytes(), &index);
+    try std.testing.expect(reply.header.header.mask);
+    const key = reply.header.masking_key.?;
+    try std.testing.expectEqual(@as(usize, 5), reply.payload.len);
+
+    var plaintext: [5]u8 = undefined;
+    @memcpy(&plaintext, reply.payload);
+    zslay.mask(&plaintext, key, 0);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xea, 'b', 'a', 'd' }, &plaintext);
+    try std.testing.expectEqual(client.writer.written, index);
+}
+
+test "WebSocket: close code 1014 is accepted and echoed" {
+    var stream: EncodedStream(32) = .{};
+    var close_storage: [8]u8 = undefined;
+    try append_masked(&stream, try Frame.close(1014, "gone", &close_storage), .{ 0x5a, 0x6b, 0x7c, 0x8d });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    const received = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.close, received.opcode);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xf6, 'g', 'o', 'n', 'e' }, received.payload);
+    try std.testing.expect(server.ws.is_closed());
+
+    var index: usize = 0;
+    const echo = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqual(connection.OpCode.close, connection.OpCode.from_wire(echo.header.header.opcode).?);
+    try std.testing.expect(!echo.header.header.mask);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xf6, 'g', 'o', 'n', 'e' }, echo.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: empty close payload is echoed empty" {
+    var stream: EncodedStream(16) = .{};
+    var empty: [0]u8 = .{};
+    try append_masked(&stream, Frame.close_raw(&empty), .{ 0x0a, 0x0b, 0x0c, 0x0d });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 2, 64, 8, 0, 16) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    const received = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.close, received.opcode);
+    try std.testing.expectEqual(@as(usize, 0), received.payload.len);
+    try std.testing.expect(server.ws.is_closed());
+
+    var index: usize = 0;
+    const echo = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqual(@as(usize, 0), echo.payload.len);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: invalid UTF-8 close reason returns InvalidUTF8 with no reply" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 0x03, 0xe8, 0xff };
+    try append_masked(&stream, Frame.close_raw(&payload), .{ 0x1a, 0x2b, 0x3c, 0x4d });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 2, 64, 8, 0, 16) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(error.InvalidUTF8, server.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+    try std.testing.expect(!server.ws.is_closed());
+    try std.testing.expect(server.ws.is_at_wire_boundary());
+    const seek_after_failure = reader.seek;
+
+    try std.testing.expectError(error.InvalidUTF8, server.ws.read_frame());
+    try std.testing.expectEqual(seek_after_failure, reader.seek);
+}
+
+test "WebSocket: invalid close code with valid reason sends 1002 with the reason" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 0x03, 0xe7, 'b', 'a', 'd' };
+    try append_masked(&stream, Frame.close_raw(&payload), .{ 0xaa, 0xbb, 0xcc, 0xdd });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 2, 64, 8, 0, 32) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(error.InvalidCloseCode, server.ws.read_frame());
+    try std.testing.expect(server.ws.is_closed());
+
+    var index: usize = 0;
+    const reply = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqual(connection.OpCode.close, connection.OpCode.from_wire(reply.header.header.opcode).?);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xea, 'b', 'a', 'd' }, reply.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: invalid close code and invalid UTF-8 reason returns InvalidUTF8" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 0x03, 0xe7, 0xff };
+    try append_masked(&stream, Frame.close_raw(&payload), .{ 0x12, 0x34, 0x56, 0x78 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 2, 64, 8, 0, 16) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(error.InvalidUTF8, server.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+    try std.testing.expect(!server.ws.is_closed());
+}
+
+test "WebSocket: invalid close code with empty reason sends an exact 1002 payload" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 0x03, 0xee };
+    try append_masked(&stream, Frame.close_raw(&payload), .{ 0x21, 0x43, 0x65, 0x87 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 2, 64, 8, 0, 16) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(error.InvalidCloseCode, server.ws.read_frame());
+    try std.testing.expect(server.ws.is_closed());
+
+    var index: usize = 0;
+    const reply = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xea }, reply.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: close buffer too small drops the 1002 reason" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 0x03, 0xe7, 'b', 'a', 'd' };
+    try append_masked(&stream, Frame.close_raw(&payload), .{ 0x98, 0x76, 0x54, 0x32 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 2, 64, 2, 0, 16) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(error.InvalidCloseCode, server.ws.read_frame());
+    try std.testing.expect(server.ws.is_closed());
+
+    var index: usize = 0;
+    const reply = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xea }, reply.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: auto_close off delivers close bytes without validation or echo" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 0x03, 0xe7, 0xff };
+    try append_masked(&stream, Frame.close_raw(&payload), .{ 0xef, 0xcd, 0xab, 0x89 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+    try server.init(&reader, .{ .role = .server, .options = .{ .auto_close = false } });
+
+    const received = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.close, received.opcode);
+    try std.testing.expectEqual(@as(?connection.MaskingKey, null), received.masking_key);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe7, 0xff }, received.payload);
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+    try std.testing.expect(!server.ws.is_closed());
+}
+
+test "WebSocket: one-byte close is rejected as ProtocolError before policy" {
+    for ([_]bool{ true, false }) |auto_close| {
+        var stream: EncodedStream(16) = .{};
+        var payload = [_]u8{0x00};
+        try append_masked(&stream, Frame.close_raw(&payload), .{ 0xde, 0xad, 0xbe, 0xef });
+
+        var reader = stream.reader();
+        var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+        try server.init(&reader, .{ .role = .server, .options = .{ .auto_close = auto_close } });
+
+        try std.testing.expectError(error.ProtocolError, server.ws.read_frame());
+        try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+        try std.testing.expect(!server.ws.is_closed());
+    }
+}
+
+test "WebSocket: invalid outbound close payload is rejected by zslay" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 64, 8, 0, 32) = .{};
+    try server.init(&empty, .{ .role = .server });
+
+    var one_byte = [_]u8{0x03};
+    try std.testing.expectError(error.ProtocolError, server.ws.write_frame(Frame.close_raw(&one_byte)));
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+    try std.testing.expect(!server.ws.is_closed());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+
+    var bad_code = [_]u8{ 0x03, 0xe7 };
+    try std.testing.expectError(error.ProtocolError, server.ws.write_frame(Frame.close_raw(&bad_code)));
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+    try std.testing.expect(!server.ws.is_closed());
+
+    var close_storage: [2]u8 = undefined;
+    try server.ws.write_frame(try Frame.close(1000, "", &close_storage));
+    try std.testing.expect(server.ws.is_closed());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+}
+
+test "WebSocket: outbound close is terminal for data writes but repeated closes serialize" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 64, 8, 0, 64) = .{};
+    try server.init(&empty, .{ .role = .server });
+
+    var first_close_storage: [8]u8 = undefined;
+    try server.ws.write_frame(try Frame.close(1000, "a", &first_close_storage));
+    const after_first_close = server.writer.written;
+
+    var text = [_]u8{'x'};
+    try std.testing.expectError(error.ConnectionClosed, server.ws.write_frame(Frame.text(&text)));
+    try std.testing.expectEqual(after_first_close, server.writer.written);
+    try std.testing.expect(server.ws.is_closed());
+
+    var second_close_storage: [8]u8 = undefined;
+    try server.ws.write_frame(try Frame.close(1000, "b", &second_close_storage));
+    try std.testing.expect(server.ws.is_closed());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+
+    var index: usize = 0;
+    const first = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'a' }, first.payload);
+    const second = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b' }, second.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: non-close reads after a close write gate until a peer close" {
+    var stream: EncodedStream(32) = .{};
+    var text_payload = [_]u8{'x'};
+    var close_storage: [8]u8 = undefined;
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x01, 0x23, 0x45, 0x67 });
+    try append_masked(&stream, try Frame.close(1000, "bye", &close_storage), .{ 0x89, 0xab, 0xcd, 0xef });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    var local_close_storage: [2]u8 = undefined;
+    try server.ws.write_frame(try Frame.close(1000, "", &local_close_storage));
+    const output_after_local_close = server.writer.written;
+
+    try std.testing.expectError(error.ConnectionClosed, server.ws.read_frame());
+    try std.testing.expectEqual(output_after_local_close, server.writer.written);
+
+    const peer_close = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.close, peer_close.opcode);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, peer_close.payload);
+    try std.testing.expectEqual(output_after_local_close, server.writer.written);
+    try std.testing.expect(server.ws.is_closed());
+}
+
+test "WebSocket: invalid close after a close write returns InvalidCloseCode without a reply" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 0x03, 0xe7, 'b', 'a', 'd' };
+    try append_masked(&stream, Frame.close_raw(&payload), .{ 0x02, 0x46, 0x8a, 0xce });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 2, 64, 8, 0, 32) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    var local_close_storage: [2]u8 = undefined;
+    try server.ws.write_frame(try Frame.close(1000, "", &local_close_storage));
+    const output_after_local_close = server.writer.written;
+
+    try std.testing.expectError(error.InvalidCloseCode, server.ws.read_frame());
+    try std.testing.expectEqual(output_after_local_close, server.writer.written);
+    try std.testing.expect(server.ws.is_closed());
+}
+
+test "WebSocket: reset does not clear the closed flag" {
+    var stream: EncodedStream(32) = .{};
+    var close_storage: [2]u8 = undefined;
+    var text_payload = [_]u8{'x'};
+    try append_masked(&stream, try Frame.close(1000, "", &close_storage), .{ 0x13, 0x57, 0x9b, 0xdf });
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x24, 0x68, 0xac, 0xe0 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    _ = try server.ws.read_frame();
+    try std.testing.expect(server.ws.is_closed());
+    const output_after_close = server.writer.written;
+
+    server.ws.reset();
+
+    try std.testing.expect(server.ws.is_closed());
+    try std.testing.expectError(error.ConnectionClosed, server.ws.read_frame());
+    try std.testing.expectEqual(output_after_close, server.writer.written);
+}
+
+test "WebSocket: max_message_size is exclusive across short and extended lengths" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x77);
+    var payload: [65536]u8 = @splat(0x41);
+
+    {
+        var stream: EncodedStream(512) = .{};
+        for ([_]usize{ 0, 1, 125, 126, 127 }) |len| {
+            try stream.append(Frame.binary(payload[0..len]));
+        }
+
+        var reader = stream.reader();
+        var client: ConnectionRig(127, 1, 64, 2, 0, 8) = .{};
+        try client.init(&reader, .{
+            .role = .client,
+            .options = .{ .max_message_size = 128 },
+            .mask_keys = connection.MaskKeySource.from_seed(seed),
+        });
+
+        for ([_]usize{ 0, 1, 125, 126, 127 }) |len| {
+            const received = try client.ws.read_frame();
+            try std.testing.expectEqual(len, received.payload.len);
+            try std.testing.expectEqualSlices(u8, payload[0..len], received.payload);
+        }
+        try std.testing.expect(client.ws.is_at_wire_boundary());
+    }
+
+    {
+        var stream: EncodedStream(256) = .{};
+        try stream.append(Frame.binary(payload[0..128]));
+
+        var reader = stream.reader();
+        var client: ConnectionRig(128, 1, 64, 2, 0, 8) = .{};
+        try client.init(&reader, .{
+            .role = .client,
+            .options = .{ .max_message_size = 128 },
+            .mask_keys = connection.MaskKeySource.from_seed(seed),
+        });
+
+        try std.testing.expectError(error.FrameTooLarge, client.ws.read_frame());
+    }
+
+    {
+        var stream: EncodedStream(65545) = .{};
+        try stream.append(Frame.binary(payload[0..65535]));
+
+        var reader = stream.reader();
+        var client: ConnectionRig(65535, 1, 64, 2, 0, 8) = .{};
+        try client.init(&reader, .{
+            .role = .client,
+            .options = .{ .max_message_size = 65536 },
+            .mask_keys = connection.MaskKeySource.from_seed(seed),
+        });
+
+        const received = try client.ws.read_frame();
+        try std.testing.expectEqual(@as(usize, 65535), received.payload.len);
+        try std.testing.expectEqual(@as(u8, 0x41), received.payload[0]);
+        try std.testing.expectEqual(@as(u8, 0x41), received.payload[65534]);
+    }
+
+    {
+        var stream: EncodedStream(65546) = .{};
+        try stream.append(Frame.binary(&payload));
+
+        var reader = stream.reader();
+        var client: ConnectionRig(16, 1, 64, 2, 0, 8) = .{};
+        try client.init(&reader, .{
+            .role = .client,
+            .options = .{ .max_message_size = 65536 },
+            .mask_keys = connection.MaskKeySource.from_seed(seed),
+        });
+
+        try std.testing.expectError(error.FrameTooLarge, client.ws.read_frame());
+    }
+}
+
+test "WebSocket: zero max_message_size rejects before reading and does not latch" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.text(&payload));
+
+    var reader = stream.reader();
+    var client: ConnectionRig(16, 1, 64, 2, 0, 8) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .options = .{ .max_message_size = 0 },
+        .mask_keys = connection.MaskKeySource.from_seed(@splat(0x31)),
+    });
+
+    try std.testing.expectError(error.FrameTooLarge, client.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), reader.seek);
+    try std.testing.expectEqual(@as(usize, 0), client.ws.max_message_size());
+
+    try std.testing.expectError(error.FrameTooLarge, client.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), reader.seek);
+
+    client.ws.set_max_message_size(8);
+    try std.testing.expectEqual(@as(usize, 8), client.ws.max_message_size());
+
+    const received = try client.ws.read_frame();
+    try std.testing.expectEqualStrings("ok", received.payload);
+}
+
+test "WebSocket: one-byte limit accepts an empty frame and rejects one byte" {
+    {
+        var stream: EncodedStream(16) = .{};
+        var empty: [0]u8 = .{};
+        try stream.append(Frame.text(&empty));
+
+        var reader = stream.reader();
+        var client: ConnectionRig(16, 1, 64, 2, 0, 8) = .{};
+        try client.init(&reader, .{
+            .role = .client,
+            .options = .{ .max_message_size = 1 },
+            .mask_keys = connection.MaskKeySource.from_seed(@splat(0x71)),
+        });
+
+        const received = try client.ws.read_frame();
+        try std.testing.expectEqual(connection.OpCode.text, received.opcode);
+        try std.testing.expectEqual(@as(usize, 0), received.payload.len);
+    }
+
+    {
+        var stream: EncodedStream(16) = .{};
+        var payload = [_]u8{'x'};
+        try stream.append(Frame.text(&payload));
+
+        var reader = stream.reader();
+        var client: ConnectionRig(16, 1, 64, 2, 0, 8) = .{};
+        try client.init(&reader, .{
+            .role = .client,
+            .options = .{ .max_message_size = 1 },
+            .mask_keys = connection.MaskKeySource.from_seed(@splat(0x72)),
+        });
+
+        try std.testing.expectError(error.FrameTooLarge, client.ws.read_frame());
+    }
+}
+
+test "WebSocket: frame larger than frame_buffer returns BufferTooShort and latches" {
+    var stream: EncodedStream(32) = .{};
+    var payload = [_]u8{ 'a', 'b', 'c', 'd', 'e' };
+    try append_masked(&stream, Frame.binary(&payload), .{ 0x0f, 0x1e, 0x2d, 0x3c });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(4, 1, 64, 8, 0, 8) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(error.BufferTooShort, server.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 6), reader.seek);
+    try std.testing.expect(!server.ws.is_at_wire_boundary());
+
+    try std.testing.expectError(error.BufferTooShort, server.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 6), reader.seek);
+}
+
+test "WebSocket: cumulative fragmented message over max_message_len returns FrameTooLarge" {
+    var stream: EncodedStream(32) = .{};
+    var first_payload = [_]u8{ 'a', 'b', 'c', 'd', 'e' };
+    var second_payload = [_]u8{ 'f', 'g', 'h', 'i', 'j' };
+    try append_masked(&stream, Frame.init(false, .binary, null, &first_payload), .{ 0x11, 0x32, 0x53, 0x74 });
+    try append_masked(&stream, Frame.init(true, .continuation, null, &second_payload), .{ 0x85, 0xa6, 0xc7, 0xe8 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+    try server.init(&reader, .{ .role = .server, .options = .{ .max_message_size = 9 } });
+
+    const first = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.binary, first.opcode);
+    try std.testing.expect(!first.fin);
+    try std.testing.expectEqualStrings("abcde", first.payload);
+
+    try std.testing.expectError(error.FrameTooLarge, server.ws.read_frame());
+}
+
+test "WebSocket: set_max_message_size updates the read gate and zslay limits" {
+    var stream: EncodedStream(32) = .{};
+    var first_payload = [_]u8{ 'a', 'b', 'c' };
+    var second_payload = [_]u8{ 'd', 'e', 'f', 'g' };
+    try stream.append(Frame.text(&first_payload));
+    try stream.append(Frame.text(&second_payload));
+
+    var reader = stream.reader();
+    var client: ConnectionRig(16, 1, 64, 2, 0, 8) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .options = .{ .max_message_size = 4 },
+        .mask_keys = connection.MaskKeySource.from_seed(@splat(0x44)),
+    });
+
+    const first = try client.ws.read_frame();
+    try std.testing.expectEqualStrings("abc", first.payload);
+
+    client.ws.set_max_message_size(0);
+    try std.testing.expectEqual(@as(usize, 0), client.ws.max_message_size());
+    const seek_before_zero = reader.seek;
+    try std.testing.expectError(error.FrameTooLarge, client.ws.read_frame());
+    try std.testing.expectEqual(seek_before_zero, reader.seek);
+
+    client.ws.set_max_message_size(8);
+    try std.testing.expectEqual(@as(usize, 8), client.ws.max_message_size());
+    const second = try client.ws.read_frame();
+    try std.testing.expectEqualStrings("defg", second.payload);
+
+    {
+        var boundary_stream: EncodedStream(16) = .{};
+        var boundary_payload = [_]u8{ 'd', 'e', 'f', 'g' };
+        try boundary_stream.append(Frame.text(&boundary_payload));
+
+        var boundary_reader = boundary_stream.reader();
+        var boundary: ConnectionRig(16, 1, 64, 2, 0, 8) = .{};
+        try boundary.init(&boundary_reader, .{
+            .role = .client,
+            .options = .{ .max_message_size = 4 },
+            .mask_keys = connection.MaskKeySource.from_seed(@splat(0x45)),
+        });
+
+        try std.testing.expectError(error.FrameTooLarge, boundary.ws.read_frame());
+    }
+}
+
+test "WebSocket: lowering max_message_size mid-fragment clamps the cumulative limit" {
+    {
+        var stream: EncodedStream(32) = .{};
+        var first_payload = [_]u8{ 'a', 'b', 'c', 'd', 'e' };
+        var second_payload = [_]u8{'f'};
+        try append_masked(&stream, Frame.init(false, .text, null, &first_payload), .{ 0x11, 0x22, 0x33, 0x44 });
+        try append_masked(
+            &stream,
+            Frame.init(true, .continuation, null, &second_payload),
+            .{ 0x55, 0x66, 0x77, 0x88 },
+        );
+
+        var reader = stream.reader();
+        var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+        try server.init(&reader, .{ .role = .server, .options = .{ .max_message_size = 64 } });
+
+        const first = try server.ws.read_frame();
+        try std.testing.expect(!first.fin);
+        try std.testing.expectEqualStrings("abcde", first.payload);
+
+        server.ws.set_max_message_size(4);
+        // The exclusive 4-byte limit derives an inclusive 3, but the accepted
+        // five-byte fragment must stay valid until its message completes.
+        try std.testing.expectEqual(@as(u64, 5), server.ws.conn.max_message_len);
+        try std.testing.expectError(error.FrameTooLarge, server.ws.read_frame());
+    }
+
+    {
+        var empty = std.Io.Reader.fixed("");
+        var server: ConnectionRig(16, 1, 64, 8, 0, 16) = .{};
+        try server.init(&empty, .{ .role = .server, .options = .{ .max_message_size = 64 } });
+
+        var first_payload = [_]u8{ 'a', 'b', 'c', 'd', 'e' };
+        var second_payload = [_]u8{'f'};
+        try server.ws.write_frame(Frame.init(false, .text, null, &first_payload));
+        try std.testing.expectEqual(connection.OpCode.text, server.ws.conn.tx_fragment.opcode.?);
+        try std.testing.expectEqual(@as(u64, 5), server.ws.conn.tx_fragment.message_len);
+
+        server.ws.set_max_message_size(4);
+        try std.testing.expectEqual(@as(u64, 5), server.ws.conn.max_message_len);
+        try std.testing.expectError(
+            error.FrameTooLarge,
+            server.ws.write_frame(Frame.init(true, .continuation, null, &second_payload)),
+        );
+        try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+        try std.testing.expect(!server.ws.is_closed());
+    }
+}
+
+test "WebSocket: init requires a write buffer longer than the maximum header" {
+    var empty = std.Io.Reader.fixed("");
+    var out: [8]u8 = undefined;
+    var writer = RecordingVecWriter.init(&out);
+    var frame_buffer: [8]u8 = undefined;
+    var tx_nodes: [1]zslay.FrameNode = undefined;
+    var close_buffer: [2]u8 = undefined;
+
+    var too_small: [zslay.MaxFrameHeaderLen]u8 = undefined;
+    try std.testing.expectError(error.InvalidLength, connection.WebSocket.init(
+        &empty,
+        &writer.writer,
+        .{
+            .frame_buffer = &frame_buffer,
+            .tx_nodes = &tx_nodes,
+            .write_buffer = &too_small,
+            .close_buffer = &close_buffer,
+        },
+        .{ .role = .server },
+    ));
+
+    var minimum: [zslay.MaxFrameHeaderLen + 1]u8 = undefined;
+    const ws = try connection.WebSocket.init(
+        &empty,
+        &writer.writer,
+        .{
+            .frame_buffer = &frame_buffer,
+            .tx_nodes = &tx_nodes,
+            .write_buffer = &minimum,
+            .close_buffer = &close_buffer,
+        },
+        .{ .role = .server },
+    );
+    try std.testing.expectEqual(connection.Role.server, ws.role());
+}
+
+test "WebSocket: init rejects a close buffer smaller than two bytes" {
+    var empty = std.Io.Reader.fixed("");
+    var out: [8]u8 = undefined;
+    var writer = RecordingVecWriter.init(&out);
+    var frame_buffer: [8]u8 = undefined;
+    var tx_nodes: [1]zslay.FrameNode = undefined;
+    var write_buffer: [zslay.MaxFrameHeaderLen + 1]u8 = undefined;
+
+    var too_small: [1]u8 = undefined;
+    try std.testing.expectError(error.InvalidLength, connection.WebSocket.init(
+        &empty,
+        &writer.writer,
+        .{
+            .frame_buffer = &frame_buffer,
+            .tx_nodes = &tx_nodes,
+            .write_buffer = &write_buffer,
+            .close_buffer = &too_small,
+        },
+        .{ .role = .server },
+    ));
+
+    var minimum: [2]u8 = undefined;
+    const ws = try connection.WebSocket.init(
+        &empty,
+        &writer.writer,
+        .{
+            .frame_buffer = &frame_buffer,
+            .tx_nodes = &tx_nodes,
+            .write_buffer = &write_buffer,
+            .close_buffer = &minimum,
+        },
+        .{ .role = .server },
+    );
+    try std.testing.expectEqual(connection.Role.server, ws.role());
+}
+
+test "WebSocket: init rejects overlapping caller buffers" {
+    var empty = std.Io.Reader.fixed("");
+    var out: [8]u8 = undefined;
+    var writer = RecordingVecWriter.init(&out);
+    var frame_buffer: [8]u8 = undefined;
+    var tx_nodes: [2]zslay.FrameNode = undefined;
+    var write_buffer: [zslay.MaxFrameHeaderLen + 1]u8 = undefined;
+    var close_buffer: [2]u8 = undefined;
+
+    // The frame buffer aliases the transmit-node storage.
+    try std.testing.expectError(error.InvalidLength, connection.WebSocket.init(
+        &empty,
+        &writer.writer,
+        .{
+            .frame_buffer = std.mem.sliceAsBytes(&tx_nodes),
+            .tx_nodes = &tx_nodes,
+            .write_buffer = &write_buffer,
+            .close_buffer = &close_buffer,
+        },
+        .{ .role = .server },
+    ));
+
+    // Mask scratch aliases the copied-write composition buffer.
+    try std.testing.expectError(error.InvalidLength, connection.WebSocket.init(
+        &empty,
+        &writer.writer,
+        .{
+            .frame_buffer = &frame_buffer,
+            .tx_nodes = &tx_nodes,
+            .write_buffer = &write_buffer,
+            .close_buffer = &close_buffer,
+            .mask_scratch = write_buffer[0..4],
+        },
+        .{ .role = .server },
+    ));
+}
+
+test "WebSocket: tx nodes are required for automatic replies" {
+    var empty = std.Io.Reader.fixed("");
+    var out: [16]u8 = undefined;
+    var writer = RecordingVecWriter.init(&out);
+    var frame_buffer: [8]u8 = undefined;
+    var no_nodes: [0]zslay.FrameNode = .{};
+    var write_buffer: [zslay.MaxFrameHeaderLen + 1]u8 = undefined;
+    var close_buffer: [2]u8 = undefined;
+    const storage: connection.Storage = .{
+        .frame_buffer = &frame_buffer,
+        .tx_nodes = &no_nodes,
+        .write_buffer = &write_buffer,
+        .close_buffer = &close_buffer,
+    };
+
+    try std.testing.expectError(error.InvalidLength, connection.WebSocket.init(
+        &empty,
+        &writer.writer,
+        storage,
+        .{ .role = .server },
+    ));
+
+    var ws = try connection.WebSocket.init(
+        &empty,
+        &writer.writer,
+        storage,
+        .{ .role = .server, .options = .{ .auto_pong = false, .auto_close = false } },
+    );
+
+    var payload = [_]u8{'x'};
+    try std.testing.expectError(error.QueueFull, ws.write_frame(Frame.text(&payload)));
+    try std.testing.expectEqual(@as(usize, 0), writer.written);
+    try std.testing.expect(!ws.is_closed());
+    try std.testing.expectEqual(@as(usize, 0), ws.tx_pending());
+}
+
+test "WebSocket: zero max_message_size also bounds outbound control payloads" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 64, 8, 0, 16) = .{};
+    try server.init(&empty, .{ .role = .server, .options = .{ .max_message_size = 0 } });
+
+    var close_storage: [2]u8 = undefined;
+    try std.testing.expectError(
+        error.FrameTooLarge,
+        server.ws.write_frame(try Frame.close(1000, "", &close_storage)),
+    );
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+    try std.testing.expect(!server.ws.is_closed());
+
+    var empty_payload: [0]u8 = .{};
+    try server.ws.write_frame(Frame.close_raw(&empty_payload));
+    try std.testing.expect(server.ws.is_closed());
+
+    var index: usize = 0;
+    const close = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqual(@as(usize, 0), close.payload.len);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: write rejects storage overlaps but allows frame_buffer payloads" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 64, 8, 8, 32) = .{};
+    try server.init(&empty, .{ .role = .server });
+
+    try std.testing.expectError(error.InvalidLength, server.ws.write_frame(Frame.binary(server.write_buffer[0..4])));
+    try std.testing.expectError(error.InvalidLength, server.ws.write_frame(Frame.binary(server.close_buffer[0..2])));
+    try std.testing.expectError(error.InvalidLength, server.ws.write_frame(Frame.binary(server.mask_scratch[0..4])));
+
+    const tx_bytes = std.mem.sliceAsBytes(&server.tx_nodes);
+    try std.testing.expectError(error.InvalidLength, server.ws.write_frame(Frame.binary(tx_bytes[0..4])));
+
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+    try std.testing.expect(!server.ws.is_closed());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+
+    // A delivered frame may be echoed from frame_buffer; that region is not
+    // connection-owned scratch.
+    @memcpy(server.frame_buffer[0..2], "hi");
+    try server.ws.write_frame(Frame.text(server.frame_buffer[0..2]));
+    try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x02, 'h', 'i' }, server.bytes());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+}
+
+test "WebSocket: max_message_size above zslay MaxPayloadLen is clamped" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+    try server.init(&empty, .{
+        .role = .server,
+        .options = .{ .max_message_size = std.math.maxInt(usize) },
+    });
+
+    const clamped_payload_len = std.math.cast(usize, zslay.MaxPayloadLen) orelse std.math.maxInt(usize);
+    const expected = @min(std.math.maxInt(usize), clamped_payload_len);
+    try std.testing.expectEqual(expected, server.ws.max_message_size());
+}
+
+test "WebSocket: set_max_message_size clamps above zslay MaxPayloadLen" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x46);
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.text(&payload));
+
+    var reader = stream.reader();
+    var client: ConnectionRig(16, 1, 64, 2, 0, 8) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .options = .{ .max_message_size = 8 },
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    client.ws.set_max_message_size(std.math.maxInt(usize));
+
+    const clamped = @min(std.math.maxInt(usize), @as(usize, zslay.MaxPayloadLen));
+    try std.testing.expectEqual(clamped, client.ws.max_message_size());
+
+    const received = try client.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.text, received.opcode);
+    try std.testing.expectEqualStrings("ok", received.payload);
+}
+
+test "WebSocket: non-FIN text fragments are delivered raw across a split code point" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{ 0x41, 0xc2 };
+    var second = [_]u8{0xa2};
+    var third = [_]u8{0xff};
+    var fourth = [_]u8{0xff};
+    try append_masked(&stream, Frame.init(false, .text, null, &first), .{ 0x01, 0x11, 0x21, 0x31 });
+    try append_masked(&stream, Frame.init(true, .continuation, null, &second), .{ 0x02, 0x12, 0x22, 0x32 });
+    try append_masked(&stream, Frame.init(false, .text, null, &third), .{ 0x03, 0x13, 0x23, 0x33 });
+    try append_masked(&stream, Frame.init(true, .continuation, null, &fourth), .{ 0x04, 0x14, 0x24, 0x34 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    const start = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.text, start.opcode);
+    try std.testing.expect(!start.fin);
+    try std.testing.expectEqualSlices(u8, &.{ 0x41, 0xc2 }, start.payload);
+
+    const split_tail = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.continuation, split_tail.opcode);
+    try std.testing.expect(split_tail.fin);
+    try std.testing.expectEqualSlices(u8, &.{0xa2}, split_tail.payload);
+
+    const invalid_start = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.text, invalid_start.opcode);
+    try std.testing.expect(!invalid_start.fin);
+    try std.testing.expectEqualSlices(u8, &.{0xff}, invalid_start.payload);
+
+    const invalid_tail = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.continuation, invalid_tail.opcode);
+    try std.testing.expect(invalid_tail.fin);
+    try std.testing.expectEqualSlices(u8, &.{0xff}, invalid_tail.payload);
+
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+    try std.testing.expect(server.ws.is_at_wire_boundary());
+}
+
+test "WebSocket: invalid FIN text latches InvalidUTF8 until reset at a frame boundary" {
+    var stream: EncodedStream(32) = .{};
+    var invalid = [_]u8{0xff};
+    var valid = [_]u8{ 'o', 'k' };
+    try append_masked(&stream, Frame.text(&invalid), .{ 0x05, 0x15, 0x25, 0x35 });
+    try append_masked(&stream, Frame.text(&valid), .{ 0x06, 0x16, 0x26, 0x36 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(error.InvalidUTF8, server.ws.read_frame());
+    try std.testing.expect(server.ws.is_at_wire_boundary());
+    const seek_after_failure = reader.seek;
+
+    try std.testing.expectError(error.InvalidUTF8, server.ws.read_frame());
+    try std.testing.expectEqual(seek_after_failure, reader.seek);
+
+    server.ws.reset();
+    const received = try server.ws.read_frame();
+    try std.testing.expectEqualStrings("ok", received.payload);
+    try std.testing.expect(server.ws.is_at_wire_boundary());
+}
+
+test "WebSocket: truncated header returns UnexpectedEOF and latches" {
+    var wire = [_]u8{0x81};
+    var reader = std.Io.Reader.fixed(&wire);
+    var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(error.UnexpectedEOF, server.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 1), reader.seek);
+
+    try std.testing.expectError(error.UnexpectedEOF, server.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 1), reader.seek);
+}
+
+test "WebSocket: a partial header is not a wire boundary" {
+    {
+        var wire = [_]u8{0x81};
+        var reader = std.Io.Reader.fixed(&wire);
+        var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+        try server.init(&reader, .{ .role = .server });
+
+        try std.testing.expectError(error.UnexpectedEOF, server.ws.read_frame());
+        try std.testing.expectEqual(@as(usize, 1), reader.seek);
+        try std.testing.expect(!server.ws.is_at_wire_boundary());
+
+        try std.testing.expectError(error.UnexpectedEOF, server.ws.read_frame());
+        try std.testing.expectEqual(@as(usize, 1), reader.seek);
+        try std.testing.expect(!server.ws.is_at_wire_boundary());
+    }
+
+    {
+        var reader = std.Io.Reader.fixed("");
+        var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+        try server.init(&reader, .{ .role = .server });
+
+        try std.testing.expectError(error.UnexpectedEOF, server.ws.read_frame());
+        try std.testing.expectEqual(@as(usize, 0), reader.seek);
+        try std.testing.expect(server.ws.is_at_wire_boundary());
+
+        try std.testing.expectError(error.UnexpectedEOF, server.ws.read_frame());
+        try std.testing.expectEqual(@as(usize, 0), reader.seek);
+        try std.testing.expect(server.ws.is_at_wire_boundary());
+    }
+}
+
+test "WebSocket: truncated payload returns UnexpectedEOF and latches" {
+    var wire = [_]u8{ 0x81, 0x05, 'a', 'b', 'c' };
+    var reader = std.Io.Reader.fixed(&wire);
+    var client: ConnectionRig(16, 1, 64, 2, 0, 8) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(@splat(0x66)),
+    });
+
+    try std.testing.expectError(error.UnexpectedEOF, client.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 5), reader.seek);
+    try std.testing.expect(!client.ws.is_at_wire_boundary());
+
+    try std.testing.expectError(error.UnexpectedEOF, client.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 5), reader.seek);
+    try std.testing.expect(!client.ws.is_at_wire_boundary());
+}
+
+test "WebSocket: a failed reader returns IoError and latches" {
+    var reader = std.Io.Reader{
+        .vtable = &.{ .stream = read_failed_stream },
+        .buffer = &.{},
+        .seek = 0,
+        .end = 0,
+    };
+    var server: ConnectionRig(16, 1, 64, 8, 0, 8) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(error.IoError, server.ws.read_frame());
+    try std.testing.expectError(error.IoError, server.ws.read_frame());
+
+    server.ws.reset();
+    try std.testing.expectError(error.IoError, server.ws.read_frame());
+}
+
+test "WebSocket: vectored writes above the threshold use two iovecs" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 64, 8, 0, 1100) = .{};
+    try server.init(&empty, .{ .role = .server, .options = .{ .writev_threshold = 1024 } });
+
+    var payload: [1025]u8 = @splat(0x5a);
+    try server.ws.write_frame(Frame.binary(&payload));
+
+    try std.testing.expectEqual(@as(usize, 1), server.writer.drain_calls);
+    try std.testing.expectEqual(@as(usize, 2), server.writer.max_iovecs);
+
+    var index: usize = 0;
+    const wire_frame = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqual(@as(usize, 1025), wire_frame.payload.len);
+    try std.testing.expectEqualSlices(u8, &payload, wire_frame.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: payload equal to the threshold uses the copied path" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 1100, 8, 0, 1100) = .{};
+    try server.init(&empty, .{ .role = .server, .options = .{ .writev_threshold = 1024 } });
+
+    var payload: [1024]u8 = @splat(0x6b);
+    try server.ws.write_frame(Frame.binary(&payload));
+
+    try std.testing.expectEqual(@as(usize, 1), server.writer.drain_calls);
+    try std.testing.expectEqual(@as(usize, 1), server.writer.max_iovecs);
+
+    var index: usize = 0;
+    const wire_frame = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqual(@as(usize, 1024), wire_frame.payload.len);
+    try std.testing.expectEqualSlices(u8, &payload, wire_frame.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: set_writev false composes header and payload through the write buffer" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 64, 8, 0, 2010) = .{};
+    try server.init(&empty, .{ .role = .server });
+    server.ws.set_writev(false);
+
+    var payload: [2000]u8 = @splat(0x7c);
+    var expected: [2010]u8 = undefined;
+    const expected_bytes = try Frame.binary(&payload).write(&expected);
+
+    try server.ws.write_frame(Frame.binary(&payload));
+
+    try std.testing.expect(server.writer.drain_calls > 1);
+    try std.testing.expectEqual(@as(usize, 1), server.writer.max_iovecs);
+    try std.testing.expectEqualSlices(u8, expected_bytes, server.bytes());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+}
+
+test "WebSocket: masked vectored writes chunk through scratch and preserve offsets" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x19);
+    var empty = std.Io.Reader.fixed("");
+    var client: ConnectionRig(16, 2, 64, 8, 4, 64) = .{};
+    try client.init(&empty, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+    client.ws.set_writev_threshold(0);
+
+    var payload = [_]u8{ 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j' };
+    try client.ws.write_frame(Frame.text(&payload));
+
+    try std.testing.expectEqual(@as(usize, 3), client.writer.drain_calls);
+    try std.testing.expectEqual(@as(usize, 2), client.writer.max_iovecs);
+    try std.testing.expectEqual(@as(usize, 16), client.writer.written);
+
+    var index: usize = 0;
+    const wire_frame = try next_wire_frame(client.bytes(), &index);
+    try std.testing.expect(wire_frame.header.header.mask);
+    const key = wire_frame.header.masking_key.?;
+    try std.testing.expectEqual(@as(usize, 10), wire_frame.payload.len);
+
+    var plaintext: [10]u8 = undefined;
+    @memcpy(&plaintext, wire_frame.payload);
+    zslay.mask(&plaintext, key, 0);
+    try std.testing.expectEqualStrings("abcdefghij", &plaintext);
+}
+
+test "WebSocket: empty mask scratch falls back to the copied path" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x2b);
+    var empty = std.Io.Reader.fixed("");
+    var client: ConnectionRig(16, 2, 64, 8, 0, 64) = .{};
+    try client.init(&empty, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+    client.ws.set_writev_threshold(0);
+
+    var payload = [_]u8{ 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j' };
+    try client.ws.write_frame(Frame.text(&payload));
+
+    try std.testing.expectEqual(@as(usize, 1), client.writer.drain_calls);
+    try std.testing.expectEqual(@as(usize, 1), client.writer.max_iovecs);
+
+    var index: usize = 0;
+    const wire_frame = try next_wire_frame(client.bytes(), &index);
+    const key = wire_frame.header.masking_key.?;
+    var plaintext: [10]u8 = undefined;
+    @memcpy(&plaintext, wire_frame.payload);
+    zslay.mask(&plaintext, key, 0);
+    try std.testing.expectEqualStrings("abcdefghij", &plaintext);
+}
+
+test "WebSocket: empty payload writes a header-only frame" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 1, 64, 8, 0, 16) = .{};
+    try server.init(&empty, .{ .role = .server });
+
+    var payload: [0]u8 = .{};
+    try server.ws.write_frame(Frame.text(&payload));
+
+    try std.testing.expectEqual(@as(usize, 2), server.writer.written);
+    try std.testing.expectEqual(@as(usize, 1), server.writer.drain_calls);
+    try std.testing.expectEqual(@as(usize, 1), server.writer.max_iovecs);
+    try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x00 }, server.bytes());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+}
+
+test "WebSocket: a latched write failure blocks reads" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x5d);
+    var stream: EncodedStream(16) = .{};
+    var input = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.text(&input));
+
+    var reader = stream.reader();
+    var client: ConnectionRig(16, 2, 64, 2, 0, 16) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+    client.writer.fail_after = 0;
+
+    var payload = [_]u8{ 'h', 'i' };
+    try std.testing.expectError(error.IoError, client.ws.write_frame(Frame.text(&payload)));
+    try std.testing.expectEqual(@as(usize, 0), client.writer.written);
+    try std.testing.expectEqual(@as(usize, 1), client.ws.tx_pending());
+
+    const drain_calls_after_failure = client.writer.drain_calls;
+    try std.testing.expectError(error.IoError, client.ws.write_frame(Frame.text(&payload)));
+    try std.testing.expectEqual(drain_calls_after_failure, client.writer.drain_calls);
+
+    try std.testing.expectError(error.IoError, client.ws.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), reader.seek);
+}
+
+test "WebSocket: flush reports a buffered writer failure and latches" {
+    var empty = std.Io.Reader.fixed("");
+    var frame_buffer: [16]u8 = undefined;
+    var tx_nodes: [1]zslay.FrameNode = undefined;
+    var write_buffer: [64]u8 = undefined;
+    var close_buffer: [8]u8 = undefined;
+    var out: [64]u8 = undefined;
+    var flush_buffer: [64]u8 = undefined;
+    var writer = FlushFailWriter.init(&out, &flush_buffer);
+
+    var ws = try connection.WebSocket.init(&empty, &writer.writer, .{
+        .frame_buffer = &frame_buffer,
+        .tx_nodes = &tx_nodes,
+        .write_buffer = &write_buffer,
+        .close_buffer = &close_buffer,
+    }, .{ .role = .server });
+
+    var payload = [_]u8{ 'h', 'i' };
+    try ws.write_frame(Frame.text(&payload));
+    try std.testing.expectEqual(@as(usize, 0), writer.written);
+    try std.testing.expectEqual(@as(usize, 4), writer.writer.end);
+
+    try std.testing.expectError(error.IoError, ws.flush());
+    try std.testing.expectEqual(@as(usize, 1), writer.flush_calls);
+
+    try std.testing.expectError(error.IoError, ws.flush());
+    try std.testing.expectEqual(@as(usize, 1), writer.flush_calls);
+
+    var next_payload = [_]u8{'x'};
+    try std.testing.expectError(error.IoError, ws.write_frame(Frame.text(&next_payload)));
+}
+
+test "WebSocket: automatic pong is flushed before read_frame returns" {
+    var stream: EncodedStream(32) = .{};
+    var ping_payload = [_]u8{'p'};
+    var text_payload = [_]u8{ 'o', 'k' };
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x01, 0x23, 0x45, 0x67 });
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x89, 0xab, 0xcd, 0xef });
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var tx_nodes: [1]zslay.FrameNode = undefined;
+    var write_buffer: [64]u8 = undefined;
+    var close_buffer: [8]u8 = undefined;
+    var out: [16]u8 = undefined;
+    var flush_buffer: [16]u8 = undefined;
+    var writer = FlushFailWriter.init(&out, &flush_buffer);
+    writer.fail_flush = false;
+
+    var ws = try connection.WebSocket.init(&reader, &writer.writer, .{
+        .frame_buffer = &frame_buffer,
+        .tx_nodes = &tx_nodes,
+        .write_buffer = &write_buffer,
+        .close_buffer = &close_buffer,
+    }, .{ .role = .server });
+
+    const received = try ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.text, received.opcode);
+    try std.testing.expectEqualStrings("ok", received.payload);
+
+    // The obligation flush moved the buffered pong to the recording sink
+    // before read_frame returned.
+    try std.testing.expectEqual(@as(usize, 1), writer.flush_calls);
+    try std.testing.expectEqual(@as(usize, 0), writer.writer.end);
+    try std.testing.expectEqual(@as(usize, 3), writer.written);
+
+    var index: usize = 0;
+    const pong = try next_wire_frame(out[0..writer.written], &index);
+    try std.testing.expectEqual(connection.OpCode.pong, connection.OpCode.from_wire(pong.header.header.opcode).?);
+    try std.testing.expectEqualStrings("p", pong.payload);
+    try std.testing.expectEqual(writer.written, index);
+}
+
+test "WebSocket: failed automatic reply flush latches write failure" {
+    var stream: EncodedStream(16) = .{};
+    var ping_payload = [_]u8{'p'};
+    var text_payload = [_]u8{ 'o', 'k' };
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x01, 0x23, 0x45, 0x67 });
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x89, 0xab, 0xcd, 0xef });
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var tx_nodes: [1]zslay.FrameNode = undefined;
+    var write_buffer: [64]u8 = undefined;
+    var close_buffer: [8]u8 = undefined;
+    var out: [16]u8 = undefined;
+    var flush_buffer: [16]u8 = undefined;
+    var writer = FlushFailWriter.init(&out, &flush_buffer);
+
+    var ws = try connection.WebSocket.init(&reader, &writer.writer, .{
+        .frame_buffer = &frame_buffer,
+        .tx_nodes = &tx_nodes,
+        .write_buffer = &write_buffer,
+        .close_buffer = &close_buffer,
+    }, .{ .role = .server });
+
+    try std.testing.expectError(error.IoError, ws.read_frame());
+    // The automatic pong reached the buffered writer, so the flush failure is
+    // a transmit failure rather than a read failure.
+    try std.testing.expectEqual(@as(?WebSocketError, error.IoError), ws.write_failure);
+    try std.testing.expectEqual(@as(?WebSocketError, null), ws.read_failure);
+    try std.testing.expectEqual(@as(usize, 1), writer.flush_calls);
+    try std.testing.expectEqual(@as(usize, 0), writer.written);
+
+    const seek_after_failure = reader.seek;
+    try std.testing.expectError(error.IoError, ws.read_frame());
+    try std.testing.expectEqual(seek_after_failure, reader.seek);
+    try std.testing.expectEqual(@as(usize, 1), writer.flush_calls);
+
+    ws.reset_tx();
+    try std.testing.expectEqual(@as(?WebSocketError, null), ws.write_failure);
+    try std.testing.expectEqual(@as(?WebSocketError, null), ws.read_failure);
+
+    const received = try ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.text, received.opcode);
+    try std.testing.expectEqualStrings("ok", received.payload);
+}
+
+test "WebSocket: a successful buffered flush releases queued bytes" {
+    var empty = std.Io.Reader.fixed("");
+    var frame_buffer: [16]u8 = undefined;
+    var tx_nodes: [1]zslay.FrameNode = undefined;
+    var write_buffer: [64]u8 = undefined;
+    var close_buffer: [8]u8 = undefined;
+    var out: [16]u8 = undefined;
+    var flush_buffer: [16]u8 = undefined;
+    var writer = FlushFailWriter.init(&out, &flush_buffer);
+    writer.fail_flush = false;
+
+    var ws = try connection.WebSocket.init(&empty, &writer.writer, .{
+        .frame_buffer = &frame_buffer,
+        .tx_nodes = &tx_nodes,
+        .write_buffer = &write_buffer,
+        .close_buffer = &close_buffer,
+    }, .{ .role = .server });
+
+    var payload = [_]u8{ 'h', 'i' };
+    try ws.write_frame(Frame.text(&payload));
+    try std.testing.expectEqual(@as(usize, 0), writer.written);
+    try std.testing.expectEqual(@as(usize, 4), writer.writer.end);
+
+    try ws.flush();
+
+    try std.testing.expectEqual(@as(usize, 4), writer.written);
+    try std.testing.expectEqual(@as(usize, 0), writer.writer.end);
+    try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x02, 'h', 'i' }, out[0..writer.written]);
+}
+
+test "WebSocket: reset_tx clears a terminal write failure and closed" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 64, 8, 0, 16) = .{};
+    try server.init(&empty, .{ .role = .server });
+    server.writer.fail_after = 0;
+
+    var close_storage: [2]u8 = undefined;
+    try std.testing.expectError(
+        error.IoError,
+        server.ws.write_frame(try Frame.close(1000, "", &close_storage)),
+    );
+    try std.testing.expect(server.ws.is_closed());
+    try std.testing.expectEqual(@as(usize, 1), server.ws.tx_pending());
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+
+    server.writer.fail_after = null;
+    server.ws.reset_tx();
+
+    try std.testing.expect(!server.ws.is_closed());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+
+    var next_close_storage: [2]u8 = undefined;
+    try server.ws.write_frame(try Frame.close(1000, "", &next_close_storage));
+    try std.testing.expect(server.ws.is_closed());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+
+    var index: usize = 0;
+    const close = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8 }, close.payload);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
+test "WebSocket: a mid-frame writer failure is not retried" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 64, 8, 0, 16) = .{};
+    try server.init(&empty, .{ .role = .server });
+    server.writer.fail_after = 2;
+
+    var payload = [_]u8{ 'h', 'e', 'l', 'l', 'o' };
+    try std.testing.expectError(error.IoError, server.ws.write_frame(Frame.text(&payload)));
+    try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x05 }, server.bytes());
+    try std.testing.expectEqual(@as(usize, 1), server.writer.drain_calls);
+    try std.testing.expectEqual(@as(usize, 1), server.ws.tx_pending());
+
+    var retry = [_]u8{'x'};
+    try std.testing.expectError(error.IoError, server.ws.write_frame(Frame.text(&retry)));
+    try std.testing.expectEqual(@as(usize, 1), server.writer.drain_calls);
+    try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x05 }, server.bytes());
 }

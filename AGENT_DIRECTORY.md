@@ -56,13 +56,19 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 | `reviewer` | Read-only quality gate | any changed file |
 | `integrator` | Findings, final diff, verification | affected paths through owners |
 
+`src/connection.zig` is a current file owned by the `connection` agent. Its
+tests live in `src/test.zig` and belong to the `testing` agent; connection work
+that needs new coverage hands the test change to `testing` instead of editing
+the test file in the same pass.
+
 ## Planned Extension Ownership
 
 These modules are roadmap items, not current files. Existing agent definitions
 remain scoped to current files; expand the owner and matching definition before
-implementation. `src/utf8.zig` has landed under the `framing` owner and
-`src/fragment.zig` under `fragments`, so both are current files rather than
-roadmap items. `src/split.zig` remains planned under `fragments`.
+implementation. `src/utf8.zig` has landed under the `framing` owner,
+`src/connection.zig` under `connection`, and `src/fragment.zig` under
+`fragments`, so all three are current files rather than roadmap items.
+`src/split.zig` remains planned under `fragments`.
 
 | Module | Planned owner | Dependency |
 | --- | --- | --- |
