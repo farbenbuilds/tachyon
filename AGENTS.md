@@ -11,8 +11,8 @@ client handshake, and split read/write halves. The 0.10.0 surface is the parity
 baseline, not the ceiling: backpressure, streaming messages, native `std.Io`
 transport, permessage-deflate (RFC 7692), and pub/sub are planned post-parity
 extensions documented in `CODEBASE.md`. Incremental UTF-8 validation is
-implemented in `src/utf8.zig`; its connection-level read path and collector call
-sites land with the connection and fragment layers.
+implemented in `src/utf8.zig`, and the fragment collector applies it across
+fragments; its connection-level read path lands with the connection layer.
 
 The framing engine is
 [farbenbuilds/zslay](https://github.com/farbenbuilds/zslay). It is declared in
@@ -34,7 +34,8 @@ and documentation foundation:
   static library, the Debug and ReleaseSafe test steps, the `check` step, and
   the zslay dependency.
 - `src/root.zig` is the module entry point; it re-exports zslay, the frame
-  facade, the UTF-8 validator, and the WebSocket error model.
+  facade, the UTF-8 validator, the WebSocket error model, and the fragment
+  accumulator and collector.
 - `src/frame.zig` implements the frame facade: `Frame`, `Payload`, the `OpCode`
   and `CloseCode` aliases with conversions, `unmask`/`unmask_at` delegations,
   the header-length bridge, `std.Io.Writer` vectored writes, and caller-buffer
@@ -46,6 +47,18 @@ and documentation foundation:
   complete ranges use `std.unicode`, split code points stay in a `State` value,
   `validate_reader` adapts arbitrary `std.Io.Reader` chunk sizes, and
   `Frame.is_utf8` delegates to the same validator.
+- `src/fragment.zig` implements the read-side fragment layer: the `Fragments`
+  accumulator over caller-owned message storage and `FragmentCollector`, which
+  drives `zslay.Conn` over a caller-provided `std.Io.Reader` with a caller-owned
+  `frame_buffer` that bounds one frame payload. It collects text and binary
+  continuations, validates text incrementally across fragments, unmasks inbound
+  frames in place, and returns control frames to the caller without disturbing
+  the in-progress message. Every protocol, frame, and I/O `read_frame` failure
+  is latched and returned until `reset`; a zero `max_message_size` is a
+  configuration rejection that returns `FrameTooLarge` without latching. The
+  collector returns close frames after zslay's header-level checks only, so
+  close-code and reason validation remains with the connection layer. It sends
+  no automatic pong or close replies.
 - `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt` are the
   generated zon2nix views used by the flake for offline builds.
 - `flake.nix`, `flake.lock`, and `.envrc` provide the Zig 0.17.1 shell.
@@ -59,8 +72,9 @@ and documentation foundation:
 - The root Markdown guides define the architecture and process.
 
 The test suite covers the dependency boundary, the error model, the frame
-facade, and the incremental UTF-8 validator. Do not describe the connection,
-fragmentation, handshake, upgrade, or split modules as implemented before they
+facade, the incremental UTF-8 validator, and the fragment accumulator and
+collector; `src/root.zig` adds a fragment re-export test. Do not describe the
+connection, handshake, upgrade, or split modules as implemented before they
 exist and are tested.
 
 ## Non-Negotiable Architecture
@@ -108,11 +122,12 @@ Current files:
 | --- | --- |
 | `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe tests, `check` step, and the zslay dependency. |
 | `build.zig.zon.nix`, `.json`, `.txt` | Generated zon2nix views for offline Nix builds and dependency audits. |
-| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, and the error model. |
+| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, the error model, and the fragment accumulator and collector. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` and `CloseCode` aliases with conversions, `unmask`/`unmask_at`, the header-length bridge, and write paths. |
 | `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
 | `src/utf8.zig` | Incremental UTF-8 validation: `std.unicode` complete ranges, split code-point `State`, and a `std.Io.Reader` adapter. |
-| `src/test.zig` | Unit tests for the error model, frame facade, and UTF-8 validator; expanded as protocol layers land. |
+| `src/fragment.zig` | `Fragments` accumulator and `FragmentCollector` over `zslay.Conn`: caller-owned `frame_buffer` that bounds one frame payload and `message_buffer` that bounds one collected message, streaming text validation, and control-frame pass-through. |
+| `src/test.zig` | Unit tests for the error model, frame facade, UTF-8 validator, and fragment accumulator and collector; expanded as protocol layers land. |
 | `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
@@ -140,7 +155,7 @@ Target source layout, in dependency order:
 | `src/utf8.zig` | Incremental zero-allocation UTF-8 validation for text messages: `std.unicode` complete ranges, split code-point `State`, and a `std.Io.Reader` adapter. |
 | `src/backpressure.zig` | Planned extension: byte/frame watermarks and admission policy over zslay's bounded queue. |
 | `src/connection.zig` | Role-aware `WebSocket` policy over `zslay.Conn`: read/write loops, auto-pong, auto-close, mask option, limits, vectored writes. |
-| `src/fragment.zig` | `FragmentCollector`, split-read collector, fragment buffering, streaming UTF-8. |
+| `src/fragment.zig` | Implemented: `Fragments` accumulator and read-side `FragmentCollector` over `zslay.Conn`, caller-owned frame and message buffers, streaming UTF-8, and control-frame pass-through. |
 | `src/stream.zig` | Planned extension: chunked message reader/writer for large messages. |
 | `src/split.zig` | Read and write halves plus split constructors. |
 | `src/native_stream.zig` | Planned extension: `std.Io.Reader`/`std.Io.Writer` adapter for `std.Io.net.Stream`. |

@@ -1,7 +1,7 @@
 //! tachyon public module.
 //!
 //! Re-exports the pinned zslay codec, the frame facade, the incremental UTF-8
-//! validator, and the WebSocket error model.
+//! validator, the WebSocket error model, and the fragment collector.
 
 pub const zslay = @import("zslay");
 
@@ -48,6 +48,11 @@ pub const is_protocol_error = errors.is_protocol_error;
 pub const is_fatal = errors.is_fatal;
 pub const is_utf8_error = errors.is_utf8_error;
 pub const is_eof_error = errors.is_eof_error;
+
+pub const fragment = @import("fragment.zig");
+pub const Fragments = fragment.Fragments;
+pub const FragmentCollector = fragment.FragmentCollector;
+pub const Role = fragment.Role;
 
 test {
     _ = @import("test.zig");
@@ -99,4 +104,29 @@ test "UTF-8: public module re-exports the validator" {
     var buffer: [4]u8 = undefined;
     var reader = std.Io.Reader.fixed("ok");
     try validate_utf8_reader(&reader, &buffer);
+}
+
+test "Fragment: public module re-exports the fragment layer" {
+    const std = @import("std");
+
+    var message: [5]u8 = undefined;
+    var fragments = Fragments.init(&message);
+
+    var head = [_]u8{ 'h', 'e' };
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .text, null, &head))) == null);
+    try std.testing.expectEqual(OpCode.text, fragments.message_opcode().?);
+    try std.testing.expectEqual(@as(usize, 2), fragments.message_len());
+
+    var tail = [_]u8{ 'l', 'l', 'o' };
+    const completed = try fragments.accumulate(Frame.init(true, .continuation, null, &tail));
+
+    try std.testing.expectEqualStrings("hello", completed.?.payload);
+    try std.testing.expect(fragments.is_idle());
+
+    var reader = std.Io.Reader.fixed("");
+    var frame_buffer: [4]u8 = undefined;
+    var message_buffer: [4]u8 = undefined;
+    const collector = try FragmentCollector.init(&reader, &frame_buffer, &message_buffer, Role.server, 64);
+
+    try std.testing.expect(collector.is_at_frame_boundary());
 }

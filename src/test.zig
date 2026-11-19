@@ -3,6 +3,7 @@
 const std = @import("std");
 const zslay = @import("zslay");
 const errors = @import("error.zig");
+const fragment = @import("fragment.zig");
 const frame = @import("frame.zig");
 const utf8 = @import("utf8.zig");
 
@@ -1279,4 +1280,1015 @@ test "UTF-8: every partition of short valid and invalid messages agrees" {
             try std.testing.expectError(error.InvalidUtf8, validate_utf8_partition(bytes, @intCast(mask)));
         }
     }
+}
+
+/// Test-only wire encoder that concatenates encoded frames in a fixed buffer.
+///
+/// Each frame payload must be a separate caller-owned buffer, because
+/// `Frame.write` copies the payload and rejects aliasing output.
+fn EncodedStream(comptime capacity: usize) type {
+    return struct {
+        bytes: [capacity]u8 = undefined,
+        len: usize = 0,
+
+        const Self = @This();
+
+        fn append(self: *Self, f: Frame) !void {
+            const encoded = try f.write(self.bytes[self.len..]);
+            self.len += encoded.len;
+        }
+
+        fn reader(self: *const Self) std.Io.Reader {
+            return std.Io.Reader.fixed(self.bytes[0..self.len]);
+        }
+    };
+}
+
+test "Fragments: unfragmented text returns the same FIN frame and payload" {
+    var buffer: [32]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var payload = [_]u8{ 'h', 'e', 'l', 'l', 'o' };
+
+    const completed = (try fragments.accumulate(Frame.text(&payload))).?;
+
+    try std.testing.expect(completed.fin);
+    try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+    try std.testing.expectEqual(@as(?MaskingKey, null), completed.masking_key);
+    try std.testing.expectEqualSlices(u8, &payload, completed.payload);
+    // The unfragmented path must borrow the incoming payload, not copy it.
+    try std.testing.expectEqual(@intFromPtr(&payload), @intFromPtr(completed.payload.ptr));
+    try std.testing.expect(fragments.is_idle());
+    try std.testing.expectEqual(@as(usize, 0), fragments.message_len());
+}
+
+test "Fragments: unfragmented binary returns arbitrary bytes unchanged" {
+    var buffer: [32]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var payload = [_]u8{ 0x00, 0xff, 0x80, 0x7f, 0x00 };
+
+    const completed = (try fragments.accumulate(Frame.binary(&payload))).?;
+
+    try std.testing.expect(completed.fin);
+    try std.testing.expectEqual(fragment.OpCode.binary, completed.opcode);
+    try std.testing.expectEqualSlices(u8, &payload, completed.payload);
+    try std.testing.expect(fragments.is_idle());
+}
+
+test "Fragments: unfragmented text rejects invalid and truncated UTF-8" {
+    var buffer: [32]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var invalid = [_]u8{ 0xff, 0xfe };
+    var truncated = [_]u8{ 0xf0, 0x90, 0x8d };
+
+    try std.testing.expectError(error.InvalidUTF8, fragments.accumulate(Frame.text(&invalid)));
+    try std.testing.expectError(error.InvalidUTF8, fragments.accumulate(Frame.text(&truncated)));
+
+    try std.testing.expect(fragments.is_idle());
+    try std.testing.expectEqual(@as(usize, 0), fragments.message_len());
+}
+
+test "Fragments: two-part and three-part binary messages assemble on FIN" {
+    var buffer: [32]u8 = undefined;
+
+    {
+        var fragments = fragment.Fragments.init(&buffer);
+        var first = [_]u8{ 'a', 'b', 'c' };
+        var second = [_]u8{ 'd', 'e' };
+
+        try std.testing.expect((try fragments.accumulate(Frame.init(false, .binary, null, &first))) == null);
+        try std.testing.expectEqual(@as(usize, 3), fragments.message_len());
+        try std.testing.expectEqual(@as(?fragment.OpCode, .binary), fragments.message_opcode());
+
+        const completed = (try fragments.accumulate(Frame.init(true, .continuation, null, &second))).?;
+        try std.testing.expect(completed.fin);
+        try std.testing.expectEqual(fragment.OpCode.binary, completed.opcode);
+        try std.testing.expectEqualSlices(u8, "abcde", completed.payload);
+        try std.testing.expect(fragments.is_idle());
+    }
+
+    {
+        var fragments = fragment.Fragments.init(&buffer);
+        var a = [_]u8{'a'};
+        var b = [_]u8{'b'};
+        var c = [_]u8{'c'};
+
+        try std.testing.expect((try fragments.accumulate(Frame.init(false, .binary, null, &a))) == null);
+        try std.testing.expect((try fragments.accumulate(Frame.init(false, .continuation, null, &b))) == null);
+        const completed = (try fragments.accumulate(Frame.init(true, .continuation, null, &c))).?;
+
+        try std.testing.expect(completed.fin);
+        try std.testing.expectEqual(fragment.OpCode.binary, completed.opcode);
+        try std.testing.expectEqualSlices(u8, "abc", completed.payload);
+        try std.testing.expect(fragments.is_idle());
+    }
+}
+
+test "Fragments: text split inside a multi-byte code point completes with the original bytes" {
+    var buffer: [32]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var first = [_]u8{ 'A', 0xc2 };
+    var second = [_]u8{ 0xa2, 0xe2 };
+    var third = [_]u8{ 0x82, 0xac };
+
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .text, null, &first))) == null);
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .continuation, null, &second))) == null);
+    try std.testing.expectEqual(@as(usize, 4), fragments.message_len());
+    const completed = (try fragments.accumulate(Frame.init(true, .continuation, null, &third))).?;
+
+    try std.testing.expect(completed.fin);
+    try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+    try std.testing.expectEqualSlices(u8, "A\xc2\xa2\xe2\x82\xac", completed.payload);
+    try std.testing.expect(fragments.is_idle());
+}
+
+test "Fragments: text continuation with an invalid byte returns InvalidUTF8 without state change" {
+    var buffer: [32]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var first = [_]u8{'A'};
+    var invalid = [_]u8{0xff};
+    var last = [_]u8{'B'};
+
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .text, null, &first))) == null);
+    try std.testing.expectError(
+        error.InvalidUTF8,
+        fragments.accumulate(Frame.init(false, .continuation, null, &invalid)),
+    );
+
+    // The rejected bytes must not be collected and the validator stays usable.
+    try std.testing.expectEqual(@as(usize, 1), fragments.message_len());
+    try std.testing.expectEqual(@as(?fragment.OpCode, .text), fragments.message_opcode());
+
+    const completed = (try fragments.accumulate(Frame.init(true, .continuation, null, &last))).?;
+    try std.testing.expectEqualSlices(u8, "AB", completed.payload);
+}
+
+test "Fragments: final text continuation ending inside a code point returns InvalidUTF8" {
+    var buffer: [32]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var lead = [_]u8{ 0xf0, 0x90 };
+    var tail = [_]u8{0x8d};
+
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .text, null, &lead))) == null);
+    try std.testing.expectError(
+        error.InvalidUTF8,
+        fragments.accumulate(Frame.init(true, .continuation, null, &tail)),
+    );
+
+    try std.testing.expectEqual(@as(usize, 2), fragments.message_len());
+    try std.testing.expect(!fragments.is_idle());
+}
+
+test "Fragments: orphan continuation returns InvalidContinuationFrame" {
+    var buffer: [16]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var payload = [_]u8{'x'};
+
+    try std.testing.expectError(
+        error.InvalidContinuationFrame,
+        fragments.accumulate(Frame.init(false, .continuation, null, &payload)),
+    );
+    try std.testing.expectError(
+        error.InvalidContinuationFrame,
+        fragments.accumulate(Frame.init(true, .continuation, null, &payload)),
+    );
+
+    try std.testing.expect(fragments.is_idle());
+    try std.testing.expectEqual(@as(usize, 0), fragments.message_len());
+}
+
+test "Fragments: new data frame while a message is active returns InvalidFragment" {
+    var buffer: [32]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var first = [_]u8{'a'};
+    var text = [_]u8{'t'};
+    var binary = [_]u8{'b'};
+
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .binary, null, &first))) == null);
+    try std.testing.expectError(
+        error.InvalidFragment,
+        fragments.accumulate(Frame.init(false, .text, null, &text)),
+    );
+    try std.testing.expectError(
+        error.InvalidFragment,
+        fragments.accumulate(Frame.init(true, .text, null, &text)),
+    );
+    try std.testing.expectError(
+        error.InvalidFragment,
+        fragments.accumulate(Frame.init(true, .binary, null, &binary)),
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), fragments.message_len());
+    try std.testing.expectEqual(@as(?fragment.OpCode, .binary), fragments.message_opcode());
+
+    const completed = (try fragments.accumulate(Frame.init(true, .continuation, null, &text))).?;
+    try std.testing.expectEqualSlices(u8, "at", completed.payload);
+}
+
+test "Fragments: a ping between fragments is returned and the message stays active" {
+    var buffer: [32]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var first = [_]u8{ 'h', 'e' };
+    var ping_payload = [_]u8{'?'};
+    var last = [_]u8{ 'l', 'l', 'o' };
+
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .text, null, &first))) == null);
+
+    const ping = (try fragments.accumulate(Frame.ping(&ping_payload))).?;
+    try std.testing.expect(ping.fin);
+    try std.testing.expectEqual(fragment.OpCode.ping, ping.opcode);
+    try std.testing.expectEqual(@as(?MaskingKey, null), ping.masking_key);
+    try std.testing.expectEqualSlices(u8, &ping_payload, ping.payload);
+    try std.testing.expect(!fragments.is_idle());
+    try std.testing.expectEqual(@as(usize, 2), fragments.message_len());
+
+    const completed = (try fragments.accumulate(Frame.init(true, .continuation, null, &last))).?;
+    try std.testing.expectEqualSlices(u8, "hello", completed.payload);
+}
+
+test "Fragments: close and pong between fragments are returned unchanged" {
+    var buffer: [32]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var first = [_]u8{'a'};
+    var close_payload = [_]u8{ 0x03, 0xe8 };
+    var pong_payload = [_]u8{'p'};
+    var last = [_]u8{'b'};
+
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .binary, null, &first))) == null);
+
+    const close = (try fragments.accumulate(Frame.close_raw(&close_payload))).?;
+    try std.testing.expect(close.fin);
+    try std.testing.expectEqual(fragment.OpCode.close, close.opcode);
+    try std.testing.expectEqual(@as(?MaskingKey, null), close.masking_key);
+    try std.testing.expectEqualSlices(u8, &close_payload, close.payload);
+    try std.testing.expect(!fragments.is_idle());
+
+    const pong = (try fragments.accumulate(Frame.pong(&pong_payload))).?;
+    try std.testing.expect(pong.fin);
+    try std.testing.expectEqual(fragment.OpCode.pong, pong.opcode);
+    try std.testing.expectEqual(@as(?MaskingKey, null), pong.masking_key);
+    try std.testing.expectEqualSlices(u8, &pong_payload, pong.payload);
+    try std.testing.expect(!fragments.is_idle());
+    try std.testing.expectEqual(@as(usize, 1), fragments.message_len());
+
+    const completed = (try fragments.accumulate(Frame.init(true, .continuation, null, &last))).?;
+    try std.testing.expectEqualSlices(u8, "ab", completed.payload);
+}
+
+test "Fragments: empty start and empty final continuation produce an empty message" {
+    var buffer: [8]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var empty: [0]u8 = .{};
+
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .text, null, &empty))) == null);
+    try std.testing.expect(!fragments.is_idle());
+    try std.testing.expectEqual(@as(usize, 0), fragments.message_len());
+
+    const completed = (try fragments.accumulate(Frame.init(true, .continuation, null, &empty))).?;
+    try std.testing.expect(completed.fin);
+    try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+    try std.testing.expectEqual(@as(usize, 0), completed.payload.len);
+    try std.testing.expect(fragments.is_idle());
+}
+
+test "Fragments: buffer overflow returns BufferTooShort before committing state" {
+    var buffer: [4]u8 = @splat(0xaa);
+    var fragments = fragment.Fragments.init(&buffer);
+    var oversized = [_]u8{ 1, 2, 3, 4, 5 };
+
+    try std.testing.expectError(
+        error.BufferTooShort,
+        fragments.accumulate(Frame.init(false, .binary, null, &oversized)),
+    );
+    try std.testing.expect(fragments.is_idle());
+    try std.testing.expectEqual(@as(usize, 0), fragments.message_len());
+    for (buffer) |byte| try std.testing.expectEqual(@as(u8, 0xaa), byte);
+
+    var head = [_]u8{ 1, 2, 3 };
+    var overflow = [_]u8{ 4, 5 };
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .binary, null, &head))) == null);
+    try std.testing.expectError(
+        error.BufferTooShort,
+        fragments.accumulate(Frame.init(false, .continuation, null, &overflow)),
+    );
+
+    // Neither the length nor the untouched tail byte may move on the failure.
+    try std.testing.expectEqual(@as(usize, 3), fragments.message_len());
+    try std.testing.expectEqual(@as(u8, 0xaa), buffer[3]);
+
+    var last = [_]u8{4};
+    const completed = (try fragments.accumulate(Frame.init(true, .continuation, null, &last))).?;
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4 }, completed.payload);
+}
+
+test "Fragments: accessors and reset track the in-progress message" {
+    var buffer: [16]u8 = undefined;
+    var fragments = fragment.Fragments.init(&buffer);
+    var first = [_]u8{ 'a', 'b' };
+    var second = [_]u8{'c'};
+    var empty: [0]u8 = .{};
+
+    try std.testing.expect(fragments.is_idle());
+    try std.testing.expectEqual(@as(usize, 0), fragments.message_len());
+    try std.testing.expectEqual(@as(?fragment.OpCode, null), fragments.message_opcode());
+
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .text, null, &first))) == null);
+    try std.testing.expect(!fragments.is_idle());
+    try std.testing.expectEqual(@as(usize, 2), fragments.message_len());
+    try std.testing.expectEqual(@as(?fragment.OpCode, .text), fragments.message_opcode());
+
+    fragments.reset();
+    try std.testing.expect(fragments.is_idle());
+    try std.testing.expectEqual(@as(usize, 0), fragments.message_len());
+    try std.testing.expectEqual(@as(?fragment.OpCode, null), fragments.message_opcode());
+
+    // A reset accumulator starts a fresh message and ignores discarded bytes.
+    try std.testing.expect((try fragments.accumulate(Frame.init(false, .binary, null, &second))) == null);
+    const completed = (try fragments.accumulate(Frame.init(true, .continuation, null, &empty))).?;
+    try std.testing.expectEqual(fragment.OpCode.binary, completed.opcode);
+    try std.testing.expectEqualSlices(u8, "c", completed.payload);
+}
+
+test "FragmentCollector: unfragmented text returns the exact payload" {
+    var stream: EncodedStream(64) = .{};
+    var payload = [_]u8{ 'h', 'e', 'l', 'l', 'o' };
+    try stream.append(Frame.text(&payload));
+
+    var reader = stream.reader();
+    var frame_buffer: [64]u8 = undefined;
+    var message_buffer: [64]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    const completed = try collector.read_frame();
+    try std.testing.expect(completed.fin);
+    try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+    try std.testing.expectEqualSlices(u8, &payload, completed.payload);
+    try std.testing.expect(collector.is_at_frame_boundary());
+}
+
+test "FragmentCollector: reassembles text split inside a code point" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{ 'A', 0xc2 };
+    var second = [_]u8{ 0xa2, 0xe2 };
+    var third = [_]u8{ 0x82, 0xac };
+    try stream.append(Frame.init(false, .text, null, &first));
+    try stream.append(Frame.init(false, .continuation, null, &second));
+    try stream.append(Frame.init(true, .continuation, null, &third));
+
+    var reader = stream.reader();
+    var frame_buffer: [64]u8 = undefined;
+    var message_buffer: [64]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    const completed = try collector.read_frame();
+    try std.testing.expect(completed.fin);
+    try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+    try std.testing.expectEqualSlices(u8, "A\xc2\xa2\xe2\x82\xac", completed.payload);
+    try std.testing.expect(collector.is_at_frame_boundary());
+}
+
+test "FragmentCollector: aggregated binary over the limit returns FrameTooLarge" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{ 'a', 'b', 'c', 'd', 'e' };
+    var second = [_]u8{ 'f', 'g', 'h', 'i', 'j' };
+    try stream.append(Frame.init(false, .binary, null, &first));
+    try stream.append(Frame.init(true, .continuation, null, &second));
+
+    var reader = stream.reader();
+    var frame_buffer: [64]u8 = undefined;
+    var message_buffer: [64]u8 = undefined;
+    // Two five-byte fragments exceed a nine-byte exclusive message limit.
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 9);
+
+    try std.testing.expectError(error.FrameTooLarge, collector.read_frame());
+}
+
+test "FragmentCollector: aggregated text over the limit returns FrameTooLarge" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{ 'a', 'b', 'c', 'd', 'e' };
+    var second = [_]u8{ 'f', 'g', 'h', 'i', 'j' };
+    try stream.append(Frame.init(false, .text, null, &first));
+    try stream.append(Frame.init(true, .continuation, null, &second));
+
+    var reader = stream.reader();
+    var frame_buffer: [64]u8 = undefined;
+    var message_buffer: [64]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 9);
+
+    try std.testing.expectError(error.FrameTooLarge, collector.read_frame());
+}
+
+test "FragmentCollector: exclusive message limit accepts below and rejects the boundary" {
+    var payload: [130]u8 = @splat(0x41);
+    const accepted_lengths = [_]usize{ 0, 1, 125, 126, 127, 129 };
+
+    for (accepted_lengths) |len| {
+        var stream: EncodedStream(256) = .{};
+        try stream.append(Frame.binary(payload[0..len]));
+
+        var reader = stream.reader();
+        var frame_buffer: [256]u8 = undefined;
+        var message_buffer: [256]u8 = undefined;
+        var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 130);
+
+        const completed = try collector.read_frame();
+        try std.testing.expectEqual(len, completed.payload.len);
+        try std.testing.expectEqualSlices(u8, payload[0..len], completed.payload);
+    }
+
+    var stream: EncodedStream(256) = .{};
+    try stream.append(Frame.binary(payload[0..130]));
+
+    var reader = stream.reader();
+    var frame_buffer: [256]u8 = undefined;
+    var message_buffer: [256]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 130);
+
+    try std.testing.expectError(error.FrameTooLarge, collector.read_frame());
+}
+
+test "FragmentCollector: 16-bit and 64-bit length boundaries follow the exclusive limit" {
+    var payload: [65536]u8 = @splat(0x5a);
+    var frame_buffer: [65536]u8 = undefined;
+    var message_buffer: [16]u8 = undefined;
+
+    // 65536 is accepted when the exclusive limit is 65537.
+    {
+        var stream: EncodedStream(65546) = .{};
+        try stream.append(Frame.binary(&payload));
+
+        var reader = stream.reader();
+        var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 65537);
+        const completed = try collector.read_frame();
+        try std.testing.expectEqual(@as(usize, 65536), completed.payload.len);
+    }
+
+    // 65535 is accepted when the exclusive limit is 65536.
+    {
+        var stream: EncodedStream(65545) = .{};
+        try stream.append(Frame.binary(payload[0..65535]));
+
+        var reader = stream.reader();
+        var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 65536);
+        const completed = try collector.read_frame();
+        try std.testing.expectEqual(@as(usize, 65535), completed.payload.len);
+    }
+
+    // 65536 is rejected when the exclusive limit is 65536.
+    {
+        var stream: EncodedStream(65546) = .{};
+        try stream.append(Frame.binary(&payload));
+
+        var reader = stream.reader();
+        var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 65536);
+        try std.testing.expectError(error.FrameTooLarge, collector.read_frame());
+    }
+}
+
+test "FragmentCollector: zero max_message_size rejects an empty frame before reading" {
+    var stream: EncodedStream(16) = .{};
+    var empty: [0]u8 = .{};
+    try stream.append(Frame.text(&empty));
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [16]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 0);
+
+    try std.testing.expectError(error.FrameTooLarge, collector.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), reader.seek);
+}
+
+test "FragmentCollector: server-role collector unmasks a masked client text frame" {
+    var stream: EncodedStream(64) = .{};
+    var payload = [_]u8{ 's', 'e', 'c', 'r', 'e', 't' };
+    const plaintext = [_]u8{ 's', 'e', 'c', 'r', 'e', 't' };
+    var masked = Frame.text(&payload);
+    masked.mask(.{ 0x11, 0x22, 0x33, 0x44 });
+    try stream.append(masked);
+
+    var reader = stream.reader();
+    var frame_buffer: [64]u8 = undefined;
+    var message_buffer: [64]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .server, 64);
+
+    const completed = try collector.read_frame();
+    try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+    try std.testing.expectEqual(@as(?MaskingKey, null), completed.masking_key);
+    try std.testing.expectEqualSlices(u8, &plaintext, completed.payload);
+}
+
+test "FragmentCollector: client-role collector rejects a masked inbound frame" {
+    var stream: EncodedStream(64) = .{};
+    var payload = [_]u8{'x'};
+    var masked = Frame.text(&payload);
+    masked.mask(.{ 0xaa, 0xbb, 0xcc, 0xdd });
+    try stream.append(masked);
+
+    var reader = stream.reader();
+    var frame_buffer: [64]u8 = undefined;
+    var message_buffer: [64]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expectError(error.PayloadMasked, collector.read_frame());
+}
+
+test "FragmentCollector: truncated header and payload return UnexpectedEOF" {
+    {
+        var stream: EncodedStream(16) = .{};
+        stream.bytes[0] = 0x81;
+        stream.len = 1;
+
+        var reader = stream.reader();
+        var frame_buffer: [16]u8 = undefined;
+        var message_buffer: [16]u8 = undefined;
+        var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+        try std.testing.expectError(error.UnexpectedEOF, collector.read_frame());
+    }
+
+    {
+        var stream: EncodedStream(16) = .{};
+        stream.bytes[0] = 0x81;
+        stream.bytes[1] = 0x05;
+        @memcpy(stream.bytes[2..5], "abc");
+        stream.len = 5;
+
+        var reader = stream.reader();
+        var frame_buffer: [16]u8 = undefined;
+        var message_buffer: [16]u8 = undefined;
+        var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+        try std.testing.expectError(error.UnexpectedEOF, collector.read_frame());
+        try std.testing.expect(!collector.is_at_wire_boundary());
+    }
+}
+
+test "FragmentCollector: a failed reader returns IoError" {
+    var reader = std.Io.Reader{
+        .vtable = &.{ .stream = read_failed_stream },
+        .buffer = &.{},
+        .seek = 0,
+        .end = 0,
+    };
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [16]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expectError(error.IoError, collector.read_frame());
+}
+
+test "FragmentCollector: a frame larger than frame_buffer returns BufferTooShort" {
+    var stream: EncodedStream(32) = .{};
+    var payload = [_]u8{ 'a', 'b', 'c', 'd', 'e' };
+    try stream.append(Frame.binary(&payload));
+
+    var reader = stream.reader();
+    var frame_buffer: [4]u8 = undefined;
+    var message_buffer: [32]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expectError(error.BufferTooShort, collector.read_frame());
+    // Only the two header bytes may be consumed; the payload stays unread.
+    try std.testing.expectEqual(@as(usize, 2), reader.seek);
+}
+
+test "FragmentCollector: a message larger than message_buffer returns BufferTooShort" {
+    var stream: EncodedStream(32) = .{};
+    var first = [_]u8{ 'a', 'b', 'c' };
+    var second = [_]u8{ 'd', 'e' };
+    try stream.append(Frame.init(false, .binary, null, &first));
+    try stream.append(Frame.init(true, .continuation, null, &second));
+
+    var reader = stream.reader();
+    var frame_buffer: [8]u8 = undefined;
+    var message_buffer: [4]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expectError(error.BufferTooShort, collector.read_frame());
+}
+
+test "FragmentCollector: a ping between fragments is delivered before the completed message" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{ 'h', 'e' };
+    var ping_payload = [_]u8{'?'};
+    var last = [_]u8{ 'l', 'l', 'o' };
+    try stream.append(Frame.init(false, .text, null, &first));
+    try stream.append(Frame.ping(&ping_payload));
+    try stream.append(Frame.init(true, .continuation, null, &last));
+
+    var reader = stream.reader();
+    var frame_buffer: [64]u8 = undefined;
+    var message_buffer: [64]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    const control = try collector.read_frame();
+    try std.testing.expect(control.fin);
+    try std.testing.expectEqual(fragment.OpCode.ping, control.opcode);
+    try std.testing.expectEqual(@as(?MaskingKey, null), control.masking_key);
+    try std.testing.expectEqualSlices(u8, &ping_payload, control.payload);
+    // The reader is aligned to the next frame, but the message is still open.
+    try std.testing.expect(collector.is_at_wire_boundary());
+    try std.testing.expect(!collector.is_at_frame_boundary());
+
+    const completed = try collector.read_frame();
+    try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+    try std.testing.expectEqualSlices(u8, "hello", completed.payload);
+    try std.testing.expect(collector.is_at_wire_boundary());
+    try std.testing.expect(collector.is_at_frame_boundary());
+}
+
+test "FragmentCollector: invalid UTF-8 in an unfragmented text frame returns InvalidUTF8" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{0xff};
+    try stream.append(Frame.text(&payload));
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [16]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expectError(error.InvalidUTF8, collector.read_frame());
+}
+
+test "FragmentCollector: invalid UTF-8 across fragments returns InvalidUTF8" {
+    var stream: EncodedStream(16) = .{};
+    var first = [_]u8{'A'};
+    var second = [_]u8{0xff};
+    try stream.append(Frame.init(false, .text, null, &first));
+    try stream.append(Frame.init(true, .continuation, null, &second));
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [16]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expectError(error.InvalidUTF8, collector.read_frame());
+}
+
+test "FragmentCollector: an orphan continuation returns ProtocolError" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{'x'};
+    try stream.append(Frame.init(true, .continuation, null, &payload));
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [16]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expectError(error.ProtocolError, collector.read_frame());
+}
+
+test "FragmentCollector: reset clears an in-progress message and boundary tracking" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{ 'h', 'e' };
+    var ping_payload = [_]u8{'?'};
+    var fresh = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.init(false, .text, null, &first));
+    try stream.append(Frame.ping(&ping_payload));
+    try stream.append(Frame.text(&fresh));
+
+    var reader = stream.reader();
+    var frame_buffer: [64]u8 = undefined;
+    var message_buffer: [64]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expect(collector.is_at_frame_boundary());
+
+    const control = try collector.read_frame();
+    try std.testing.expectEqual(fragment.OpCode.ping, control.opcode);
+    // The partial text message keeps the collector off a boundary.
+    try std.testing.expect(!collector.is_at_frame_boundary());
+
+    collector.reset();
+    try std.testing.expect(collector.is_at_frame_boundary());
+
+    const completed = try collector.read_frame();
+    try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+    try std.testing.expectEqualSlices(u8, &fresh, completed.payload);
+    try std.testing.expect(collector.is_at_frame_boundary());
+}
+
+test "FragmentCollector: reads one complete text frame from a std.Io file reader" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    var payload = [_]u8{ 'f', 'i', 'l', 'e' };
+    var stream: EncodedStream(64) = .{};
+    try stream.append(Frame.text(&payload));
+
+    {
+        const file = try tmp.dir.createFile(io, "fragment.bin", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, stream.bytes[0..stream.len]);
+    }
+
+    const file = try tmp.dir.openFile(io, "fragment.bin", .{});
+    defer file.close(io);
+
+    var file_buffer: [8]u8 = undefined;
+    var file_reader = file.reader(io, &file_buffer);
+    var frame_buffer: [64]u8 = undefined;
+    var message_buffer: [64]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(
+        &file_reader.interface,
+        &frame_buffer,
+        &message_buffer,
+        .client,
+        64,
+    );
+
+    const completed = try collector.read_frame();
+    try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+    try std.testing.expectEqualSlices(u8, &payload, completed.payload);
+    try std.testing.expect(collector.is_at_frame_boundary());
+}
+
+test "FragmentCollector: a failed accumulation latches BufferTooShort until reset" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{ 'a', 'b', 'c' };
+    var second = [_]u8{ 'd', 'e' };
+    var fresh = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.init(false, .text, null, &first));
+    try stream.append(Frame.init(false, .continuation, null, &second));
+    try stream.append(Frame.text(&fresh));
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [4]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expectError(error.BufferTooShort, collector.read_frame());
+    // zslay completed the second frame, so the reader is aligned even though the
+    // accumulator rejected the bytes.
+    try std.testing.expect(collector.is_at_wire_boundary());
+    const seek_after_failure = reader.seek;
+
+    // The failure is terminal: the fresh third frame must stay unread.
+    try std.testing.expectError(error.BufferTooShort, collector.read_frame());
+    try std.testing.expectEqual(seek_after_failure, reader.seek);
+
+    collector.reset();
+    const completed = try collector.read_frame();
+    try std.testing.expect(completed.fin);
+    try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+    try std.testing.expectEqualSlices(u8, &fresh, completed.payload);
+    try std.testing.expect(collector.is_at_wire_boundary());
+    try std.testing.expect(collector.is_at_frame_boundary());
+}
+
+test "FragmentCollector: a failed UTF-8 accumulation latches InvalidUTF8 until reset" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{'A'};
+    var invalid = [_]u8{0xff};
+    var fresh = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.init(false, .text, null, &first));
+    try stream.append(Frame.init(true, .continuation, null, &invalid));
+    try stream.append(Frame.text(&fresh));
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [16]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expectError(error.InvalidUTF8, collector.read_frame());
+    try std.testing.expect(collector.is_at_wire_boundary());
+    const seek_after_failure = reader.seek;
+
+    try std.testing.expectError(error.InvalidUTF8, collector.read_frame());
+    try std.testing.expectEqual(seek_after_failure, reader.seek);
+
+    collector.reset();
+    const completed = try collector.read_frame();
+    try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+    try std.testing.expectEqualSlices(u8, &fresh, completed.payload);
+}
+
+test "FragmentCollector: a truncated payload latches UnexpectedEOF while off the wire boundary" {
+    var stream: EncodedStream(16) = .{};
+    stream.bytes[0] = 0x81;
+    stream.bytes[1] = 0x05;
+    @memcpy(stream.bytes[2..5], "abc");
+    stream.len = 5;
+
+    var reader = stream.reader();
+    var frame_buffer: [8]u8 = undefined;
+    var message_buffer: [8]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expectError(error.UnexpectedEOF, collector.read_frame());
+    try std.testing.expect(!collector.is_at_wire_boundary());
+    const seek_after_failure = reader.seek;
+
+    try std.testing.expectError(error.UnexpectedEOF, collector.read_frame());
+    try std.testing.expectEqual(seek_after_failure, reader.seek);
+    try std.testing.expect(!collector.is_at_wire_boundary());
+}
+
+test "FragmentCollector: fragmented messages accept max_message_size - 1 bytes" {
+    var stream: EncodedStream(32) = .{};
+    var first = [_]u8{ 'a', 'b', 'c', 'd', 'e' };
+    var second = [_]u8{ 'f', 'g', 'h' };
+    try stream.append(Frame.init(false, .binary, null, &first));
+    try stream.append(Frame.init(true, .continuation, null, &second));
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [8]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 9);
+
+    const completed = try collector.read_frame();
+    try std.testing.expect(completed.fin);
+    try std.testing.expectEqual(fragment.OpCode.binary, completed.opcode);
+    try std.testing.expectEqualSlices(u8, "abcdefgh", completed.payload);
+    try std.testing.expect(collector.is_at_frame_boundary());
+}
+
+test "FragmentCollector: fragmented messages reject the exclusive max_message_size boundary" {
+    var stream: EncodedStream(32) = .{};
+    var first = [_]u8{ 'a', 'b', 'c', 'd', 'e' };
+    var second = [_]u8{ 'f', 'g', 'h', 'i' };
+    try stream.append(Frame.init(false, .binary, null, &first));
+    try stream.append(Frame.init(true, .continuation, null, &second));
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [8]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 9);
+
+    try std.testing.expectError(error.FrameTooLarge, collector.read_frame());
+}
+
+test "FragmentCollector: init rejects max_message_size above zslay MaxPayloadLen" {
+    if (@bitSizeOf(usize) >= 64) {
+        var empty: [0]u8 = .{};
+        var reader = std.Io.Reader.fixed(&empty);
+        var frame_buffer: [16]u8 = undefined;
+        var message_buffer: [16]u8 = undefined;
+        const too_large: usize = @intCast(zslay.MaxPayloadLen + 1);
+
+        try std.testing.expectError(
+            error.InvalidLength,
+            fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, too_large),
+        );
+    }
+}
+
+test "FragmentCollector: one-byte limit accepts an empty frame and rejects one byte" {
+    {
+        var stream: EncodedStream(16) = .{};
+        var empty: [0]u8 = .{};
+        try stream.append(Frame.text(&empty));
+
+        var reader = stream.reader();
+        var frame_buffer: [16]u8 = undefined;
+        var message_buffer: [16]u8 = undefined;
+        var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 1);
+
+        const completed = try collector.read_frame();
+        try std.testing.expect(completed.fin);
+        try std.testing.expectEqual(fragment.OpCode.text, completed.opcode);
+        try std.testing.expectEqual(@as(usize, 0), completed.payload.len);
+    }
+
+    {
+        var stream: EncodedStream(16) = .{};
+        var payload = [_]u8{'x'};
+        try stream.append(Frame.text(&payload));
+
+        var reader = stream.reader();
+        var frame_buffer: [16]u8 = undefined;
+        var message_buffer: [16]u8 = undefined;
+        var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 1);
+
+        try std.testing.expectError(error.FrameTooLarge, collector.read_frame());
+    }
+}
+
+test "FragmentCollector: server role rejects an unmasked inbound frame" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{'x'};
+    try stream.append(Frame.text(&payload));
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [16]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .server, 64);
+
+    try std.testing.expectError(error.PayloadNotMasked, collector.read_frame());
+}
+
+test "Fragments: masked payloads are rejected before validation or state change" {
+    var buffer: [8]u8 = @splat(0xaa);
+    var fragments = fragment.Fragments.init(&buffer);
+    const key: MaskingKey = .{ 0x01, 0x02, 0x03, 0x04 };
+    // Invalid UTF-8 proves the mask check runs before any validation.
+    var payload = [_]u8{0xff};
+
+    try std.testing.expectError(
+        error.PayloadMasked,
+        fragments.accumulate(Frame.init(false, .text, key, &payload)),
+    );
+    try std.testing.expectError(
+        error.PayloadMasked,
+        fragments.accumulate(Frame.init(true, .text, key, &payload)),
+    );
+
+    try std.testing.expect(fragments.is_idle());
+    try std.testing.expectEqual(@as(usize, 0), fragments.message_len());
+    for (buffer) |byte| try std.testing.expectEqual(@as(u8, 0xaa), byte);
+}
+
+fn expect_collector_protocol_error(wire: []const u8) !void {
+    var reader = std.Io.Reader.fixed(wire);
+    var frame_buffer: [64]u8 = undefined;
+    var message_buffer: [64]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    try std.testing.expectError(error.ProtocolError, collector.read_frame());
+}
+
+test "FragmentCollector: zslay-owned malformed input returns ProtocolError" {
+    const cases = [_][]const u8{
+        // New text data frame while a fragmented text message is active.
+        &.{ 0x01, 0x01, 'a', 0x81, 0x01, 'b' },
+        // Fragmented ping control frame (FIN=0).
+        &.{ 0x09, 0x00 },
+        // Ping control frame with an extended-length marker.
+        &.{ 0x89, 0x7e, 0x00, 0x7e },
+        // Reserved RSV1 bit set.
+        &.{ 0xc1, 0x00 },
+        // One-byte close payload.
+        &.{ 0x88, 0x01, 0x00 },
+    };
+
+    for (cases) |wire| try expect_collector_protocol_error(wire);
+}
+
+test "FragmentCollector: close frames pass through without code or reason validation" {
+    var stream: EncodedStream(16) = .{};
+    var invalid_close = [_]u8{ 0x03, 0xe7 };
+    try stream.append(Frame.close_raw(&invalid_close));
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [16]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    const close = try collector.read_frame();
+    try std.testing.expect(close.fin);
+    try std.testing.expectEqual(fragment.OpCode.close, close.opcode);
+    try std.testing.expectEqualSlices(u8, &invalid_close, close.payload);
+    // 999 is not a valid close code; validation belongs to the connection layer.
+    try std.testing.expect(!frame.is_valid_close_code(999));
+    try std.testing.expect(collector.is_at_wire_boundary());
+}
+
+test "FragmentCollector: consecutive text messages reset the UTF-8 carry state" {
+    var stream: EncodedStream(64) = .{};
+    var first_a = [_]u8{ 'A', 0xc2 };
+    var first_b = [_]u8{0xa2};
+    var second_a = [_]u8{ 'B', 0xe2 };
+    var second_b = [_]u8{ 0x82, 0xac };
+    try stream.append(Frame.init(false, .text, null, &first_a));
+    try stream.append(Frame.init(true, .continuation, null, &first_b));
+    try stream.append(Frame.init(false, .text, null, &second_a));
+    try stream.append(Frame.init(true, .continuation, null, &second_b));
+
+    var reader = stream.reader();
+    var frame_buffer: [64]u8 = undefined;
+    var message_buffer: [64]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    const first = try collector.read_frame();
+    try std.testing.expect(first.fin);
+    try std.testing.expectEqual(fragment.OpCode.text, first.opcode);
+    try std.testing.expectEqualSlices(u8, "A\xc2\xa2", first.payload);
+
+    // A carried split code point would corrupt the second message.
+    const second = try collector.read_frame();
+    try std.testing.expect(second.fin);
+    try std.testing.expectEqual(fragment.OpCode.text, second.opcode);
+    try std.testing.expectEqualSlices(u8, "B\xe2\x82\xac", second.payload);
+    try std.testing.expect(collector.is_at_frame_boundary());
+}
+
+test "FragmentCollector: invalid UTF-8 close reasons pass through unvalidated" {
+    var stream: EncodedStream(16) = .{};
+    var close_payload = [_]u8{ 0x03, 0xe8, 0xff, 0xfe };
+    try stream.append(Frame.close_raw(&close_payload));
+
+    var reader = stream.reader();
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [16]u8 = undefined;
+    var collector = try fragment.FragmentCollector.init(&reader, &frame_buffer, &message_buffer, .client, 64);
+
+    const close = try collector.read_frame();
+    try std.testing.expect(close.fin);
+    try std.testing.expectEqual(fragment.OpCode.close, close.opcode);
+    try std.testing.expectEqualSlices(u8, &close_payload, close.payload);
+    // Code 1000 with an invalid reason must pass through: close-reason
+    // validation belongs to the connection layer, not the collector.
+    try std.testing.expect(!utf8.is_valid(close.payload[2..]));
+    try std.testing.expect(collector.is_at_wire_boundary());
 }
