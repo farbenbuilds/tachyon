@@ -14,11 +14,11 @@ I/O-agnostic framing engine with a bounded connection state machine. zslay owns
 header coding, masking, the close predicate and payload validator, masking
 direction, fragment ordering, and frame/message limits. tachyon applies inbound
 close policy, owns the close echo, and covers the fastwebsockets API surface
-incrementally: automatic ping/pong and close handling, fragment buffering, and
-UTF-8 checks are implemented; handshakes, split halves, and stream adapters
-remain planned. The 0.10.0 surface is the parity baseline; backpressure,
-streaming messages, native `std.Io` transport, permessage-deflate, and pub/sub
-are planned post-parity extensions. Incremental UTF-8 validation is implemented
+incrementally: automatic ping/pong and close handling, fragment buffering,
+split read/write halves, and UTF-8 checks are implemented; handshakes and
+stream adapters remain planned. The 0.10.0 surface is the parity baseline;
+backpressure, streaming messages, native `std.Io` transport, permessage-deflate,
+and pub/sub are planned post-parity extensions. Incremental UTF-8 validation is implemented
 in `src/utf8.zig`: the fragment collector validates assembled messages across
 fragments and the raw connection read path validates clear FIN text frames.
 Deliberate hardening and compatibility exceptions are recorded in
@@ -53,16 +53,27 @@ exclusive maximum message size, closed gating, read and write latches, and
 vectored or copied writes. `read_frame` flushes automatic pong and close replies
 before returning. A client with `auto_apply_mask` off delivers control frames
 instead of attempting replies: pings pass through, and closes are validated but
-not echoed or answered with 1002. `src/root.zig` re-exports the facade, the
-error model, the UTF-8 validator, the fragment accumulator and collector, and
-the connection layer.
+not echoed or answered with 1002. `src/split.zig` adds the split surface:
+`WebSocketRead`, `WebSocketWrite`, `Split`, `after_handshake_split`/`init`,
+caller-owned `ReadStorage`, `WriteStorage`, and `Storage`, and
+`FragmentCollectorRead`. Each half owns an independent `connection.WebSocket`
+and `zslay.Conn`; both may share the external reader and writer pointers because
+each uses one direction. The read half drives `read_event` and forwards
+automatic pong and close obligations through
+`WebSocketWrite.send_obligation`, which writes and flushes before returning; the
+write half drives `write_frame` and `flush` and never reads.
+`FragmentCollectorRead` assembles continuations and split UTF-8 code points over
+a caller-owned `message_buffer` and rejects overlap with the read `frame_buffer`
+with `InvalidLength`. All storage is caller-owned and zero allocation.
+`src/root.zig` re-exports the facade, the error model, the UTF-8 validator, the
+fragment accumulator and collector, the connection layer, and the split halves.
 
-Handshake, upgrade, and split modules are not implemented yet; the fragment
-collector is deliberately read-only, while the connection layer owns automatic
-replies on the raw path. No separate close or masking module is planned; zslay
-owns the close predicate, payload validator, and mask routine. The remaining
-extension roadmap adds backpressure, streaming, native `std.Io` transport,
-permessage-deflate, and pub/sub after the parity baseline lands.
+Handshake and upgrade modules remain planned; the fragment collector is
+deliberately read-only, while the connection and split read paths own automatic
+replies. No separate close or masking module is planned; zslay owns the close
+predicate, payload validator, and mask routine. The remaining extension roadmap
+adds backpressure, streaming, native `std.Io` transport, permessage-deflate, and
+pub/sub after the parity baseline lands.
 
 ## Targets
 
@@ -75,7 +86,7 @@ permessage-deflate, and pub/sub after the parity baseline lands.
 | `WebSocket` read/write loop, auto-close, auto-pong, max message size | Implemented over one `zslay.Conn` with caller-owned storage, closed gating, failure latches, and a seeded mask key source |
 | `Fragments`, `FragmentCollector` | Implemented read-side collector over `zslay.Conn` with a caller-owned `frame_buffer` that bounds one frame payload and a `message_buffer` that bounds one collected message |
 | HTTP server upgrade and client handshake | Planned |
-| Split read/write halves | Planned |
+| Split read/write halves | Implemented `Split`, `WebSocketRead`, `WebSocketWrite`, and `FragmentCollectorRead` over independent `connection.WebSocket`/`zslay.Conn` values with caller-owned storage and sink-forwarded obligations |
 | Backpressure and bounded write watermarks | Planned extension |
 | Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig`: the fragment collector validates assembled messages and the raw connection read path validates clear FIN text frames |
 | Streaming message reader/writer | Planned extension |
@@ -93,6 +104,10 @@ permessage-deflate, and pub/sub after the parity baseline lands.
 - Transport work stays at the edge and never enters the frame core. The
   connection layer consumes caller-provided readers and writers and owns no
   socket or task.
+- Split halves own independent `connection.WebSocket` and `zslay.Conn` values,
+  share the caller's reader and writer pointers, and route automatic replies
+  through `send_obligation`. All split storage is caller-owned and zero
+  allocation.
 - Extensions are optional modules at the edge. Backpressure is bounded and
   explicit, UTF-8 validation is incremental, and decompression is capped by the
   message limit before delivery.

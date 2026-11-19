@@ -199,23 +199,72 @@ pub const WebSocket = struct {
     /// so inbound pings are delivered and closes are validated and returned
     /// without an echo or 1002 attempt. This is the fastwebsockets raw path,
     /// not the assembled-message path: `FragmentCollector` remains a separate
-    /// API. Every read failure except `ConnectionClosed` and the zero-max
-    /// configuration rejection latches until `reset`; a transport write or
-    /// flush failure while sending an automatic reply latches `write_failure`
-    /// instead and is cleared only by `reset_tx`, while a prepare or queue
-    /// failure before any reply bytes are emitted latches as a read failure.
+    /// API. `read_event` defers the read latch for an error that also fills a
+    /// reply obligation; this call sends the reply first and latches the error
+    /// only after a successful send. A transport write or flush failure while
+    /// sending the reply latches `write_failure` instead, so the originating
+    /// read error is not latched and `reset_tx` alone recovers it. A prepare or
+    /// queue failure before any reply bytes are emitted latches as a read
+    /// failure. Every other read failure except `ConnectionClosed` and the
+    /// zero-max configuration rejection latches until `reset`.
     pub fn read_frame(self: *WebSocket) Error!Frame {
+        // Captured before any obligation write: a valid close echo sets
+        // `closed`, but the frame itself must still be delivered.
+        const was_closed = self.closed;
+        const reply_capable = self.can_reply();
+
+        while (true) {
+            var reply: ?Frame = null;
+            const event = self.read_event(was_closed, &reply);
+            if (reply) |outgoing| {
+                self.send_obligation(reply_capable, was_closed, outgoing) catch |err| {
+                    // A prepare or queue failure emits nothing and is a read
+                    // failure, matching a failure inside the old read loop.
+                    if (err != error.ConnectionClosed and self.write_failure == null) self.read_failure = err;
+                    return err;
+                };
+            }
+
+            const incoming = event catch |err| {
+                // read_event defers the read latch while a reply is pending;
+                // the reply is on the wire now, so latch the originating error.
+                // A failed send returned above and leaves the read latch alone.
+                if (reply != null and err != error.ConnectionClosed and self.write_failure == null) {
+                    self.read_failure = err;
+                }
+                return err;
+            };
+            if (incoming) |outgoing| return outgoing;
+        }
+    }
+
+    /// Reads one frame or reports an automatic reply obligation without writing.
+    ///
+    /// `reply_out` is cleared first. When set, the reply borrows `frame_buffer`
+    /// or `close_buffer` until the next read. A split caller passes the write
+    /// half's closed state as `was_closed` and forwards the reply to the write
+    /// half. An invalid close code sets the 1002 reply before returning
+    /// `InvalidCloseCode`. This function never writes or flushes. A read error
+    /// that also fills `reply_out` is not latched here: the caller that sends
+    /// the reply owns the read-latch decision, and `read_frame` latches after a
+    /// successful send. Only an error without a reply latches inside this call;
+    /// `ConnectionClosed` never latches.
+    pub fn read_event(self: *WebSocket, was_closed: bool, reply_out: *?Frame) Error!?Frame {
+        reply_out.* = null;
+
         if (self.read_failure) |failure| return failure;
         if (self.write_failure) |failure| return failure;
         if (self.options.max_message_size == 0) return error.FrameTooLarge;
 
         self.apply_message_limit();
 
-        return self.read_frame_inner() catch |err| {
-            // A transport failure from an automatic reply belongs to the write
-            // latch, which `reset_tx` owns; `reset` must not clear it. A
-            // prepare or queue failure emits nothing and stays a read failure.
-            if (err != error.ConnectionClosed and self.write_failure == null) self.read_failure = err;
+        return self.read_event_inner(reply_out, was_closed, self.can_reply()) catch |err| {
+            // An error that also filled a reply defers its read latch to the
+            // caller that sends the reply, so a failed send leaves only the
+            // write latch. A no-reply error stays a read failure here.
+            if (reply_out.* == null and err != error.ConnectionClosed and self.write_failure == null) {
+                self.read_failure = err;
+            }
             return err;
         };
     }
@@ -383,44 +432,45 @@ pub const WebSocket = struct {
         self.closed = false;
     }
 
-    /// Reads one frame and applies automatic pong, close, and text policy.
+    /// Applies automatic pong, close, and text policy for one wire frame.
     ///
     /// `was_closed` is captured before any obligation write so a valid inbound
     /// close is still delivered after its echo sets `closed`, matching
     /// fastwebsockets. `reply_capable` gates both obligations: a client that
     /// cannot mask delivers clear ping and close frames instead of sending a
-    /// frame zslay would reject.
-    fn read_frame_inner(self: *WebSocket) Error!Frame {
-        const was_closed = self.closed;
-        const reply_capable = self.can_reply();
+    /// frame zslay would reject. A suppressed ping returns `null` so the caller
+    /// sends the pong and continues to the next frame.
+    fn read_event_inner(
+        self: *WebSocket,
+        reply_out: *?Frame,
+        was_closed: bool,
+        reply_capable: bool,
+    ) Error!?Frame {
+        const incoming = try self.read_wire_frame();
 
-        while (true) {
-            const incoming = try self.read_wire_frame();
-
-            switch (incoming.opcode) {
-                .close => {
-                    if (self.options.auto_close and incoming.masking_key == null) {
-                        try self.handle_inbound_close(incoming.payload, was_closed, reply_capable);
+        switch (incoming.opcode) {
+            .close => {
+                if (self.options.auto_close and incoming.masking_key == null) {
+                    try self.validate_inbound_close(incoming.payload, was_closed, reply_capable, reply_out);
+                }
+                return try self.gate_closed(incoming, was_closed);
+            },
+            .ping => {
+                if (self.options.auto_pong and reply_capable and incoming.masking_key == null) {
+                    if (!was_closed) {
+                        reply_out.* = Frame.init(true, .pong, null, incoming.payload);
                     }
-                    return self.gate_closed(incoming, was_closed);
-                },
-                .ping => {
-                    if (self.options.auto_pong and reply_capable and incoming.masking_key == null) {
-                        if (!was_closed) {
-                            try self.send_obligation(true, was_closed, Frame.init(true, .pong, null, incoming.payload));
-                        }
-                        continue;
-                    }
-                    return self.gate_closed(incoming, was_closed);
-                },
-                .text => {
-                    if (incoming.fin and incoming.masking_key == null and !utf8.is_valid(incoming.payload)) {
-                        return error.InvalidUTF8;
-                    }
-                    return self.gate_closed(incoming, was_closed);
-                },
-                else => return self.gate_closed(incoming, was_closed),
-            }
+                    return null;
+                }
+                return try self.gate_closed(incoming, was_closed);
+            },
+            .text => {
+                if (incoming.fin and incoming.masking_key == null and !utf8.is_valid(incoming.payload)) {
+                    return error.InvalidUTF8;
+                }
+                return try self.gate_closed(incoming, was_closed);
+            },
+            else => return try self.gate_closed(incoming, was_closed),
         }
     }
 
@@ -503,24 +553,25 @@ pub const WebSocket = struct {
         return Frame.init(decoded.header.fin, opcode, key, payload);
     }
 
-    /// Validates, replies to, and echoes an inbound close frame.
+    /// Validates an inbound close frame and fills the reply obligation.
     ///
     /// The reason is checked as UTF-8 first, matching fastwebsockets, and then
-    /// zslay's payload validator stays authoritative. An invalid code is
-    /// answered with a 1002 close carrying the validated reason when it fits
-    /// the close buffer, or an empty reason otherwise; a valid close is echoed
-    /// with the exact inbound payload. zslay's decoder rejects a one-byte close
-    /// with `ProtocolError` before this policy runs. When `reply_capable` is
-    /// false the frame is still validated, but no echo or 1002 is attempted
-    /// because a client without auto-mask cannot send a conforming frame; a
-    /// validated close, or an invalid code that would normally receive a 1002,
-    /// still sets `closed` so the suppressed reply is terminal. An invalid
-    /// UTF-8 reason leaves `closed` untouched.
-    fn handle_inbound_close(
+    /// zslay's payload validator stays authoritative. An invalid code fills a
+    /// 1002 close carrying the validated reason when it fits the close buffer,
+    /// or an empty reason otherwise; a valid close fills an echo with the exact
+    /// inbound payload. zslay's decoder rejects a one-byte close with
+    /// `ProtocolError` before this policy runs. When `reply_capable` is false
+    /// the frame is still validated, but no echo or 1002 is filled because a
+    /// client without auto-mask cannot send a conforming frame; a validated
+    /// close, or an invalid code that would normally receive a 1002, still sets
+    /// `closed` so the suppressed reply is terminal. An invalid UTF-8 reason
+    /// leaves `closed` untouched.
+    fn validate_inbound_close(
         self: *WebSocket,
         payload: []u8,
         was_closed: bool,
         reply_capable: bool,
+        reply_out: *?Frame,
     ) Error!void {
         const reason: []const u8 = if (payload.len >= 2) payload[2..] else &.{};
 
@@ -536,14 +587,15 @@ pub const WebSocket = struct {
                     self.closed = true;
                     return mapped;
                 }
-                const reply = try self.make_1002_close(reason);
-                try self.send_obligation(true, was_closed, reply);
+                if (!was_closed) reply_out.* = try self.make_1002_close(reason);
             }
             return mapped;
         };
 
         if (!reply_capable) self.closed = true;
-        try self.send_obligation(reply_capable, was_closed, Frame.init(true, .close, null, payload));
+        if (reply_capable and !was_closed) {
+            reply_out.* = Frame.init(true, .close, null, payload);
+        }
     }
 
     /// Encodes a 1002 reply payload into `close_buffer`.

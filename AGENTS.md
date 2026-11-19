@@ -36,7 +36,8 @@ documentation foundation:
   the zslay dependency.
 - `src/root.zig` is the module entry point; it re-exports zslay, the frame
   facade, the UTF-8 validator, the WebSocket error model, the fragment
-  accumulator and collector, and the connection layer.
+  accumulator and collector, the connection layer, and the split read and write
+  halves.
 - `src/frame.zig` implements the frame facade: `Frame`, `Payload`, the `OpCode`
   and `CloseCode` aliases with conversions, `unmask`/`unmask_at` delegations,
   the header-length bridge, `std.Io.Writer` vectored writes, and caller-buffer
@@ -76,8 +77,24 @@ documentation foundation:
   answered with 1002. `closed` gates non-close reads and writes; read failures
   latch until `reset` and write failures until `reset_tx`; clear FIN text frames
   are validated; writes use the vectored path above the threshold and the copied
-  path at or below it; a zero maximum rejects before consuming.
+  path at or below it; a zero maximum rejects before consuming. `read_event` is
+  the shared read step: `read_frame` loops over it and sends the reply.
   `FragmentCollector` remains the assembled-message API.
+- `src/split.zig` implements the split read/write surface: `WebSocketRead`,
+  `WebSocketWrite`, `Split`, `after_handshake_split`/`init`, caller-owned
+  `ReadStorage`, `WriteStorage`, and `Storage`, and `FragmentCollectorRead`.
+  Because `zslay.Conn` couples RX and TX, each half owns an independent
+  `connection.WebSocket` and `zslay.Conn`; both may share the same external
+  `std.Io.Reader` and `std.Io.Writer` pointers because each uses one direction.
+  The read half drives `WebSocket.read_event` and never writes; the write half
+  drives `write_frame`/`flush` and never reads. Automatic pong and close
+  obligations are forwarded through a sink with `send_obligation(Frame)`,
+  `is_closed()`, and `failure()`; `WebSocketWrite` implements all three and
+  writes then flushes each obligation. `FragmentCollectorRead` wraps a
+  `WebSocketRead` by value with a caller-owned `message_buffer`, assembles
+  continuations and split UTF-8 code points, and rejects a `message_buffer`
+  overlapping the read `frame_buffer` with `InvalidLength`. All storage is
+  caller-owned and zero allocation.
 - `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt` are the
   generated zon2nix views used by the flake for offline builds.
 - `flake.nix`, `flake.lock`, and `.envrc` provide the Zig 0.17.1 shell.
@@ -92,9 +109,10 @@ documentation foundation:
 
 The test suite covers the dependency boundary, the error model, the frame
 facade, the incremental UTF-8 validator, the fragment accumulator and collector,
-and the connection policy, raw frame path, and write paths; `src/root.zig` adds
-fragment and connection re-export tests. Do not describe the handshake, upgrade,
-or split modules as implemented before they exist and are tested.
+the connection policy, raw frame path, and write paths, and the split reads and
+writes; `src/root.zig` adds fragment, connection, and split re-export tests. Do
+not describe the handshake or upgrade modules as implemented before they exist
+and are tested.
 
 ## Non-Negotiable Architecture
 
@@ -141,13 +159,14 @@ Current files:
 | --- | --- |
 | `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe tests, `check` step, and the zslay dependency. |
 | `build.zig.zon.nix`, `.json`, `.txt` | Generated zon2nix views for offline Nix builds and dependency audits. |
-| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, the error model, the fragment accumulator and collector, and the connection layer. |
+| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, the error model, the fragment accumulator and collector, the connection layer, and the split read and write halves. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` and `CloseCode` aliases with conversions, `unmask`/`unmask_at`, the header-length bridge, and write paths. |
 | `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
 | `src/utf8.zig` | Incremental UTF-8 validation: `std.unicode` complete ranges, split code-point `State`, and a `std.Io.Reader` adapter. |
 | `src/fragment.zig` | `Fragments` accumulator and `FragmentCollector` over `zslay.Conn`: caller-owned `frame_buffer` that bounds one frame payload and `message_buffer` that bounds one collected message, streaming text validation, and control-frame pass-through. |
 | `src/connection.zig` | Role-aware `WebSocket` policy over `zslay.Conn`: caller-owned reader, writer, and storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, and vectored or copied writes. |
-| `src/test.zig` | Unit tests for the error model, frame facade, UTF-8 validator, fragment accumulator and collector, and connection policy and write paths; expanded as protocol layers land. |
+| `src/split.zig` | Split `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned read and write storage, sink-forwarded obligations, and `FragmentCollectorRead`. |
+| `src/test.zig` | Unit tests for the error model, frame facade, UTF-8 validator, fragment accumulator and collector, connection policy and write paths, and split reads and writes; expanded as protocol layers land. |
 | `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
@@ -177,7 +196,7 @@ Target source layout, in dependency order:
 | `src/connection.zig` | Implemented: role-aware `WebSocket` policy over `zslay.Conn`, caller-owned storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, and vectored or copied writes. |
 | `src/fragment.zig` | Implemented: `Fragments` accumulator and read-side `FragmentCollector` over `zslay.Conn`, caller-owned frame and message buffers, streaming UTF-8, and control-frame pass-through. |
 | `src/stream.zig` | Planned extension: chunked message reader/writer for large messages. |
-| `src/split.zig` | Read and write halves plus split constructors. |
+| `src/split.zig` | Implemented: `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned read and write storage, sink-forwarded automatic replies, and `FragmentCollectorRead`. |
 | `src/native_stream.zig` | Planned extension: `std.Io.Reader`/`std.Io.Writer` adapter for `std.Io.net.Stream`. |
 | `src/deflate.zig` | Planned extension: RFC 7692 permessage-deflate state and context takeover. |
 | `src/pubsub.zig` | Planned extension: bounded topic hub and fanout over the frame/stream API. |
@@ -192,9 +211,10 @@ one-line delegations from `src/frame.zig`. Do not create a second enum, range
 table, or XOR loop. See `CODEBASE.md#compatibility-notes` before adapting a
 zslay behavior.
 
-Planned extension rows are roadmap items; their files do not exist yet. Extend
-the planned owner in `AGENT_DIRECTORY.md` and the matching agent definitions
-before creating one of these modules.
+Planned extension rows are roadmap items; their files do not exist yet, and the
+handshake and upgrade rows remain unimplemented. Extend the planned owner in
+`AGENT_DIRECTORY.md` and the matching agent definitions before creating one of
+these modules.
 
 Keep one owner per file. Cross-scope work is handed to the owning agent or
 reviewer instead of edited in the same pass.
