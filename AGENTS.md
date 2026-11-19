@@ -11,8 +11,9 @@ client handshake, and split read/write halves. The 0.10.0 surface is the parity
 baseline, not the ceiling: backpressure, streaming messages, native `std.Io`
 transport, permessage-deflate (RFC 7692), and pub/sub are planned post-parity
 extensions documented in `CODEBASE.md`. Incremental UTF-8 validation is
-implemented in `src/utf8.zig`, and the fragment collector applies it across
-fragments; its connection-level read path lands with the connection layer.
+implemented in `src/utf8.zig`: the fragment collector validates assembled
+messages across fragments and the raw connection read path validates clear FIN
+text frames.
 
 The framing engine is
 [farbenbuilds/zslay](https://github.com/farbenbuilds/zslay). It is declared in
@@ -27,15 +28,15 @@ changing the boundary between the two libraries.
 
 ## Current State
 
-The repository now contains the Zig package scaffold on top of the environment
-and documentation foundation:
+The repository now contains the Zig package on top of the environment and
+documentation foundation:
 
 - `build.zig` and `build.zig.zon` define the public `tachyon` module, the
   static library, the Debug and ReleaseSafe test steps, the `check` step, and
   the zslay dependency.
 - `src/root.zig` is the module entry point; it re-exports zslay, the frame
-  facade, the UTF-8 validator, the WebSocket error model, and the fragment
-  accumulator and collector.
+  facade, the UTF-8 validator, the WebSocket error model, the fragment
+  accumulator and collector, and the connection layer.
 - `src/frame.zig` implements the frame facade: `Frame`, `Payload`, the `OpCode`
   and `CloseCode` aliases with conversions, `unmask`/`unmask_at` delegations,
   the header-length bridge, `std.Io.Writer` vectored writes, and caller-buffer
@@ -59,6 +60,24 @@ and documentation foundation:
   collector returns close frames after zslay's header-level checks only, so
   close-code and reason validation remains with the connection layer. It sends
   no automatic pong or close replies.
+- `src/connection.zig` implements the role-aware `WebSocket` policy over one
+  `zslay.Conn`. The caller supplies a `std.Io.Reader`, a `std.Io.Writer`, and
+  caller-owned `frame_buffer`, `tx_nodes`, `write_buffer`, `close_buffer`, and
+  optional `mask_scratch` storage. `Options` defaults auto-mask, auto-close,
+  auto-pong, and writev to true, the writev threshold to 1024 bytes, and the
+  exclusive maximum message size to 64 MiB. `MaskKeySource` is a seeded ChaCha8
+  source. The raw read path suppresses pings and writes exact pongs, validates a
+  close reason as UTF-8 before the close code, echoes a valid close payload
+  exactly when no close was already observed, and answers an invalid code with
+  1002 and the validated reason when it fits `close_buffer`, otherwise an empty
+  reason. Automatic pong and close replies are flushed before `read_frame`
+  returns. A client with `auto_apply_mask` off does not attempt automatic
+  replies: pings are delivered, and closes are validated but not echoed or
+  answered with 1002. `closed` gates non-close reads and writes; read failures
+  latch until `reset` and write failures until `reset_tx`; clear FIN text frames
+  are validated; writes use the vectored path above the threshold and the copied
+  path at or below it; a zero maximum rejects before consuming.
+  `FragmentCollector` remains the assembled-message API.
 - `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt` are the
   generated zon2nix views used by the flake for offline builds.
 - `flake.nix`, `flake.lock`, and `.envrc` provide the Zig 0.17.1 shell.
@@ -72,10 +91,10 @@ and documentation foundation:
 - The root Markdown guides define the architecture and process.
 
 The test suite covers the dependency boundary, the error model, the frame
-facade, the incremental UTF-8 validator, and the fragment accumulator and
-collector; `src/root.zig` adds a fragment re-export test. Do not describe the
-connection, handshake, upgrade, or split modules as implemented before they
-exist and are tested.
+facade, the incremental UTF-8 validator, the fragment accumulator and collector,
+and the connection policy, raw frame path, and write paths; `src/root.zig` adds
+fragment and connection re-export tests. Do not describe the handshake, upgrade,
+or split modules as implemented before they exist and are tested.
 
 ## Non-Negotiable Architecture
 
@@ -101,7 +120,7 @@ These rules apply to the implementation:
   change in zslay before enabling the extension in tachyon.
 - Text UTF-8 validation is incremental and zero-allocation; it must handle code
   points split across frames and must never substitute replacement characters.
-- Transport work belongs at the edge. The planned connection layer consumes
+- Transport work belongs at the edge. The connection layer consumes
   caller-provided readers and writers; it does not open sockets or spawn tasks.
 - Use Zig 0.17.1 `std.Io` asynchronous I/O for the transport and example
   layers. Do not add libxev or another third-party event loop. uWebZockets uses
@@ -122,12 +141,13 @@ Current files:
 | --- | --- |
 | `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe tests, `check` step, and the zslay dependency. |
 | `build.zig.zon.nix`, `.json`, `.txt` | Generated zon2nix views for offline Nix builds and dependency audits. |
-| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, the error model, and the fragment accumulator and collector. |
+| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, the error model, the fragment accumulator and collector, and the connection layer. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` and `CloseCode` aliases with conversions, `unmask`/`unmask_at`, the header-length bridge, and write paths. |
 | `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
 | `src/utf8.zig` | Incremental UTF-8 validation: `std.unicode` complete ranges, split code-point `State`, and a `std.Io.Reader` adapter. |
 | `src/fragment.zig` | `Fragments` accumulator and `FragmentCollector` over `zslay.Conn`: caller-owned `frame_buffer` that bounds one frame payload and `message_buffer` that bounds one collected message, streaming text validation, and control-frame pass-through. |
-| `src/test.zig` | Unit tests for the error model, frame facade, UTF-8 validator, and fragment accumulator and collector; expanded as protocol layers land. |
+| `src/connection.zig` | Role-aware `WebSocket` policy over `zslay.Conn`: caller-owned reader, writer, and storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, and vectored or copied writes. |
+| `src/test.zig` | Unit tests for the error model, frame facade, UTF-8 validator, fragment accumulator and collector, and connection policy and write paths; expanded as protocol layers land. |
 | `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
@@ -154,7 +174,7 @@ Target source layout, in dependency order:
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` alias, `CloseCode` alias and conversions, `unmask`/`unmask_at`, header-length bridge, and write paths. |
 | `src/utf8.zig` | Incremental zero-allocation UTF-8 validation for text messages: `std.unicode` complete ranges, split code-point `State`, and a `std.Io.Reader` adapter. |
 | `src/backpressure.zig` | Planned extension: byte/frame watermarks and admission policy over zslay's bounded queue. |
-| `src/connection.zig` | Role-aware `WebSocket` policy over `zslay.Conn`: read/write loops, auto-pong, auto-close, mask option, limits, vectored writes. |
+| `src/connection.zig` | Implemented: role-aware `WebSocket` policy over `zslay.Conn`, caller-owned storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, and vectored or copied writes. |
 | `src/fragment.zig` | Implemented: `Fragments` accumulator and read-side `FragmentCollector` over `zslay.Conn`, caller-owned frame and message buffers, streaming UTF-8, and control-frame pass-through. |
 | `src/stream.zig` | Planned extension: chunked message reader/writer for large messages. |
 | `src/split.zig` | Read and write halves plus split constructors. |
@@ -259,8 +279,9 @@ Use Zig `test` blocks in `src/test.zig`, named `<Area>: <behavior>`, for example
 - Keep payloads caller-owned in tests; do not introduce a test allocator into
   the frame core.
 - Run both Debug and ReleaseSafe before review.
-- Autobahn, fuzzing, and loopback echo adapters arrive with the connection
-  layer. Do not claim compliance before those suites exist and pass.
+- Autobahn, fuzzing, and loopback echo adapters remain planned; the connection
+  layer has unit coverage only. Do not claim compliance before those suites
+  exist and pass.
 
 ## Security and Protocol Rules
 
@@ -271,6 +292,9 @@ Use Zig `test` blocks in `src/test.zig`, named `<Area>: <behavior>`, for example
   reuse unvalidated reason bytes in a 1002 reply.
 - Cap message size before buffering or indexing.
 - Treat every peer-supplied length as untrusted, including extended lengths.
+- Seed client mask keys from a uniform, secret source in production; a
+  deterministic seed is only a test seam. The connection never reads ambient
+  randomness.
 - Do not log payload bytes at any severity.
 - Security reports follow [SECURITY.md](SECURITY.md).
 

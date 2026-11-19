@@ -43,8 +43,29 @@ This project follows semantic versioning.
   after zslay's header-level checks only, so the caller or connection layer must
   call `zslay.validate_close_payload` before acting on or echoing them. The
   collector is deliberately read-only, so automatic pong and close replies
-  remain connection-layer policy. `Fragments`, `FragmentCollector`, and `Role`
+  belong to the connection layer. `Fragments`, `FragmentCollector`, and `Role`
   are exported from `src/root.zig`.
+- `src/connection.zig` with the role-aware `WebSocket` policy over one
+  `zslay.Conn`. The caller provides a `std.Io.Reader`, a `std.Io.Writer`, and
+  caller-owned `frame_buffer`, `tx_nodes`, `write_buffer`, `close_buffer`, and
+  optional `mask_scratch` storage; `init` validates the buffer layout and
+  clamps the exclusive maximum message size to `zslay.MaxPayloadLen`. `Options`
+  defaults auto-mask, auto-close, auto-pong, and writev to true, the writev
+  threshold to 1024 bytes, and the maximum to 64 MiB. The raw read path
+  suppresses pings and writes exact pongs, validates a close reason as UTF-8
+  before the close code, echoes a valid close payload exactly, and answers an
+  invalid code with 1002 and the validated reason when it fits `close_buffer`,
+  otherwise an empty reason. Automatic pong and close replies are flushed before
+  `read_frame` returns; a client with `auto_apply_mask` off does not attempt
+  automatic replies: pings are delivered, and closes are validated but not
+  echoed or answered with 1002. `closed` gates non-close reads and writes; read
+  failures latch until `reset` and write failures until `reset_tx`, and a zero
+  maximum rejects before consuming. Writes mask chunks in caller-owned scratch
+  or the write buffer, use the vectored path above the threshold and the copied
+  path at or below it, and never allocate. `MaskKeySource` is a seeded ChaCha8
+  source, so tests are deterministic and production seeds come from the caller.
+  `WebSocket` and the connection options, config, storage, and mask-source
+  types are exported from `src/root.zig` with Debug and ReleaseSafe tests.
 - zslay dependency pinned in `build.zig.zon` and exposed from `src/root.zig`,
   plus the generated `build.zig.zon.nix`, `.json`, and `.txt` views.
 - Nix flake and lock file for the Zig 0.17.1 development shell, Nix formatting

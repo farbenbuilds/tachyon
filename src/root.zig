@@ -1,7 +1,8 @@
 //! tachyon public module.
 //!
 //! Re-exports the pinned zslay codec, the frame facade, the incremental UTF-8
-//! validator, the WebSocket error model, and the fragment collector.
+//! validator, the WebSocket error model, the fragment collector, and the
+//! role-aware connection layer.
 
 pub const zslay = @import("zslay");
 
@@ -53,6 +54,15 @@ pub const fragment = @import("fragment.zig");
 pub const Fragments = fragment.Fragments;
 pub const FragmentCollector = fragment.FragmentCollector;
 pub const Role = fragment.Role;
+
+pub const connection = @import("connection.zig");
+pub const WebSocket = connection.WebSocket;
+pub const ConnectionOptions = connection.Options;
+pub const ConnectionConfig = connection.Config;
+pub const ConnectionStorage = connection.Storage;
+pub const MaskKeySource = connection.MaskKeySource;
+pub const default_max_message_size = connection.default_max_message_size;
+pub const default_writev_threshold = connection.default_writev_threshold;
 
 test {
     _ = @import("test.zig");

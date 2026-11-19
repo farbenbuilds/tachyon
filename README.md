@@ -13,22 +13,22 @@ Zig 0.17.1. Framing is delegated to
 I/O-agnostic framing engine with a bounded connection state machine. zslay owns
 header coding, masking, the close predicate and payload validator, masking
 direction, fragment ordering, and frame/message limits. tachyon applies inbound
-close policy, owns the close echo, and targets the fastwebsockets API surface:
-automatic ping/pong and close handling, fragment buffering and UTF-8 checks,
-handshakes, and stream adapters. The 0.10.0 surface is the parity baseline;
-backpressure, streaming messages, native `std.Io` transport, permessage-deflate,
-and pub/sub are planned post-parity extensions. Incremental UTF-8 validation is
-implemented in `src/utf8.zig`, and the fragment collector in `src/fragment.zig`
-applies it across fragments; its connection-level read path lands with the
-connection layer. Deliberate hardening and compatibility
-exceptions are recorded in
+close policy, owns the close echo, and covers the fastwebsockets API surface
+incrementally: automatic ping/pong and close handling, fragment buffering, and
+UTF-8 checks are implemented; handshakes, split halves, and stream adapters
+remain planned. The 0.10.0 surface is the parity baseline; backpressure,
+streaming messages, native `std.Io` transport, permessage-deflate, and pub/sub
+are planned post-parity extensions. Incremental UTF-8 validation is implemented
+in `src/utf8.zig`: the fragment collector validates assembled messages across
+fragments and the raw connection read path validates clear FIN text frames.
+Deliberate hardening and compatibility exceptions are recorded in
 [CODEBASE.md](CODEBASE.md#compatibility-notes); the extension order and
 constraints are in
 [CODEBASE.md](CODEBASE.md#extension-roadmap).
 
 ## Current State
 
-The project now bootstraps its Zig package: `build.zig` defines the public
+The project provides its Zig package: `build.zig` defines the public
 `tachyon` module and static library, `src/root.zig` is the module entry point,
 and zslay is pinned in `build.zig.zon` for framing and wire-state validation.
 The generated zon2nix views feed the offline Nix test and package builds.
@@ -45,12 +45,21 @@ layer: the `Fragments` accumulator over caller-owned message storage and the
 `FragmentCollector`, which drives `zslay.Conn` over a caller-provided
 `std.Io.Reader`, unmasks inbound frames, passes control frames through, and
 validates text incrementally across fragments; protocol, frame, and I/O read
-failures are latched until `reset`. `src/root.zig` re-exports the facade, the
-error model, the UTF-8 validator, and the fragment accumulator and collector.
+failures are latched until `reset`. `src/connection.zig` adds the role-aware
+`WebSocket` policy over one `zslay.Conn`: caller-provided reader and writer,
+caller-owned frame, transmit-node, write, close, and optional mask-scratch
+storage, automatic pong and close replies, a seeded mask key source, an
+exclusive maximum message size, closed gating, read and write latches, and
+vectored or copied writes. `read_frame` flushes automatic pong and close replies
+before returning. A client with `auto_apply_mask` off delivers control frames
+instead of attempting replies: pings pass through, and closes are validated but
+not echoed or answered with 1002. `src/root.zig` re-exports the facade, the
+error model, the UTF-8 validator, the fragment accumulator and collector, and
+the connection layer.
 
-Connection, handshake, upgrade, and split modules are not implemented yet; the
-fragment collector is deliberately read-only, so control replies remain
-connection-layer policy. No separate close or masking module is planned; zslay
+Handshake, upgrade, and split modules are not implemented yet; the fragment
+collector is deliberately read-only, while the connection layer owns automatic
+replies on the raw path. No separate close or masking module is planned; zslay
 owns the close predicate, payload validator, and mask routine. The remaining
 extension roadmap adds backpressure, streaming, native `std.Io` transport,
 permessage-deflate, and pub/sub after the parity baseline lands.
@@ -63,12 +72,12 @@ permessage-deflate, and pub/sub after the parity baseline lands.
 | `WebSocketError` | fastwebsockets 0.10.0 error taxonomy with zslay and `std.Io` mappings |
 | zslay header coding, length handling, masking, fragment ordering, limits | Delegated to zslay |
 | Close predicate and payload validator | zslay; inbound policy and echo in tachyon |
-| `WebSocket` read/write loop, auto-close, auto-pong, max message size | Planned |
+| `WebSocket` read/write loop, auto-close, auto-pong, max message size | Implemented over one `zslay.Conn` with caller-owned storage, closed gating, failure latches, and a seeded mask key source |
 | `Fragments`, `FragmentCollector` | Implemented read-side collector over `zslay.Conn` with a caller-owned `frame_buffer` that bounds one frame payload and a `message_buffer` that bounds one collected message |
 | HTTP server upgrade and client handshake | Planned |
 | Split read/write halves | Planned |
 | Backpressure and bounded write watermarks | Planned extension |
-| Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig` and `src/fragment.zig`; the connection-level read path is planned |
+| Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig`: the fragment collector validates assembled messages and the raw connection read path validates clear FIN text frames |
 | Streaming message reader/writer | Planned extension |
 | Native `std.Io.Reader`/`Writer` transport adapter | Planned extension |
 | permessage-deflate (RFC 7692) | Planned extension beyond 0.10.0 parity |
@@ -81,7 +90,9 @@ permessage-deflate, and pub/sub after the parity baseline lands.
   policy and transport.
 - Transport uses Zig 0.17.1 `std.Io` asynchronous I/O. tachyon does not depend
   on libxev or another third-party event loop.
-- Transport work stays at the edge and never enters the frame core.
+- Transport work stays at the edge and never enters the frame core. The
+  connection layer consumes caller-provided readers and writers and owns no
+  socket or task.
 - Extensions are optional modules at the edge. Backpressure is bounded and
   explicit, UTF-8 validation is incremental, and decompression is capped by the
   message limit before delivery.
