@@ -45,7 +45,7 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 | --- | --- | --- |
 | `framing` | Frame facade, close-code aliases, masking delegation, errors, incremental UTF-8 | `src/frame.zig`, `src/error.zig`, `src/utf8.zig` |
 | `connection` | Connection policy over `zslay.Conn`, control replies, limits | `src/connection.zig` |
-| `fragments` | Message buffering, shared UTF-8 streaming, split reads | `src/fragment.zig`, `src/split.zig` |
+| `fragments` | Message buffering and shared UTF-8 streaming in `src/fragment.zig`; split reads in planned `src/split.zig` | `src/fragment.zig`, `src/split.zig` |
 | `handshake` | Client handshake and server upgrade | `src/handshake.zig`, `src/upgrade.zig` |
 | `testing` | Unit, Autobahn, fuzz, and echo coverage | `src/test.zig`, `tests/`, `fuzz/` |
 | `review` | Read-only review | any changed file |
@@ -60,8 +60,9 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 
 These modules are roadmap items, not current files. Existing agent definitions
 remain scoped to current files; expand the owner and matching definition before
-implementation. `src/utf8.zig` has landed under the `framing` owner, so it is
-removed from this list.
+implementation. `src/utf8.zig` has landed under the `framing` owner and
+`src/fragment.zig` under `fragments`, so both are current files rather than
+roadmap items. `src/split.zig` remains planned under `fragments`.
 
 | Module | Planned owner | Dependency |
 | --- | --- | --- |

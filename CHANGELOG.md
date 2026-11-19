@@ -25,6 +25,26 @@ This project follows semantic versioning.
   `zslay.Error.InvalidUtf8`, and `Frame.is_utf8` delegates to the same
   validator. Exported from `src/root.zig` with focused Debug and ReleaseSafe
   tests.
+- `src/fragment.zig` with the read-side fragment layer: the `Fragments`
+  accumulator over a caller-owned message buffer and `FragmentCollector`, which
+  drives `zslay.Conn`'s RX state machine over a caller-provided
+  `std.Io.Reader`. It unmasks inbound frames in place, returns control frames to
+  the caller without disturbing the in-progress message, and validates text
+  incrementally across fragments, including code points split between frames.
+  `max_message_size` is exclusive, `init` rejects values above
+  `zslay.MaxPayloadLen`, and a message that exceeds local `message_buffer`
+  capacity fails closed with `BufferTooShort`. Every protocol, frame, and I/O
+  `read_frame` failure is latched and returned by later calls until `reset`; a
+  zero `max_message_size` is a configuration rejection that returns
+  `FrameTooLarge` without latching. The latch keeps zslay's fragment accounting
+  from drifting from the accumulator; `reset` is safe only at
+  `is_at_wire_boundary()` or when the transport is discarded, because a
+  mid-frame read failure leaves the reader advanced. Close frames pass through
+  after zslay's header-level checks only, so the caller or connection layer must
+  call `zslay.validate_close_payload` before acting on or echoing them. The
+  collector is deliberately read-only, so automatic pong and close replies
+  remain connection-layer policy. `Fragments`, `FragmentCollector`, and `Role`
+  are exported from `src/root.zig`.
 - zslay dependency pinned in `build.zig.zon` and exposed from `src/root.zig`,
   plus the generated `build.zig.zon.nix`, `.json`, and `.txt` views.
 - Nix flake and lock file for the Zig 0.17.1 development shell, Nix formatting

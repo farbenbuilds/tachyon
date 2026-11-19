@@ -9,10 +9,12 @@ How to set up, develop, test, commit, and release tachyon. For architecture see
 The repository currently contains the environment, documentation, agent
 rules, skill pack, and Zig package bootstrap. `build.zig` defines the public
 module, static library, test, and check steps; `src/root.zig` exposes the
-pinned zslay codec, the frame facade, and the error model. `src/frame.zig`
-implements the frame facade. Connection, fragmentation, handshake, upgrade,
-and split modules are not implemented yet. The library commands below describe
-the project workflow and work against the current tree.
+pinned zslay codec, the frame facade, the UTF-8 validator, the error model,
+and the fragment accumulator and collector. `src/frame.zig` implements the
+frame facade, and `src/fragment.zig` implements the read-side fragment layer.
+Connection, handshake, upgrade, and split modules are not implemented yet. The
+library commands below describe the project workflow and work against the
+current tree.
 
 ## Local Setup
 
@@ -60,7 +62,8 @@ from it; see [AGENTS.md](AGENTS.md).
 ## Testing
 
 Tests use the built-in Zig test runner. The bootstrap dependency test lives in
-`src/root.zig`; protocol tests will live in `src/test.zig`. The test step runs
+`src/root.zig`; protocol tests live in `src/test.zig`, including the fragment
+accumulator and collector tests. The test step runs
 the suite twice, once with Debug safety and once with ReleaseSafe, so overflow
 and bounds behavior in release mode is exercised before review.
 

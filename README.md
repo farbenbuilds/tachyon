@@ -18,8 +18,9 @@ automatic ping/pong and close handling, fragment buffering and UTF-8 checks,
 handshakes, and stream adapters. The 0.10.0 surface is the parity baseline;
 backpressure, streaming messages, native `std.Io` transport, permessage-deflate,
 and pub/sub are planned post-parity extensions. Incremental UTF-8 validation is
-implemented in `src/utf8.zig`; its connection-level read path and collector call
-sites land with the connection and fragment layers. Deliberate hardening and compatibility
+implemented in `src/utf8.zig`, and the fragment collector in `src/fragment.zig`
+applies it across fragments; its connection-level read path lands with the
+connection layer. Deliberate hardening and compatibility
 exceptions are recorded in
 [CODEBASE.md](CODEBASE.md#compatibility-notes); the extension order and
 constraints are in
@@ -39,13 +40,19 @@ boundary normalization, `std.Io` transport mappings, and the close-code policy.
 vectored writes, and caller-buffer writes. `src/utf8.zig` adds incremental
 zero-allocation text validation: complete ranges go through `std.unicode`,
 split code points are carried across `std.Io` read chunks, and `Frame.is_utf8`
-delegates to the same validator. `src/root.zig` re-exports the facade, the
-error model, and the UTF-8 validator.
+delegates to the same validator. `src/fragment.zig` adds the read-side fragment
+layer: the `Fragments` accumulator over caller-owned message storage and the
+`FragmentCollector`, which drives `zslay.Conn` over a caller-provided
+`std.Io.Reader`, unmasks inbound frames, passes control frames through, and
+validates text incrementally across fragments; protocol, frame, and I/O read
+failures are latched until `reset`. `src/root.zig` re-exports the facade, the
+error model, the UTF-8 validator, and the fragment accumulator and collector.
 
-Connection, fragmentation, handshake, upgrade, and split modules are not
-implemented yet. No separate close or masking module is planned; zslay owns the
-close predicate, payload validator, and mask routine. The remaining extension
-roadmap adds backpressure, streaming, native `std.Io` transport,
+Connection, handshake, upgrade, and split modules are not implemented yet; the
+fragment collector is deliberately read-only, so control replies remain
+connection-layer policy. No separate close or masking module is planned; zslay
+owns the close predicate, payload validator, and mask routine. The remaining
+extension roadmap adds backpressure, streaming, native `std.Io` transport,
 permessage-deflate, and pub/sub after the parity baseline lands.
 
 ## Targets
@@ -57,11 +64,11 @@ permessage-deflate, and pub/sub after the parity baseline lands.
 | zslay header coding, length handling, masking, fragment ordering, limits | Delegated to zslay |
 | Close predicate and payload validator | zslay; inbound policy and echo in tachyon |
 | `WebSocket` read/write loop, auto-close, auto-pong, max message size | Planned |
-| `FragmentCollector` | Planned |
+| `Fragments`, `FragmentCollector` | Implemented read-side collector over `zslay.Conn` with a caller-owned `frame_buffer` that bounds one frame payload and a `message_buffer` that bounds one collected message |
 | HTTP server upgrade and client handshake | Planned |
 | Split read/write halves | Planned |
 | Backpressure and bounded write watermarks | Planned extension |
-| Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig`; collector integration lands with the fragment layer |
+| Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig` and `src/fragment.zig`; the connection-level read path is planned |
 | Streaming message reader/writer | Planned extension |
 | Native `std.Io.Reader`/`Writer` transport adapter | Planned extension |
 | permessage-deflate (RFC 7692) | Planned extension beyond 0.10.0 parity |
