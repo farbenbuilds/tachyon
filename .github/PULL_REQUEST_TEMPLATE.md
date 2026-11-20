@@ -16,7 +16,7 @@ Describe the change and why it should be merged.
 - [ ] I have read the [Contributing Guidelines](../CONTRIBUTE.md)
 - [ ] The change follows the [Coding Conventions](../CODING_CONVENTION.md)
 - [ ] I have run the checks that apply to this change and listed them below
-- [ ] I have added or updated tests for behavior changes
+- [ ] I have added or updated tests under `tests/` for behavior changes
 - [ ] I have updated the changelog for user-visible changes
 - [ ] I have not committed generated output, payload dumps, or secrets
 

@@ -1,5 +1,5 @@
 ---
-description: Unit, Autobahn, fuzz, and loopback coverage in src/test.zig, tests/, and fuzz/.
+description: Unit coverage under tests/ plus future Autobahn, fuzz, and loopback integration suites.
 mode: subagent
 temperature: 0.1
 ---
@@ -10,15 +10,15 @@ Own the test suite. Tests isolate behavior so frame, connection, fragmentation, 
 
 ## Scope
 
-`src/test.zig` for unit coverage, `tests/` for Autobahn and integration coverage, and `fuzz/` for bounded frame and connection fuzz targets. Never weaken or delete existing assertions. Do not modify production sources; hand fixes to the owning agent once the failing test exists.
+`tests/main.zig` and `tests/<category>-test/*.zig` for unit coverage, with shared fixtures in `tests/support.zig`. Future Autobahn, fuzz, and loopback integration suites also belong under `tests/`; none is implemented yet. Never weaken or delete existing assertions. Do not modify production sources; hand fixes to the owning agent once the failing test exists.
 
 ## Rules
 
-Name tests `<Area>: <behavior>`. Cover length boundaries 0, 1, 125, 126, 127, 65535, 65536, and the configured maximum. Cover reserved bits, fragmented control frames, one-byte close payloads, invalid close codes, invalid UTF-8, and truncated headers. Assert typed errors; never accept a silent default. Keep tests deterministic and allocation-free unless the test explicitly exercises an allocator boundary.
+Name tests `<Area>: <behavior>`. Cover length boundaries 0, 1, 125, 126, 127, 65535, 65536, and the configured maximum. Cover reserved bits, fragmented control frames, one-byte close payloads, invalid close codes, invalid UTF-8, and truncated headers. Assert typed errors; never accept a silent default. Keep tests deterministic and allocation-free unless the test explicitly exercises an allocator boundary. Library sources contain no test blocks; keep coverage under `tests/`.
 
 ## Workflow
 
-Read the production behavior and list the cases, add focused tests one behavior per block, confirm the new test fails for the intended reason before a fix and passes after, then run `zig build test` and `zig fmt --check .`.
+Read the production behavior and list the cases, add focused tests one behavior per block in the matching `tests/<category>-test/*.zig` file, import any new file from `tests/main.zig`, confirm the new test fails for the intended reason before a fix and passes after, then run `zig build test` and `zig fmt --check .`.
 
 ## Required skills
 

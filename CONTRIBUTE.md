@@ -58,7 +58,7 @@ pre-commit run --all-files  # formatting and hygiene hooks
 
 ```sh
 zig build                   # static library at zig-out/lib/libtachyon.a
-zig build test              # Debug and ReleaseSafe suites
+zig build test              # Debug and ReleaseSafe suites over tests/main.zig
 zig build check             # type-check library and tests
 zig fmt .                   # apply formatting
 ```
@@ -69,20 +69,29 @@ from it; see [AGENTS.md](AGENTS.md).
 
 ## Testing
 
-Tests use the built-in Zig test runner. The bootstrap dependency test lives in
-`src/root.zig`; protocol tests live in `src/test.zig`, including the fragment
-accumulator and collector tests, the connection policy, mask, limit, close,
-vectored-write, and failure-latch tests, the split read/write,
-masking-direction, obligation, `auto_apply_mask`, latch, limit, and
-`FragmentCollectorRead` tests, and the handshake key, token, header, status, and
-bounded-head tests. The test step runs the suite twice,
-once with Debug safety and once with ReleaseSafe, so overflow and bounds
-behavior in release mode is exercised before review.
+Tests use the built-in Zig test runner. The suite lives under `tests/` in
+category folders: `module-test`, `error-test`, `frame-test`, `utf8-test`,
+`fragment-test`, `connection-test`, `split-test`, `handshake-test`, and
+`upgrade-test`. `tests/main.zig` imports every category test file and is the
+root module for both test steps; `tests/support.zig` holds shared fixtures and
+test-only readers and writers. See [tests/README.md](tests/README.md) for the
+tree and naming rules.
+
+The categories cover the dependency boundary and public re-exports, the error
+model, the frame facade, incremental UTF-8 validation, the fragment accumulator
+and collector, connection policy, masks, limits, close handling, vectored
+writes, failure latches, the split read/write halves, masking direction,
+obligations, `auto_apply_mask`, latches, limits, `FragmentCollectorRead`, and
+the handshake keys, tokens, headers, status, bounded heads, and server upgrade
+call order. The test step runs the suite twice, once with Debug safety and once
+with ReleaseSafe, so overflow and bounds behavior in release mode is exercised
+before review.
 
 There is no numeric coverage target. Changed behavior needs a focused test,
 including malformed input and length boundaries. Autobahn, fuzz, and loopback
-echo suites remain planned; the connection layer has unit coverage only. Do not
-claim compliance before those suites pass.
+echo suites remain planned; they belong under `tests/` as future integration
+category folders, and the connection layer has unit coverage only. Do not claim
+compliance before those suites pass.
 
 ## Pre-commit Hooks
 

@@ -131,7 +131,12 @@ see [CONTRIBUTE.md](CONTRIBUTE.md).
 
 ## 9. Testing
 
-- Put unit tests in `src/test.zig`, named `<Area>: <behavior>`.
+- Put unit tests in `tests/<category>-test/*.zig`, aggregated by
+  `tests/main.zig`, named `<Area>: <behavior>`.
+- Add new category files under the matching `tests/<area>-test/` folder and
+  import them from `tests/main.zig`; library sources contain no test blocks.
+- Share fixtures and test-only readers and writers through `tests/support.zig`
+  instead of duplicating them across categories.
 - Tests must exercise both success and failure paths for changed protocol code.
 - Cover the length boundaries in [AGENTS.md](AGENTS.md#testing-guidelines).
 - Prefer fixed byte arrays and explicit expected values over generated data.

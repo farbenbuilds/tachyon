@@ -32,8 +32,8 @@ The repository now contains the Zig package on top of the environment and
 documentation foundation:
 
 - `build.zig` and `build.zig.zon` define the public `tachyon` module, the
-  static library, the Debug and ReleaseSafe test steps, the `check` step, and
-  the zslay dependency.
+  static library, the Debug and ReleaseSafe test steps over `tests/main.zig`,
+  the `check` step, and the zslay dependency.
 - `src/root.zig` is the module entry point; it re-exports zslay, the frame
   facade, the UTF-8 validator, the WebSocket error model, the fragment
   accumulator and collector, the connection layer, the split read and write
@@ -149,13 +149,18 @@ documentation foundation:
   the Google Antigravity graphify integration.
 - The root Markdown guides define the architecture and process.
 
-The test suite covers the dependency boundary, the error model, the frame
-facade, the incremental UTF-8 validator, the fragment accumulator and collector,
-the connection policy, raw frame path, and write paths, the split reads and
-writes, the HTTP handshake, and the server upgrade call order, including
-validated-only `incoming`, split construction before the 101 write and flush,
-the forced server role, and the async future and its borrows; `src/root.zig`
-adds fragment, connection, split, and handshake re-export tests.
+The test suite lives under `tests/` and is aggregated by `tests/main.zig`.
+Category folders such as `tests/frame-test/`, `tests/connection-test/`, and
+`tests/handshake-test/` mirror the protocol layers, and `tests/support.zig`
+holds shared fixtures and test-only readers and writers. The suite covers the
+dependency boundary, the error model, the frame facade, the incremental UTF-8
+validator, the fragment accumulator and collector, the connection policy, raw
+frame path, and write paths, the split reads and writes, the HTTP handshake, and
+the server upgrade call order, including validated-only `incoming`, split
+construction before the 101 write and flush, the forced server role, and the
+async future and its borrows; `tests/module-test/module_test.zig` adds fragment,
+connection, split, and handshake re-export tests. Library sources contain no
+test blocks.
 
 ## Non-Negotiable Architecture
 
@@ -200,7 +205,7 @@ Current files:
 
 | Path | Purpose |
 | --- | --- |
-| `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe tests, `check` step, and the zslay dependency. |
+| `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe test steps over `tests/main.zig`, `check` step, and the zslay dependency. |
 | `build.zig.zon.nix`, `.json`, `.txt` | Generated zon2nix views for offline Nix builds and dependency audits. |
 | `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, the error model, the fragment accumulator and collector, the connection layer, the split read and write halves, the HTTP handshake primitives, and the server upgrade call order. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` and `CloseCode` aliases with conversions, `unmask`/`unmask_at`, the header-length bridge, and write paths. |
@@ -211,7 +216,10 @@ Current files:
 | `src/split.zig` | Split `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned read and write storage, sink-forwarded obligations, and `FragmentCollectorRead`. |
 | `src/handshake.zig` | RFC 6455 client handshake and shared server upgrade primitives: `std.Io` request/response heads, key generation and validation, accept-token re-exports from `src/upgrade.zig`, token-list validation, and the `101` response. |
 | `src/upgrade.zig` | RFC 6455 server upgrade call order: `incoming` validation without writing, split construction from caller storage before the 101 write and flush through `handshake.write_response`, forced server role, and `upgrade_async` over `std.Io.Future`. |
-| `src/test.zig` | Unit tests for the error model, frame facade, UTF-8 validator, fragment accumulator and collector, connection policy and write paths, split reads and writes, HTTP handshake and server upgrade; expanded as protocol layers land. |
+| `tests/main.zig` | Test aggregator; imports every category test file so one module runs under Debug and ReleaseSafe. |
+| `tests/support.zig` | Shared fixtures and test-only readers and writers. |
+| `tests/<category>-test/` | Unit coverage grouped by protocol area: module, error, frame, UTF-8, fragment, connection, split, handshake, and upgrade. |
+| `tests/README.md` | Test tree, aggregator, category naming, and run instructions. |
 | `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
@@ -232,7 +240,7 @@ Target source layout, roughly in dependency order:
 
 | Path | Purpose |
 | --- | --- |
-| `build.zig`, `build.zig.zon` | Public module, static library, tests, and the zslay dependency. |
+| `build.zig`, `build.zig.zon` | Public module, static library, test steps over the `tests/` tree, and the zslay dependency. |
 | `src/root.zig` | Public module entry point and re-exports. |
 | `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` alias, `CloseCode` alias and conversions, `unmask`/`unmask_at`, header-length bridge, and write paths. |
@@ -247,7 +255,10 @@ Target source layout, roughly in dependency order:
 | `src/pubsub.zig` | Planned extension: bounded topic hub and fanout over the frame/stream API. |
 | `src/handshake.zig` | Implemented: RFC 6455 client handshake and shared server upgrade primitives over `std.Io.Reader`/`Writer`, including key generation, accept-token re-exports from `src/upgrade.zig`, head parsing, and response construction. |
 | `src/upgrade.zig` | Implemented: RFC 6455 server upgrade call order over the validated `handshake` request and response primitives, including the accept-token derivation, split construction from caller storage before the 101 write and flush, the forced server role, and `upgrade`, `incoming`, and `upgrade_async`. |
-| `src/test.zig` | Unit tests for all protocol layers and extensions. |
+| `tests/main.zig` | Aggregates the category test files for the Debug and ReleaseSafe test steps. |
+| `tests/support.zig` | Shared test fixtures and protocol helpers. |
+| `tests/<category>-test/*.zig` | Unit tests grouped by area: module, error, frame, UTF-8, fragment, connection, split, handshake, and upgrade. |
+| `tests/<integration>-test/` | Planned Autobahn, fuzz, and loopback integration suites; no adapter exists yet. |
 
 The handshake/upgrade pair deliberately forms a small re-export cycle:
 `src/upgrade.zig` uses the handshake request and response primitives, and
@@ -301,7 +312,7 @@ Library commands:
 
 ```sh
 zig build                   # static library
-zig build test              # Debug and ReleaseSafe suites
+zig build test              # Debug and ReleaseSafe suites over tests/main.zig
 zig build check             # type-check library and tests
 zig fmt --check .           # formatting gate
 ```
@@ -337,8 +348,12 @@ See [CODING_CONVENTION.md](CODING_CONVENTION.md) for the full rule set and Zig
 
 ## Testing Guidelines
 
-Use Zig `test` blocks in `src/test.zig`, named `<Area>: <behavior>`, for example
-`Frame: encodes a masked extended-length header`.
+Use Zig `test` blocks in `tests/<category>-test/*.zig`, aggregated by
+`tests/main.zig`, named `<Area>: <behavior>`, for example
+`Frame: encodes a masked extended-length header`. Add a new category folder as
+`tests/<area>-test/` and import its files from `tests/main.zig`. Shared fixtures
+and test-only readers and writers belong in `tests/support.zig`. Library sources
+contain no test blocks; do not add tests back to `src/`.
 
 - Every behavioral change needs a focused regression test.
 - Cover boundary lengths 0, 1, 125, 126, 127, 65535, 65536, and the configured
@@ -349,9 +364,10 @@ Use Zig `test` blocks in `src/test.zig`, named `<Area>: <behavior>`, for example
 - Keep payloads caller-owned in tests; do not introduce a test allocator into
   the frame core.
 - Run both Debug and ReleaseSafe before review.
-- Autobahn, fuzzing, and loopback echo adapters remain planned; the connection
-  layer has unit coverage only. Do not claim compliance before those suites
-  exist and pass.
+- Autobahn, fuzzing, and loopback echo suites belong under `tests/` as future
+  integration category folders; none is implemented yet. The connection layer
+  has unit coverage only. Do not claim compliance before those suites exist and
+  pass.
 
 ## Security and Protocol Rules
 
