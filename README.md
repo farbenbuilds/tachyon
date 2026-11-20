@@ -15,8 +15,9 @@ header coding, masking, the close predicate and payload validator, masking
 direction, fragment ordering, and frame/message limits. tachyon applies inbound
 close policy, owns the close echo, and covers the fastwebsockets API surface
 incrementally: automatic ping/pong and close handling, fragment buffering,
-split read/write halves, and UTF-8 checks are implemented; handshakes and
-stream adapters remain planned. The 0.10.0 surface is the parity baseline;
+split read/write halves, UTF-8 checks, and the client handshake are implemented;
+HTTP server orchestration and stream adapters remain planned. The 0.10.0 surface
+is the parity baseline;
 backpressure, streaming messages, native `std.Io` transport, permessage-deflate,
 and pub/sub are planned post-parity extensions. Incremental UTF-8 validation is implemented
 in `src/utf8.zig`: the fragment collector validates assembled messages across
@@ -65,10 +66,21 @@ write half drives `write_frame` and `flush` and never reads.
 `FragmentCollectorRead` assembles continuations and split UTF-8 code points over
 a caller-owned `message_buffer` and rejects overlap with the read `frame_buffer`
 with `InvalidLength`. All storage is caller-owned and zero allocation.
-`src/root.zig` re-exports the facade, the error model, the UTF-8 validator, the
-fragment accumulator and collector, the connection layer, and the split halves.
+`src/handshake.zig` adds the RFC 6455 HTTP handshake boundary over caller-provided
+`std.Io.Reader` and `std.Io.Writer` values: secure 16-byte key generation,
+canonical base64 validation, streaming SHA-1 accept-token computation over a
+single `accept_guid` constant, request and response head parsing bounded by
+caller storage, client response verification including
+`Sec-WebSocket-Accept`, server request validation, and `101 Switching
+Protocols` response construction. Bytes after the header stay buffered for the
+frame path, and the module never allocates or opens a socket. `src/root.zig`
+re-exports the facade, the error model, the UTF-8 validator, the fragment
+accumulator and collector, the connection layer, the split halves, and the
+handshake primitives.
 
-Handshake and upgrade modules remain planned; the fragment collector is
+`src/upgrade.zig` remains planned for the server call order over those
+primitives: strict request validation, the computed 101 response, a flush, and
+the borrowed request view for split handoff. The fragment collector is
 deliberately read-only, while the connection and split read paths own automatic
 replies. No separate close or masking module is planned; zslay owns the close
 predicate, payload validator, and mask routine. The remaining extension roadmap
@@ -85,7 +97,7 @@ pub/sub after the parity baseline lands.
 | Close predicate and payload validator | zslay; inbound policy and echo in tachyon |
 | `WebSocket` read/write loop, auto-close, auto-pong, max message size | Implemented over one `zslay.Conn` with caller-owned storage, closed gating, failure latches, and a seeded mask key source |
 | `Fragments`, `FragmentCollector` | Implemented read-side collector over `zslay.Conn` with a caller-owned `frame_buffer` that bounds one frame payload and a `message_buffer` that bounds one collected message |
-| HTTP server upgrade and client handshake | Planned |
+| Client handshake and shared server upgrade primitives | Implemented in `src/handshake.zig` over `std.Io.Reader`/`Writer` with bounded caller-owned head storage; HTTP server orchestration in `src/upgrade.zig` remains planned |
 | Split read/write halves | Implemented `Split`, `WebSocketRead`, `WebSocketWrite`, and `FragmentCollectorRead` over independent `connection.WebSocket`/`zslay.Conn` values with caller-owned storage and sink-forwarded obligations |
 | Backpressure and bounded write watermarks | Planned extension |
 | Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig`: the fragment collector validates assembled messages and the raw connection read path validates clear FIN text frames |

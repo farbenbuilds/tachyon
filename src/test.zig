@@ -6,6 +6,7 @@ const connection = @import("connection.zig");
 const errors = @import("error.zig");
 const fragment = @import("fragment.zig");
 const frame = @import("frame.zig");
+const handshake = @import("handshake.zig");
 const split = @import("split.zig");
 const utf8 = @import("utf8.zig");
 
@@ -5355,4 +5356,733 @@ test "Split: server read honors the exclusive maximum at short and extended leng
     }
 
     try std.testing.expectError(error.FrameTooLarge, parts.split.read_frame());
+}
+
+const handshake_sample_key = "dGhlIHNhbXBsZSBub25jZQ==";
+const handshake_sample_accept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+const handshake_valid_request =
+    "GET /chat HTTP/1.1\r\n" ++
+    "Host: server.example.com\r\n" ++
+    "Upgrade: websocket\r\n" ++
+    "Connection: Upgrade\r\n" ++
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+    "Sec-WebSocket-Version: 13\r\n" ++
+    "\r\n";
+const handshake_valid_response =
+    "HTTP/1.1 101 Switching Protocols\r\n" ++
+    "Upgrade: websocket\r\n" ++
+    "Connection: Upgrade\r\n" ++
+    "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ++
+    "\r\n";
+
+fn build_request_head(
+    buffer: []u8,
+    method: []const u8,
+    connection_value: ?[]const u8,
+    upgrade_value: ?[]const u8,
+    key: ?[]const u8,
+    version: ?[]const u8,
+) ![]const u8 {
+    var writer = std.Io.Writer.fixed(buffer);
+    try writer.print("{s} /chat HTTP/1.1\r\nHost: server.example.com\r\n", .{method});
+    if (connection_value) |value| try writer.print("Connection: {s}\r\n", .{value});
+    if (upgrade_value) |value| try writer.print("Upgrade: {s}\r\n", .{value});
+    if (key) |value| try writer.print("Sec-WebSocket-Key: {s}\r\n", .{value});
+    if (version) |value| try writer.print("Sec-WebSocket-Version: {s}\r\n", .{value});
+    try writer.writeAll("\r\n");
+    return writer.buffered();
+}
+
+fn build_response_head(
+    buffer: []u8,
+    status: []const u8,
+    upgrade_value: ?[]const u8,
+    connection_value: ?[]const u8,
+    accept: ?[]const u8,
+) ![]const u8 {
+    var writer = std.Io.Writer.fixed(buffer);
+    try writer.print("{s}\r\n", .{status});
+    if (upgrade_value) |value| try writer.print("Upgrade: {s}\r\n", .{value});
+    if (connection_value) |value| try writer.print("Connection: {s}\r\n", .{value});
+    if (accept) |value| try writer.print("Sec-WebSocket-Accept: {s}\r\n", .{value});
+    try writer.writeAll("\r\n");
+    return writer.buffered();
+}
+
+test "Handshake: RFC 6455 sample key produces the published accept token" {
+    var accept_buffer: handshake.AcceptTokenBuffer = undefined;
+    const accept = handshake.compute_accept_token(handshake_sample_key, &accept_buffer);
+
+    try std.testing.expectEqualStrings(handshake_sample_accept, accept);
+    try std.testing.expect(handshake.valid_client_key(handshake_sample_key));
+}
+
+test "Handshake: generated keys are canonical base64 for 16 bytes" {
+    var key_buffer: handshake.KeyBuffer = undefined;
+    const key = try handshake.generate_key(std.testing.io, &key_buffer);
+
+    try std.testing.expectEqual(@as(usize, 24), key.len);
+    try std.testing.expect(handshake.valid_client_key(key));
+
+    var decoded: handshake.KeyBytes = undefined;
+    try std.base64.standard.Decoder.decode(&decoded, key);
+
+    var canonical: handshake.KeyBuffer = undefined;
+    try std.testing.expectEqualStrings(key, handshake.encode_key(decoded, &canonical));
+}
+
+test "Handshake: valid_client_key trims OWS and rejects invalid lengths and encodings" {
+    try std.testing.expect(handshake.valid_client_key("AAAAAAAAAAAAAAAAAAAAAA=="));
+    try std.testing.expect(handshake.valid_client_key(" dGhlIHNhbXBsZSBub25jZQ==\t"));
+
+    var accept_buffer: handshake.AcceptTokenBuffer = undefined;
+    const accept = handshake.compute_accept_token(" dGhlIHNhbXBsZSBub25jZQ== ", &accept_buffer);
+    try std.testing.expectEqualStrings(handshake_sample_accept, accept);
+
+    try std.testing.expect(!handshake.valid_client_key(""));
+    try std.testing.expect(!handshake.valid_client_key("dGhlIHNhbXBsZSBub25jZQ="));
+    try std.testing.expect(!handshake.valid_client_key("dGhlIHNhbXBsZSBub25jZR=="));
+    try std.testing.expect(!handshake.valid_client_key("AAAAAAAAAAAAAAAA"));
+    try std.testing.expect(!handshake.valid_client_key("!!!!!!!!!!!!!!!!!!!!!!!!"));
+}
+
+test "Handshake: has_token matches complete comma-separated tokens" {
+    try std.testing.expect(handshake.has_token("keep-alive, Upgrade", "upgrade"));
+    try std.testing.expect(handshake.has_token("  websocket \t", "WEBSOCKET"));
+    try std.testing.expect(handshake.has_token("a, b, c", "b"));
+    try std.testing.expect(!handshake.has_token("not-upgrade", "upgrade"));
+    try std.testing.expect(!handshake.has_token("superupgrade", "upgrade"));
+    try std.testing.expect(!handshake.has_token("", "upgrade"));
+    try std.testing.expect(!handshake.has_token("a,,b", ""));
+}
+
+test "Handshake: is_request checks both upgrade token lists" {
+    try std.testing.expect(handshake.is_request(handshake_valid_request));
+
+    var buffer: [256]u8 = undefined;
+    const token_lists = try build_request_head(
+        &buffer,
+        "GET",
+        "keep-alive, Upgrade",
+        "h2c, WebSocket",
+        handshake_sample_key,
+        "13",
+    );
+    try std.testing.expect(handshake.is_request(token_lists));
+
+    const wrong_connection = try build_request_head(&buffer, "GET", "keep-alive", "websocket", handshake_sample_key, "13");
+    try std.testing.expect(!handshake.is_request(wrong_connection));
+
+    const wrong_upgrade = try build_request_head(&buffer, "GET", "Upgrade", "h2c", handshake_sample_key, "13");
+    try std.testing.expect(!handshake.is_request(wrong_upgrade));
+
+    const closing = try build_request_head(
+        &buffer,
+        "GET",
+        "Upgrade, close",
+        "websocket",
+        handshake_sample_key,
+        "13",
+    );
+    try std.testing.expect(!handshake.is_request(closing));
+
+    try std.testing.expect(!handshake.is_request("not an HTTP head"));
+}
+
+test "Handshake: validate_request returns the borrowed canonical key" {
+    const request = try handshake.validate_request(handshake_valid_request);
+
+    try std.testing.expectEqualStrings(handshake_sample_key, request.key);
+    try std.testing.expectEqualStrings(handshake_valid_request, request.head);
+    const key_addr = @intFromPtr(request.key.ptr);
+    const head_addr = @intFromPtr(request.head.ptr);
+    try std.testing.expect(key_addr >= head_addr);
+    try std.testing.expect(key_addr < head_addr + request.head.len);
+}
+
+test "Handshake: validate_request rejects method, version, and token failures" {
+    var buffer: [256]u8 = undefined;
+
+    const post = try build_request_head(&buffer, "POST", "Upgrade", "websocket", handshake_sample_key, "13");
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(post));
+
+    const http_10 = "GET /chat HTTP/1.0\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(http_10));
+
+    const no_connection = try build_request_head(&buffer, "GET", null, "websocket", handshake_sample_key, "13");
+    try std.testing.expectError(error.InvalidConnectionHeader, handshake.validate_request(no_connection));
+
+    const wrong_connection = try build_request_head(&buffer, "GET", "keep-alive", "websocket", handshake_sample_key, "13");
+    try std.testing.expectError(error.InvalidConnectionHeader, handshake.validate_request(wrong_connection));
+
+    const no_upgrade = try build_request_head(&buffer, "GET", "Upgrade", null, handshake_sample_key, "13");
+    try std.testing.expectError(error.InvalidUpgradeHeader, handshake.validate_request(no_upgrade));
+
+    const wrong_upgrade = try build_request_head(&buffer, "GET", "Upgrade", "h2c", handshake_sample_key, "13");
+    try std.testing.expectError(error.InvalidUpgradeHeader, handshake.validate_request(wrong_upgrade));
+}
+
+test "Handshake: validate_request rejects missing, wrong, and duplicate key fields" {
+    var buffer: [256]u8 = undefined;
+
+    const no_key = try build_request_head(&buffer, "GET", "Upgrade", "websocket", null, "13");
+    try std.testing.expectError(error.MissingSecWebSocketKey, handshake.validate_request(no_key));
+
+    const bad_key = try build_request_head(&buffer, "GET", "Upgrade", "websocket", "not a key", "13");
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(bad_key));
+
+    const no_version = try build_request_head(&buffer, "GET", "Upgrade", "websocket", handshake_sample_key, null);
+    try std.testing.expectError(error.InvalidSecWebsocketVersion, handshake.validate_request(no_version));
+
+    const wrong_version = try build_request_head(&buffer, "GET", "Upgrade", "websocket", handshake_sample_key, "12");
+    try std.testing.expectError(error.InvalidSecWebsocketVersion, handshake.validate_request(wrong_version));
+
+    const duplicate_key =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(duplicate_key));
+
+    const duplicate_version =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    try std.testing.expectError(error.InvalidSecWebsocketVersion, handshake.validate_request(duplicate_version));
+
+    const no_host =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(no_host));
+
+    const duplicate_host =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(duplicate_host));
+}
+
+test "Handshake: validate_request rejects excessive header counts" {
+    var buffer: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try writer.writeAll(
+        "GET /chat HTTP/1.1\r\n" ++
+            "Host: server.example.com\r\n" ++
+            "Upgrade: websocket\r\n" ++
+            "Connection: Upgrade\r\n" ++
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+            "Sec-WebSocket-Version: 13\r\n",
+    );
+    var index: usize = 0;
+    while (index < handshake.max_header_count + 1) : (index += 1) {
+        try writer.print("X-{d}: v\r\n", .{index});
+    }
+    try writer.writeAll("\r\n");
+
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(writer.buffered()));
+}
+
+test "Handshake: validate_request rejects malformed and folded headers" {
+    const folded =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        " continued\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(folded));
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request("GET / HTTP/1.1\r\n\r\n"));
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request("GET\r\n\r\n"));
+
+    const spaced_body_header =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n" ++
+        "Content-Length : 5\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(spaced_body_header));
+
+    const spaced_host =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host : evil\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(spaced_host));
+
+    const absolute_target =
+        "GET http://evil/ HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(absolute_target));
+
+    const empty_target =
+        "GET  HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(empty_target));
+
+    const close_connection =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade, close\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    try std.testing.expectError(error.InvalidConnectionHeader, handshake.validate_request(close_connection));
+}
+
+test "Handshake: write_request emits the canonical client request" {
+    var out: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&out);
+
+    try handshake.write_request(&writer, .{
+        .host = "example.com",
+        .target = "/chat",
+        .key = handshake_sample_key,
+        .origin = "https://example.com",
+    });
+
+    const expected =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n" ++
+        "Origin: https://example.com\r\n" ++
+        "\r\n";
+    try std.testing.expectEqualStrings(expected, writer.buffered());
+}
+
+test "Handshake: write_request rejects injection and invalid fields" {
+    var out: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&out);
+
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.write_request(&writer, .{
+        .host = "example.com\r\nInjected: yes",
+        .key = handshake_sample_key,
+    }));
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.write_request(&writer, .{
+        .host = "example.com",
+        .target = "chat",
+        .key = handshake_sample_key,
+    }));
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.write_request(&writer, .{
+        .host = "example.com",
+        .key = "not a key",
+    }));
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.write_request(&writer, .{
+        .host = "example.com",
+        .origin = "https://example.com\r\nInjected: yes",
+        .key = handshake_sample_key,
+    }));
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.write_request(&writer, .{
+        .host = "example.com",
+    }));
+
+    var small: [8]u8 = undefined;
+    var small_writer = std.Io.Writer.fixed(&small);
+    try std.testing.expectError(error.IoError, handshake.write_request(&small_writer, .{
+        .host = "example.com",
+        .key = handshake_sample_key,
+    }));
+}
+
+test "Handshake: read_head leaves coalesced frame bytes buffered" {
+    const wire = handshake_valid_request ++ "\x81\x02hi";
+    var reader = std.Io.Reader.fixed(wire);
+    var storage: [256]u8 = undefined;
+
+    const head = try handshake.read_head(&reader, &storage);
+    try std.testing.expectEqualStrings(handshake_valid_request, head);
+
+    var wire_frame: [4]u8 = undefined;
+    try reader.readSliceAll(&wire_frame);
+    try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x02, 'h', 'i' }, &wire_frame);
+}
+
+test "Handshake: read_head is independent of the reader buffer size" {
+    const wire = handshake_valid_request ++ "\x81\x02hi";
+    var source = std.Io.Reader.fixed(wire);
+    var tiny_buffer: [1]u8 = undefined;
+    var limited = std.Io.Reader.limited(&source, .limited(wire.len), &tiny_buffer);
+    var storage: [256]u8 = undefined;
+
+    const head = try handshake.read_head(&limited.interface, &storage);
+    try std.testing.expectEqualStrings(handshake_valid_request, head);
+
+    var wire_frame: [4]u8 = undefined;
+    try limited.interface.readSliceAll(&wire_frame);
+    try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x02, 'h', 'i' }, &wire_frame);
+}
+
+test "Handshake: read_head rejects short buffers, bare LF, and truncated heads" {
+    var reader = std.Io.Reader.fixed(handshake_valid_request);
+    var small: [8]u8 = undefined;
+    try std.testing.expectError(error.BufferTooShort, handshake.read_head(&reader, &small));
+
+    var empty: [0]u8 = undefined;
+    var empty_reader = std.Io.Reader.fixed("");
+    try std.testing.expectError(error.BufferTooShort, handshake.read_head(&empty_reader, &empty));
+
+    var bare_lf = std.Io.Reader.fixed("GET / HTTP/1.1\n\n");
+    var storage: [64]u8 = undefined;
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.read_head(&bare_lf, &storage));
+
+    var embedded_cr = std.Io.Reader.fixed("GET / HTTP/1.1\r\nX: a\rb\r\n\r\n");
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.read_head(&embedded_cr, &storage));
+
+    var truncated = std.Io.Reader.fixed("GET / HTTP/1.1\r\n");
+    try std.testing.expectError(error.UnexpectedEOF, handshake.read_head(&truncated, &storage));
+
+    var overlap_reader = std.Io.Reader.fixed(handshake_valid_request);
+    try std.testing.expectError(
+        error.BufferTooShort,
+        handshake.read_head(&overlap_reader, overlap_reader.buffer[0..64]),
+    );
+}
+
+test "Handshake: validate_response accepts token lists and the expected accept" {
+    var storage: [256]u8 = undefined;
+    var status: u16 = 0;
+    const head = try build_response_head(
+        &storage,
+        "HTTP/1.1 101 Switching Protocols",
+        "h2c, websocket",
+        "keep-alive, Upgrade",
+        handshake_sample_accept,
+    );
+
+    const response = try handshake.validate_response(head, handshake_sample_accept, &status);
+    try std.testing.expectEqual(@as(u16, 101), response.status);
+    try std.testing.expectEqualStrings(handshake_sample_accept, response.accept);
+    try std.testing.expectEqualStrings(head, response.head);
+    try std.testing.expectEqual(@as(u16, 101), status);
+}
+
+test "Handshake: validate_response rejects status, header, and accept failures" {
+    var storage: [256]u8 = undefined;
+    var status: u16 = 0;
+
+    const rejected = try build_response_head(&storage, "HTTP/1.1 400 Bad Request", null, null, null);
+    try std.testing.expectError(
+        error.InvalidStatusCode,
+        handshake.validate_response(rejected, handshake_sample_accept, &status),
+    );
+    try std.testing.expectEqual(@as(u16, 400), status);
+
+    const missing_accept = try build_response_head(
+        &storage,
+        "HTTP/1.1 101 Switching Protocols",
+        "websocket",
+        "Upgrade",
+        null,
+    );
+    try std.testing.expectError(
+        error.InvalidSecWebSocketAccept,
+        handshake.validate_response(missing_accept, handshake_sample_accept, &status),
+    );
+
+    const wrong_accept = try build_response_head(
+        &storage,
+        "HTTP/1.1 101 Switching Protocols",
+        "websocket",
+        "Upgrade",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    );
+    try std.testing.expectError(
+        error.InvalidSecWebSocketAccept,
+        handshake.validate_response(wrong_accept, handshake_sample_accept, &status),
+    );
+
+    const wrong_upgrade = try build_response_head(
+        &storage,
+        "HTTP/1.1 101 Switching Protocols",
+        "h2c",
+        "Upgrade",
+        handshake_sample_accept,
+    );
+    try std.testing.expectError(
+        error.InvalidUpgradeHeader,
+        handshake.validate_response(wrong_upgrade, handshake_sample_accept, &status),
+    );
+
+    const wrong_connection = try build_response_head(
+        &storage,
+        "HTTP/1.1 101 Switching Protocols",
+        "websocket",
+        "keep-alive",
+        handshake_sample_accept,
+    );
+    try std.testing.expectError(
+        error.InvalidConnectionHeader,
+        handshake.validate_response(wrong_connection, handshake_sample_accept, &status),
+    );
+
+    try std.testing.expectError(
+        error.InvalidSecWebSocketAccept,
+        handshake.validate_response(handshake_valid_response, "", &status),
+    );
+}
+
+test "Handshake: validate_response rejects duplicate accepts and malformed heads" {
+    var status: u16 = 0;
+    const duplicate_accept =
+        "HTTP/1.1 101 Switching Protocols\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ++
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ++
+        "\r\n";
+    try std.testing.expectError(
+        error.InvalidSecWebSocketAccept,
+        handshake.validate_response(duplicate_accept, handshake_sample_accept, &status),
+    );
+
+    const folded =
+        "HTTP/1.1 101 Switching Protocols\r\n" ++
+        " Upgrade: websocket\r\n\r\n";
+    try std.testing.expectError(
+        error.InvalidHttpRequest,
+        handshake.validate_response(folded, handshake_sample_accept, &status),
+    );
+
+    try std.testing.expectError(
+        error.InvalidHttpRequest,
+        handshake.validate_response("not a response", handshake_sample_accept, &status),
+    );
+
+    const body_header =
+        "HTTP/1.1 101 Switching Protocols\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ++
+        "Content-Length: 2\r\n\r\n";
+    try std.testing.expectError(
+        error.InvalidHttpRequest,
+        handshake.validate_response(body_header, handshake_sample_accept, &status),
+    );
+
+    const extension_header =
+        "HTTP/1.1 101 Switching Protocols\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ++
+        "Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n";
+    try std.testing.expectError(
+        error.InvalidHttpRequest,
+        handshake.validate_response(extension_header, handshake_sample_accept, &status),
+    );
+
+    const protocol_header =
+        "HTTP/1.1 101 Switching Protocols\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ++
+        "Sec-WebSocket-Protocol: chat\r\n\r\n";
+    try std.testing.expectError(
+        error.InvalidHttpRequest,
+        handshake.validate_response(protocol_header, handshake_sample_accept, &status),
+    );
+
+    const spaced_content_length =
+        "HTTP/1.1 101 Switching Protocols\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ++
+        "Content-Length : 2\r\n\r\n";
+    try std.testing.expectError(
+        error.InvalidHttpRequest,
+        handshake.validate_response(spaced_content_length, handshake_sample_accept, &status),
+    );
+
+    const close_connection =
+        "HTTP/1.1 101 Switching Protocols\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade, close\r\n" ++
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n";
+    try std.testing.expectError(
+        error.InvalidConnectionHeader,
+        handshake.validate_response(close_connection, handshake_sample_accept, &status),
+    );
+}
+
+test "Handshake: write_response emits the computed 101 accept token" {
+    var out: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&out);
+
+    try handshake.write_response(&writer, handshake_sample_key);
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.write_response(&writer, "not a key"));
+
+    const expected =
+        "HTTP/1.1 101 Switching Protocols\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ++
+        "\r\n";
+    try std.testing.expectEqualStrings(expected, writer.buffered());
+}
+
+test "Handshake: client_with_key writes, verifies, and preserves frame bytes" {
+    const wire = handshake_valid_response ++ "\x81\x02hi";
+    var reader = std.Io.Reader.fixed(wire);
+    var out: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&out);
+    var head_storage: [256]u8 = undefined;
+    var status: u16 = 0;
+
+    const response = try handshake.client_with_key(&reader, &writer, .{
+        .host = "server.example.com",
+        .target = "/chat",
+        .key = handshake_sample_key,
+    }, &head_storage, &status);
+
+    const expected_request =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n" ++
+        "\r\n";
+    try std.testing.expectEqualStrings(expected_request, writer.buffered());
+    try std.testing.expectEqual(@as(u16, 101), status);
+    try std.testing.expectEqualStrings(handshake_valid_response, response.head);
+
+    var wire_frame: [4]u8 = undefined;
+    try reader.readSliceAll(&wire_frame);
+    try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x02, 'h', 'i' }, &wire_frame);
+}
+
+test "Handshake: read_request and read_response wrap head parsing" {
+    var request_reader = std.Io.Reader.fixed(handshake_valid_request);
+    var request_storage: [256]u8 = undefined;
+    const request = try handshake.read_request(&request_reader, &request_storage);
+    try std.testing.expectEqualStrings(handshake_sample_key, request.key);
+
+    var response_reader = std.Io.Reader.fixed(handshake_valid_response);
+    var response_storage: [256]u8 = undefined;
+    var status: u16 = 0;
+    const response = try handshake.read_response(
+        &response_reader,
+        &response_storage,
+        handshake_sample_accept,
+        &status,
+    );
+    try std.testing.expectEqual(@as(u16, 101), response.status);
+}
+
+test "Handshake: client generates a key when options.key is null" {
+    var reader = std.Io.Reader.fixed("HTTP/1.1 400 Bad Request\r\n\r\n");
+    var out: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&out);
+    var head_storage: [256]u8 = undefined;
+    var status: u16 = 0;
+
+    try std.testing.expectError(error.InvalidStatusCode, handshake.client(
+        std.testing.io,
+        &reader,
+        &writer,
+        .{ .host = "example.com" },
+        &head_storage,
+        &status,
+    ));
+    try std.testing.expectEqual(@as(u16, 400), status);
+
+    const request = writer.buffered();
+    const prefix = "Sec-WebSocket-Key: ";
+    const start = (std.mem.indexOf(u8, request, prefix) orelse return error.TestUnexpectedResult) + prefix.len;
+    try std.testing.expect(start + 24 <= request.len);
+    try std.testing.expect(handshake.valid_client_key(request[start..][0..24]));
+}
+
+test "Handshake: server primitives read a request, write 101, and preserve frame bytes" {
+    const wire = handshake_valid_request ++ "\x81\x02hi";
+    var reader = std.Io.Reader.fixed(wire);
+    var out: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&out);
+    var head_storage: [256]u8 = undefined;
+
+    const request = try handshake.read_request(&reader, &head_storage);
+    try std.testing.expectEqualStrings(handshake_sample_key, request.key);
+    try std.testing.expectEqualStrings(handshake_valid_request, request.head);
+
+    try handshake.write_response(&writer, request.key);
+    const expected_response =
+        "HTTP/1.1 101 Switching Protocols\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ++
+        "\r\n";
+    try std.testing.expectEqualStrings(expected_response, writer.buffered());
+
+    var wire_frame: [4]u8 = undefined;
+    try reader.readSliceAll(&wire_frame);
+    try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x02, 'h', 'i' }, &wire_frame);
+}
+
+test "Handshake: is_request is token-only and validate_request is strict" {
+    try std.testing.expect(handshake.is_request(handshake_valid_request));
+
+    const unknown_method =
+        "BREW /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n\r\n";
+    try std.testing.expect(handshake.is_request(unknown_method));
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(unknown_method));
+
+    const body_header =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Content-Length: 5\r\n\r\n";
+    try std.testing.expect(handshake.is_request(body_header));
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(body_header));
+}
+
+test "Handshake: public module re-exports the handshake surface" {
+    const root = @import("root.zig");
+
+    try std.testing.expect(root.handshake == handshake);
+    try std.testing.expect(root.client_handshake == handshake.client);
+    try std.testing.expect(root.client_handshake_with_key == handshake.client_with_key);
+    try std.testing.expect(root.is_upgrade_request == handshake.is_request);
+    try std.testing.expect(root.validate_upgrade_request == handshake.validate_request);
+    try std.testing.expect(root.read_upgrade_request == handshake.read_request);
+    try std.testing.expect(root.write_upgrade_response == handshake.write_response);
+    try std.testing.expect(root.HandshakeClientOptions == handshake.ClientOptions);
+    try std.testing.expect(root.HandshakeRequest == handshake.Request);
+    try std.testing.expect(root.HandshakeResponse == handshake.Response);
+    try std.testing.expectEqualStrings(handshake.accept_guid, root.accept_guid);
 }

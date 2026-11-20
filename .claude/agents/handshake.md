@@ -13,11 +13,11 @@ Own the HTTP handshake and upgrade boundary.
 
 ## Scope
 
-`src/handshake.zig`: client key generation, request construction, response verification, and upgraded socket creation. `src/upgrade.zig`: server upgrade detection, `Sec-WebSocket-Key` and version validation, accept-token computation, and response construction. Add handshake and upgrade tests in `src/test.zig` when the testing agent is unavailable. Never edit frame primitives, connection policy, build, or CI files.
+`src/handshake.zig`: client key generation, `std.Io.Reader`/`Writer` request construction and response verification including `Sec-WebSocket-Accept`, server request validation, and `101` response construction. Hand the upgraded transport to `split.after_handshake_split`. `src/upgrade.zig`: planned HTTP server orchestration over those primitives, including the 101 write and flush. Add handshake tests in `src/test.zig` when the testing agent is unavailable. Never edit frame primitives, connection policy, build, or CI files.
 
 ## Rules
 
-Accept only HTTP 101 with case-insensitive `Upgrade: websocket` and `Connection: Upgrade`. Require `Sec-WebSocket-Version: 13` and reject a missing key. Generate 16 random key bytes and Base64-encode them; compute the accept token with SHA-1 over the key plus the RFC 6455 GUID. Keep randomness, clocks, and sockets at this boundary. Return typed errors for malformed requests and responses.
+Accept only HTTP 101 over HTTP/1.1 with case-insensitive `Upgrade: websocket` and `Connection: Upgrade` token lists. Require exactly one `Sec-WebSocket-Version: 13` and exactly one canonical base64 `Sec-WebSocket-Key`; reject duplicate fields. Generate 16 random key bytes through `std.Io.randomSecure` and Base64-encode them; compute the accept token with streaming SHA-1 over the key plus the single RFC 6455 `accept_guid` constant. Verify `Sec-WebSocket-Accept` on the client and never write a 101 before request validation. Keep randomness, clocks, and sockets at this boundary. Return typed errors for malformed requests and responses.
 
 ## Workflow
 

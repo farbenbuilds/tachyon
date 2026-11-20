@@ -15,8 +15,10 @@ implements the frame facade, `src/fragment.zig` implements the read-side
 fragment layer, `src/connection.zig` implements the role-aware `WebSocket`
 policy over one `zslay.Conn`, and `src/split.zig` implements `WebSocketRead`,
 `WebSocketWrite`, `Split`, and `FragmentCollectorRead` over independent
-connection values. Handshake and upgrade remain planned. The library commands
-below describe the project workflow and work against the current tree.
+connection values, and `src/handshake.zig` implements the client handshake and
+shared server upgrade primitives over `std.Io.Reader`/`Writer`. HTTP server
+orchestration in `src/upgrade.zig` remains planned. The library commands below
+describe the project workflow and work against the current tree.
 
 ## Local Setup
 
@@ -66,9 +68,10 @@ from it; see [AGENTS.md](AGENTS.md).
 Tests use the built-in Zig test runner. The bootstrap dependency test lives in
 `src/root.zig`; protocol tests live in `src/test.zig`, including the fragment
 accumulator and collector tests, the connection policy, mask, limit, close,
-vectored-write, and failure-latch tests, and the split read/write,
+vectored-write, and failure-latch tests, the split read/write,
 masking-direction, obligation, `auto_apply_mask`, latch, limit, and
-`FragmentCollectorRead` tests. The test step runs the suite twice,
+`FragmentCollectorRead` tests, and the handshake key, token, header, status, and
+bounded-head tests. The test step runs the suite twice,
 once with Debug safety and once with ReleaseSafe, so overflow and bounds
 behavior in release mode is exercised before review.
 
