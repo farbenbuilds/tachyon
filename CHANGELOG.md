@@ -102,6 +102,21 @@ This project follows semantic versioning.
   originating read error only after a successful send without changing unsplit
   behavior. All storage is caller-owned and zero allocation; exported from
   `src/root.zig` with Debug and ReleaseSafe tests.
+- `src/native_stream.zig` with the native `std.Io.net.Stream` transport edge.
+  `Transport` builds the `std.Io.Reader` and `std.Io.Writer` interfaces with
+  `stream.reader(io, read_buffer)` and `stream.writer(io, write_buffer)`, and
+  the native `WebSocket` and `Split` wrappers delegate to
+  `connection.WebSocket` and `split.Split` with no additional protocol state.
+  Transport buffers are validated as non-empty, mutually disjoint, and disjoint
+  from connection or split storage. Reads and writes suspend through the
+  caller's `std.Io`; the module allocates nothing, starts no task, creates no
+  event loop, and never closes the stream implicitly. `close` and `shutdown`
+  stay explicit caller operations, and detailed reader or writer failures are
+  available behind the mapped `IoError`. Exported from `src/root.zig` with
+  Debug and ReleaseSafe loopback tests.
+- `.github/workflows/test.yml` running `zig build test --summary all` and
+  `zig build check` for pull requests into `main` and pushes to `main` that
+  change Zig or Zon files.
 - `src/handshake.zig` with the RFC 6455 client handshake and shared server
   upgrade primitives over caller-provided `std.Io.Reader` and `std.Io.Writer`
   values. The module generates 16 key bytes with `std.Io.randomSecure`, encodes
@@ -214,3 +229,17 @@ This project follows semantic versioning.
   zslay directly, and the zon2nix pre-commit hook generates the Nix, JSON, and
   text views.
 - Documentation no longer repeats the zslay version.
+
+### Fixed
+
+- `split.after_handshake_split` now rejects read storage that overlaps write
+  storage with `InvalidLength`, preventing a read reply from clobbering queued
+  or composed write bytes before either half is constructed.
+- `FragmentCollector` now advances zslay's header accounting for bytes consumed
+  by a short header read, so `is_at_wire_boundary()` stays false after a
+  truncated header and `reset` remains safe only at a real frame boundary.
+- `FragmentCollector.init` now rejects a `message_buffer` overlapping
+  `frame_buffer` with `InvalidLength`, matching the split collector and avoiding
+  undefined `@memcpy` overlap.
+- Connection, split, fragment, and native-stream storage checks now call
+  `zslay.event.ranges_overlap` instead of maintaining local range predicates.

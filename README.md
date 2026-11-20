@@ -15,13 +15,13 @@ header coding, masking, the close predicate and payload validator, masking
 direction, fragment ordering, and frame/message limits. tachyon applies inbound
 close policy, owns the close echo, and covers the fastwebsockets API surface
 incrementally: automatic ping/pong and close handling, fragment buffering,
-split read/write halves, UTF-8 checks, the client handshake, and the server
-upgrade call order are implemented; stream adapters remain planned. The 0.10.0
-surface is the parity baseline;
-backpressure, streaming messages, native `std.Io` transport, permessage-deflate,
-and pub/sub are planned post-parity extensions. Incremental UTF-8 validation is implemented
-in `src/utf8.zig`: the fragment collector validates assembled messages across
-fragments and the raw connection read path validates clear FIN text frames.
+split read/write halves, UTF-8 checks, the client handshake, the server
+upgrade call order, and the native `std.Io.net.Stream` adapter are implemented.
+The 0.10.0 surface is the parity baseline; backpressure, streaming messages,
+permessage-deflate, and pub/sub are planned post-parity extensions. Incremental
+UTF-8 validation is implemented in `src/utf8.zig`: the fragment collector
+validates assembled messages across fragments and the raw connection read path
+validates clear FIN text frames.
 Deliberate hardening and compatibility exceptions are recorded in
 [CODEBASE.md](CODEBASE.md#compatibility-notes); the extension order and
 constraints are in
@@ -66,6 +66,14 @@ write half drives `write_frame` and `flush` and never reads.
 `FragmentCollectorRead` assembles continuations and split UTF-8 code points over
 a caller-owned `message_buffer` and rejects overlap with the read `frame_buffer`
 with `InvalidLength`. All storage is caller-owned and zero allocation.
+`src/native_stream.zig` binds a caller-owned `std.Io.net.Stream` to that
+connection and split surface. A `Transport` wraps the stream's
+`std.Io.Reader`/`std.Io.Writer` directions, and the native `WebSocket` and
+`Split` wrappers delegate to `connection.WebSocket` and `split.Split` without
+adding protocol state. Reads and writes suspend through the caller's `std.Io`;
+the module never allocates, opens or closes a socket automatically, or spawns a
+task. Transport buffers are checked for emptiness, overlap, and aliasing with
+connection or split storage before a wrapper binds them.
 `src/handshake.zig` adds the RFC 6455 HTTP handshake boundary over caller-provided
 `std.Io.Reader` and `std.Io.Writer` values: secure 16-byte key generation,
 canonical base64 validation, accept-token re-exports from `src/upgrade.zig`,
@@ -77,9 +85,10 @@ buffered for the frame path, and the module never allocates or opens a socket.
 fragment accumulator and collector, the connection layer, the split halves, the
 handshake primitives, and the server upgrade call order. The test suite lives
 under `tests/` and is aggregated by `tests/main.zig`; category folders such as
-`tests/frame-test/` and `tests/connection-test/` mirror the protocol layers, and
-`tests/support.zig` holds shared fixtures. Library sources contain no test
-blocks, and `zig build test` runs the aggregate under Debug and ReleaseSafe.
+`tests/frame-test/`, `tests/connection-test/`, and `tests/native-stream-test/`
+mirror the protocol layers, and `tests/support.zig` holds shared fixtures.
+Library sources contain no test blocks, and `zig build test` runs the aggregate
+under Debug and ReleaseSafe.
 
 `src/upgrade.zig` implements the server call order over those primitives:
 `incoming` reads and strictly validates a request without writing,
@@ -101,8 +110,8 @@ allocation.
 The fragment collector is deliberately read-only, while the connection and split
 read paths own automatic replies. No separate close or masking module is
 planned; zslay owns the close predicate, payload validator, and mask routine.
-The remaining extension roadmap adds backpressure, streaming, native `std.Io`
-transport, permessage-deflate, and pub/sub after the parity baseline lands.
+The remaining extension roadmap adds backpressure, streaming messages,
+permessage-deflate, and pub/sub after the parity baseline lands.
 
 ## Targets
 
@@ -119,7 +128,7 @@ transport, permessage-deflate, and pub/sub after the parity baseline lands.
 | Backpressure and bounded write watermarks | Planned extension |
 | Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig`: the fragment collector validates assembled messages and the raw connection read path validates clear FIN text frames |
 | Streaming message reader/writer | Planned extension |
-| Native `std.Io.Reader`/`Writer` transport adapter | Planned extension |
+| Native `std.Io.Reader`/`Writer` transport adapter | Implemented in `src/native_stream.zig`: caller-owned `std.Io.net.Stream` transport plus native `WebSocket` and `Split` wrappers over the connection layers |
 | permessage-deflate (RFC 7692) | Planned extension beyond 0.10.0 parity |
 | Pub/Sub topic hub and fanout | Planned application layer |
 
@@ -137,6 +146,9 @@ transport, permessage-deflate, and pub/sub after the parity baseline lands.
   share the caller's reader and writer pointers, and route automatic replies
   through `send_obligation`. All split storage is caller-owned and zero
   allocation.
+- `src/native_stream.zig` is the only module that binds the connection and split
+  layers to `std.Io.net.Stream`. It owns no socket, opens no event loop, and
+  starts no task; readiness and suspension remain with the caller's `std.Io`.
 - The server upgrade reads and strictly validates the request, constructs the
   split from caller storage, and only then writes and flushes the 101, so
   storage failures precede every response byte; a failed 101 write or flush

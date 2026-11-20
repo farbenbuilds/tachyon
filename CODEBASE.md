@@ -13,8 +13,9 @@ The boundary is verified against the pinned zslay sources (`src/root.zig`,
 engine with a bounded connection state machine, not only a header codec.
 
 The 0.10.0 surface is the parity baseline, not the ceiling. Backpressure,
-streaming messages, native `std.Io` transport, permessage-deflate, and pub/sub
-are planned extension modules at the edge. Incremental UTF-8 validation is
+streaming messages, permessage-deflate, and pub/sub are planned extension
+modules at the edge; the native `std.Io.net.Stream` adapter is implemented in
+`src/native_stream.zig`. Incremental UTF-8 validation is
 implemented in `src/utf8.zig`: the raw connection read path validates clear FIN
 text frames and the fragment collector validates assembled messages across
 fragments. None of them may change the zero-allocation frame core or duplicate
@@ -31,7 +32,7 @@ documentation foundation:
 - `src/root.zig` is the module entry point; it re-exports zslay, the frame
   facade, the UTF-8 validator, the WebSocket error model, the fragment
   accumulator and collector, the connection layer, the split read and write
-  halves, and the HTTP handshake primitives.
+  halves, the native stream adapter, and the HTTP handshake primitives.
 - `src/frame.zig` implements the frame facade: `Frame`, `Payload`, the `OpCode`
   and `CloseCode` aliases with conversions, `unmask`/`unmask_at` delegations,
   the header-length bridge, `std.Io.Writer` vectored writes, and caller-buffer
@@ -90,6 +91,15 @@ documentation foundation:
   caller-owned `message_buffer`, assembles continuations and split UTF-8 code
   points, and rejects a `message_buffer` overlapping the read `frame_buffer`
   with `InvalidLength`.
+- `src/native_stream.zig` implements the `std.Io.net.Stream` transport edge.
+  `Transport` binds the stream's `std.Io.Reader` and `std.Io.Writer` directions
+  to caller-owned buffers, and the native `WebSocket` and `Split` wrappers
+  delegate to `connection.WebSocket` and `split.Split` without adding protocol
+  state. Transport buffers are validated for emptiness, mutual overlap, and
+  aliasing with connection or split storage before a wrapper binds them. Reads
+  and writes suspend through the caller's `std.Io`; the module never allocates,
+  opens or closes a socket automatically, or starts a task. Explicit `close`
+  and `shutdown` helpers keep socket ownership with the caller.
 - `src/handshake.zig` implements the RFC 6455 handshake boundary. The caller
   supplies a `std.Io.Reader`, a `std.Io.Writer`, and a header buffer. The module
   generates 16 key bytes through `std.Io.randomSecure`, encodes them as
@@ -482,14 +492,14 @@ policy, and the transmit queue still belong to zslay.
 | `src/fragment.zig` | Implemented: `Fragments` accumulator and read-side `FragmentCollector` over `zslay.Conn`, caller-owned frame/message buffers, streaming UTF-8, and completed-message delivery. |
 | `src/stream.zig` | Planned extension: chunked message reader/writer for large messages without whole-message buffering. |
 | `src/split.zig` | Implemented: `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned `ReadStorage`/`WriteStorage`, sink-forwarded obligations, and `FragmentCollectorRead`. |
-| `src/native_stream.zig` | Planned extension: `std.Io.Reader`/`std.Io.Writer` adapter for `std.Io.net.Stream`. |
+| `src/native_stream.zig` | Implemented: `std.Io.net.Stream` transport binding plus native `WebSocket` and `Split` wrappers over the connection layers. |
 | `src/deflate.zig` | Planned extension: RFC 7692 permessage-deflate state, deflater, inflater, and context takeover. |
 | `src/pubsub.zig` | Planned extension: bounded topic hub and fanout over the frame/stream API. |
 | `src/handshake.zig` | Implemented: RFC 6455 client handshake and shared server upgrade primitives over `std.Io.Reader`/`Writer`, key generation, accept-token re-exports from `src/upgrade.zig`, bounded head parsing, request validation, and response construction. |
 | `src/upgrade.zig` | Implemented: RFC 6455 server upgrade call order over the validated `handshake` request and response primitives, including the accept GUID and accept-token derivation, `incoming` validation without writing, split construction from caller storage before the 101 write and flush, the forced server role, and `upgrade_async` over `std.Io.Future`. |
 | `tests/main.zig` | Aggregates every category test file for the Debug and ReleaseSafe test steps. |
 | `tests/support.zig` | Shared fixtures and test-only protocol readers and writers. |
-| `tests/<category>-test/` | Unit coverage grouped by area: module, error, frame, UTF-8, fragment, connection, split, handshake, and upgrade. |
+| `tests/<category>-test/` | Unit coverage grouped by area: module, error, frame, UTF-8, fragment, connection, split, native stream, handshake, and upgrade. |
 | `tests/<integration>-test/` | Planned Autobahn, fuzz, and loopback integration suites; no adapter exists yet. |
 | `src/bench.zig` | Frame, connection, streaming, and extension microbenchmarks. |
 
@@ -644,8 +654,9 @@ These modules extend the 0.10.0 parity baseline. They are ordered by dependency
 and remain optional: a build that does not use them behaves like the core
 library. The frame layer stays pure and zslay remains the only wire codec.
 
-Implementation order: finish the parity core first, then backpressure and
-native stream, then streaming messages, then deflate, then pub/sub. UTF-8 landed
+Implementation order: finish the parity core first, then backpressure,
+streaming messages, then deflate, then pub/sub. Native stream landed ahead of
+backpressure; UTF-8 also landed
 ahead of its call sites; the fragment collector and the raw connection read path
 now use it. Deflate without the zslay RSV1 change is a non-goal.
 
@@ -653,7 +664,7 @@ now use it. Deflate without the zslay RSV1 change is a non-goal.
 | --- | --- | --- | --- |
 | `src/utf8.zig` | Incremental text validation across frame boundaries | `std.unicode` for contiguous slices | Implemented: rejects overlong, surrogate, truncated, and above-U+10FFFF sequences; zero allocation; no replacement characters |
 | `src/backpressure.zig` | Byte/frame high and low watermarks over `zslay.Queue`, plus read-buffer limits | `zslay.Queue`, connection state | Bounded queues, explicit `WouldBlock`, no drops, no spin, slow consumers pause |
-| `src/native_stream.zig` | `std.Io.Reader`/`std.Io.Writer` adapter for `std.Io.net.Stream` | Zig 0.17.1 `std.Io` | Caller owns socket and buffers; readiness comes from `std.Io`; no libxev |
+| `src/native_stream.zig` | Native `std.Io.net.Stream` transport binding plus `WebSocket` and `Split` wrappers | Zig 0.17.1 `std.Io` | Implemented: caller owns socket and buffers; readiness comes from `std.Io`; no libxev; zero allocation |
 | `src/stream.zig` | Chunked message reader/writer for large messages | connection, `utf8`, `backpressure` | Control frames interleave; no whole-message buffering; UTF-8 and deflate hooks |
 | `src/deflate.zig` | RFC 7692 permessage-deflate | zslay negotiated RSV1, `std.compress.flate`, stream/fragment | Negotiated only after zslay RSV1 support; decompressed output capped; control frames never compressed |
 | `src/pubsub.zig` | Bounded topic hub and fanout | `stream`, `backpressure` | Application layer only; no wire-format change; per-subscriber backpressure or disconnect policy |
@@ -728,11 +739,32 @@ contiguous message and can afford the buffer.
 ### Native stream
 
 `src/native_stream.zig` is the only module that binds tachyon to Zig's native
-stream types. It wraps the `std.Io.net.Stream` methods `stream.reader(io, buffer)`
-and `stream.writer(io, buffer)` as `std.Io.Reader` and `std.Io.Writer`, then
-drives the connection layer. The socket, buffers, and lifetimes stay with the
-caller. It adds no event loop, no task spawning, and no socket ownership to the
-protocol core.
+stream types. `Transport.init(io, stream, storage)` calls
+`stream.reader(io, read_buffer)` and `stream.writer(io, write_buffer)` and
+exposes the resulting `std.Io.Reader` and `std.Io.Writer` to the connection and
+split layers. `Transport` keeps the `std.Io` handle and the `std.Io.net.Stream`
+handle but never closes them implicitly; `close` and `shutdown` are explicit
+calls for the owner.
+
+`native_stream.WebSocket.init(transport, storage, config)` constructs a
+`connection.WebSocket` over the transport directions, and
+`native_stream.Split.init(transport, storage, config)` constructs a
+`split.Split`. Both wrappers delegate policy, automatic replies, masking, limits,
+and failure latches to the existing layers; they add no wire state. All fields
+and setters mirror the underlying type so callers do not need to reach through
+`inner` for normal policy changes.
+
+Transport buffers must be non-empty, mutually disjoint, and disjoint from every
+connection or split storage slice. The wrappers validate those regions before
+binding because the native reader and writer can be in flight while the
+connection stores a payload or composes a write. A bound `Transport` must keep a
+stable address: the connection stores pointers to its embedded reader and writer
+interfaces.
+
+Reads and writes enter the caller's `std.Io` through `net_read` and `net_write`,
+so a cooperating implementation suspends the calling task instead of blocking a
+thread. The module creates no event loop, no task, and no allocation. Socket
+ownership, lifetime, and shutdown stay with the caller.
 
 ### permessage-deflate
 
@@ -819,7 +851,8 @@ Build files:
 - `CODING_CONVENTION.md` defines the Zig style and safety contract.
 - `CONTRIBUTE.md` covers setup, checks, commits, and releases.
 - `CI_CD_PIPELINE.md` records the pipeline contract, including the implemented
-  `.github/workflows/lint.yml` and the planned test and publish workflows.
+  `.github/workflows/lint.yml` and `.github/workflows/test.yml` plus the planned
+  publish workflow.
 - `tests/README.md` documents the test tree, aggregator, category naming, and
   run commands.
 - `SECURITY.md` covers reporting and supported versions.

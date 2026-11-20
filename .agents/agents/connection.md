@@ -1,6 +1,6 @@
 ---
 name: connection
-description: "Role-aware WebSocket policy over zslay.Conn in src/connection.zig."
+description: "Role-aware WebSocket policy over zslay.Conn plus the native std.Io.net.Stream adapter."
 mainAgent: true
 subagent: true
 model: inherit
@@ -22,7 +22,7 @@ Own the connection policy layer that wraps zslay's bounded `Conn` state machine 
 
 ## Scope
 
-`src/connection.zig`: `Role`, post-handshake `WebSocket`, read and write loops, automatic close and pong replies, automatic mask application, maximum message size, and vectored-write settings. Add connection tests in `tests/connection-test/` when the testing agent is unavailable. Never edit frame primitives, handshake, upgrade, build, or CI files.
+`src/connection.zig`: `Role`, post-handshake `WebSocket`, read and write loops, automatic close and pong replies, automatic mask application, maximum message size, and vectored-write settings. `src/native_stream.zig`: the `std.Io.net.Stream` transport binding, native `WebSocket` and `Split` wrappers, buffer-alias validation, and explicit close or shutdown; it delegates policy to the connection and split layers and never owns the socket. Add connection or native-stream tests in `tests/connection-test/` or `tests/native-stream-test/` when the testing agent is unavailable. Never edit frame primitives, handshake, upgrade, build, or CI files.
 
 ## Rules
 
