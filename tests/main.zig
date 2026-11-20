@@ -21,6 +21,7 @@ test {
     _ = @import("split-test/split_core_test.zig");
     _ = @import("split-test/split_read_test.zig");
     _ = @import("split-test/split_collector_test.zig");
+    _ = @import("native-stream-test/native_stream_test.zig");
     _ = @import("handshake-test/handshake_request_test.zig");
     _ = @import("handshake-test/handshake_head_test.zig");
     _ = @import("handshake-test/handshake_response_test.zig");

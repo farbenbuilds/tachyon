@@ -2,8 +2,9 @@
 //!
 //! Re-exports the pinned zslay codec, the frame facade, the incremental UTF-8
 //! validator, the WebSocket error model, the fragment collector, the role-aware
-//! connection layer, the split read and write halves, the HTTP client handshake
-//! and shared server upgrade primitives, and the server upgrade call order.
+//! connection layer, the split read and write halves, the native `std.Io` stream
+//! adapter, the HTTP client handshake and shared server upgrade primitives, and
+//! the server upgrade call order.
 
 pub const zslay = @import("zslay");
 
@@ -109,3 +110,9 @@ pub const SplitWriteStorage = split.WriteStorage;
 pub const SplitOptions = split.Options;
 pub const SplitConfig = split.Config;
 pub const after_handshake_split = split.after_handshake_split;
+
+pub const native_stream = @import("native_stream.zig");
+pub const NativeTransport = native_stream.Transport;
+pub const NativeTransportStorage = native_stream.TransportStorage;
+pub const NativeWebSocket = native_stream.WebSocket;
+pub const NativeSplit = native_stream.Split;
