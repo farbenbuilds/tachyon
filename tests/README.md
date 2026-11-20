@@ -4,6 +4,10 @@ The Zig test suite lives under `tests/` and is aggregated by `tests/main.zig`.
 Library sources contain no test blocks; new coverage belongs in the category
 folders described here.
 
+The published Zig package is runtime-only and does not include `tests/`. Run the
+suite from a full repository checkout; a fetched package ships `build.zig`,
+`build.zig.zon`, `src/`, `LICENSE`, and `README.md` only.
+
 ## Layout
 
 ```text

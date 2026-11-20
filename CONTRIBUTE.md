@@ -184,6 +184,11 @@ lint workflow runs `zig fmt --check .` on pull requests into `main` that change
 implemented yet. Until the publish workflow exists, attach the `libtachyon.a`
 artifacts produced by the build to the GitHub release manually.
 
+The published Zig package is runtime-only. `build.zig.zon` `.paths` includes
+only `build.zig`, `build.zig.zon`, `src/`, `LICENSE`, and `README.md`. Tests,
+flake files, generated zon2nix views, scripts, and other documentation stay in
+the repository and out of the package archive.
+
 ## Dependency Policy
 
 - zslay is the only framing dependency. Do not duplicate its header, close,
