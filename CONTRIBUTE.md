@@ -16,9 +16,13 @@ fragment layer, `src/connection.zig` implements the role-aware `WebSocket`
 policy over one `zslay.Conn`, and `src/split.zig` implements `WebSocketRead`,
 `WebSocketWrite`, `Split`, and `FragmentCollectorRead` over independent
 connection values, and `src/handshake.zig` implements the client handshake and
-shared server upgrade primitives over `std.Io.Reader`/`Writer`. HTTP server
-orchestration in `src/upgrade.zig` remains planned. The library commands below
-describe the project workflow and work against the current tree.
+shared server upgrade primitives over `std.Io.Reader`/`Writer`.
+`src/upgrade.zig` implements the server call order over those primitives with
+validated-only `incoming`, split construction from caller storage before the 101
+write and flush, the forced server role, and an async future whose resolved
+`Upgrade` also borrows all caller storage until awaited or cancelled. The
+library commands below describe the project workflow and work against the
+current tree.
 
 ## Local Setup
 

@@ -105,19 +105,44 @@ This project follows semantic versioning.
 - `src/handshake.zig` with the RFC 6455 client handshake and shared server
   upgrade primitives over caller-provided `std.Io.Reader` and `std.Io.Writer`
   values. The module generates 16 key bytes with `std.Io.randomSecure`, encodes
-  and validates canonical base64 keys, computes `Sec-WebSocket-Accept` with a
-  streaming SHA-1 over the single RFC `accept_guid` constant, parses a bounded
+  and validates canonical base64 keys, re-exports the accept GUID and streaming
+  SHA-1/base64 accept-token derivation from `src/upgrade.zig`, parses a bounded
   request or response head in chunks independent of the transport buffer while
   leaving coalesced frame bytes buffered, writes the client GET request,
   exposes the fastwebsockets-named `verify` response gate for status 101 plus
   `Upgrade`, `Connection`, and `Sec-WebSocket-Accept`, validates server requests
   before writing the 101 reply, and rejects duplicate
   key, version, accept, and Host headers plus body-bearing upgrade or 101
-  heads. It avoids a fixed concatenation buffer and an empty-token fallback.
-  RFC 7692 negotiation and RFC 8441 extended CONNECT stay deferred with their
-  compression and HTTP/2 dependencies. The shared server request validation and
-  101 response construction are exported for the planned `src/upgrade.zig`
-  call order. Exported from `src/root.zig` with Debug and ReleaseSafe tests.
+  heads. `write_response` derives `Sec-WebSocket-Accept` through the re-exported
+  computation. The module adds no accept-token literal or fixed concatenation
+  buffer of its own. RFC 7692 negotiation and RFC 8441 extended CONNECT stay
+  deferred with their compression and HTTP/2 dependencies. The shared server
+  request validation and 101 response construction are exported for the
+  `src/upgrade.zig` call order. Exported from `src/root.zig` with Debug and
+  ReleaseSafe tests.
+- `src/upgrade.zig` with the RFC 6455 server upgrade call order. The module owns
+  the single `accept_guid` constant, `accept_token_len`, `AcceptTokenBuffer`,
+  and the streaming SHA-1/base64 `compute_accept_token`; `src/handshake.zig`
+  re-exports those four names so client handshake callers keep working.
+  `incoming` reads and strictly validates a request without writing, while
+  `IncomingUpgrade.upgrade` and the one-shot `upgrade` force
+  `config.role = .server` on a copy, construct the split from caller storage
+  with `split.after_handshake_split`, and only then write and flush the 101
+  through `handshake.write_response`. Split construction validates caller
+  storage and configuration without I/O, so those failures precede every
+  response byte; a failed 101 write or flush discards the already-constructed
+  zero-allocation split. `upgrade_async` runs the same call order through the
+  caller's `std.Io` and returns `UpgradeFut = std.Io.Future(Error!Upgrade)`; the
+  future and the resolved `Upgrade` borrow the reader, writer, head storage,
+  split storage, and request view until awaited or cancelled. The one-shot
+  `upgrade` does not inspect `Origin`, matching fastwebsockets. No response byte
+  precedes both successful request validation and successful split-storage
+  validation, coalesced bytes stay buffered in the reader, and all storage is
+  caller-owned and zero allocation.
+  `upgrade`, `Upgrade`, `UpgradeFut`, `IncomingUpgrade`,
+  `upgrade_websocket`, `upgrade_websocket_async`, `read_incoming_upgrade`,
+  `is_upgrade_request`, `accept_guid`, `accept_token_len`, `AcceptTokenBuffer`,
+  and `compute_accept_token` are exported from `src/root.zig`.
 - zslay dependency pinned in `build.zig.zon` and exposed from `src/root.zig`,
   plus the generated `build.zig.zon.nix`, `.json`, and `.txt` views.
 - Nix flake and lock file for the Zig 0.17.1 development shell, Nix formatting

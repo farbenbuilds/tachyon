@@ -57,8 +57,11 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 | `integrator` | Findings, final diff, verification | affected paths through owners |
 
 `src/connection.zig` is a current file owned by the `connection` agent.
-`src/handshake.zig` is a current file owned by the `handshake` agent; its HTTP
-server orchestration counterpart `src/upgrade.zig` remains planned. Tests live
+`src/handshake.zig` and `src/upgrade.zig` are current files owned by the
+`handshake` agent. The upgrade module owns the RFC 6455 accept GUID,
+accept-token derivation, and server call order, while `src/handshake.zig`
+re-exports those names for client callers and keeps the server request and
+response primitives. Tests live
 in `src/test.zig` and belong to the `testing` agent; work that needs new coverage
 hands the test change to `testing` instead of editing the test file in the same
 pass.
