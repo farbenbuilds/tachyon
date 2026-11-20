@@ -12,9 +12,9 @@
 //! The caller owns the socket, both `std.Io` buffers, and every connection or
 //! split storage slice. Readiness and suspension come from the caller's
 //! `std.Io` through the stream's `net_read` and `net_write` operations; this
-//! module never allocates, opens a socket, or spawns a task. It never closes
-//! the handle implicitly: `close` and `shutdown` are explicit because the
-//! stream may outlive the adapter.
+//! module never allocates, opens a socket, or spawns a task. The original
+//! `std.Io.net.Stream` keeps socket ownership and lifetime; the adapter never
+//! closes it.
 //!
 //! Run the HTTP handshake or server upgrade over `transport.reader()` and
 //! `transport.writer()` before binding a `WebSocket` or `Split`. The native
@@ -69,12 +69,13 @@ pub const TransportStorage = struct {
     write_buffer: []u8,
 };
 
-/// Borrowed `std.Io.net.Stream` plus its reader and writer interfaces.
+/// Borrowed `std.Io.net.Stream` reader and writer interfaces.
 ///
 /// The struct is movable before a wrapper binds it and must not move
-/// afterwards. `close` and `shutdown` are explicit; constructing or dropping a
-/// `Transport` never closes the socket. Reads and writes suspend through the
-/// caller-provided `std.Io`, so no event loop or worker task is created here.
+/// afterwards. The caller keeps the original `std.Io.net.Stream` and owns its
+/// close and shutdown calls; this adapter never closes the handle. Reads and
+/// writes suspend through the caller-provided `std.Io`, so no event loop or
+/// worker task is created here.
 ///
 /// A transport accepts one wrapper. `bound` is set after a `WebSocket` or
 /// `Split` binds the reader and writer interfaces, because two wrappers over
@@ -82,22 +83,20 @@ pub const TransportStorage = struct {
 /// wrapper does not rewind or release the stream.
 pub const Transport = struct {
     io: std.Io,
-    stream: std.Io.net.Stream,
     reader_state: std.Io.net.Stream.Reader,
     writer_state: std.Io.net.Stream.Writer,
     bound: bool = false,
 
     /// Builds the two stream directions over caller-owned buffers.
     ///
-    /// Empty buffers are rejected because both `std.Io` interfaces require
-    /// storage to make progress. Overlapping directions are rejected because
-    /// reads and writes can be in flight at the same time.
+    /// Empty buffers are rejected as a configuration error; both directions
+    /// require explicit caller-owned storage. Overlapping directions are
+    /// rejected because reads and writes can be in flight at the same time.
     pub fn init(io: std.Io, stream: std.Io.net.Stream, storage: TransportStorage) Error!Transport {
         try validate_pair(storage.read_buffer, storage.write_buffer);
 
         return .{
             .io = io,
-            .stream = stream,
             .reader_state = stream.reader(io, storage.read_buffer),
             .writer_state = stream.writer(io, storage.write_buffer),
         };
@@ -111,19 +110,6 @@ pub const Transport = struct {
     /// Writer interface consumed by the connection and split write half.
     pub fn writer(self: *Transport) *std.Io.Writer {
         return &self.writer_state.interface;
-    }
-
-    /// Closes the borrowed stream handle exactly once.
-    ///
-    /// The caller remains responsible for not closing the same handle through
-    /// another copy. No wrapper calls this automatically.
-    pub fn close(self: *Transport) void {
-        self.stream.close(self.io);
-    }
-
-    /// Half-closes or fully shuts down the borrowed stream handle.
-    pub fn shutdown(self: *Transport, how: std.Io.net.ShutdownHow) std.Io.net.ShutdownError!void {
-        return self.stream.shutdown(self.io, how);
     }
 
     /// Detailed reader failure behind a mapped `error.IoError`.
@@ -357,47 +343,12 @@ fn validate_pair(read_buffer: []u8, write_buffer: []u8) Error!void {
 
 /// Rejects transport buffers that alias unsplit connection storage.
 fn validate_connection_storage(transport: *const Transport, storage: ConnectionStorage) Error!void {
-    const tx_bytes: []const u8 = std.mem.sliceAsBytes(storage.tx_nodes);
-    try validate_others(transport, &.{
-        storage.frame_buffer,
-        tx_bytes,
-        storage.write_buffer,
-        storage.close_buffer,
-        storage.mask_scratch,
-    });
+    if (storage.overlaps(transport.reader_state.interface.buffer)) return error.InvalidLength;
+    if (storage.overlaps(transport.writer_state.interface.buffer)) return error.InvalidLength;
 }
 
 /// Rejects transport buffers that alias either split half's storage.
 fn validate_split_storage(transport: *const Transport, storage: SplitStorage) Error!void {
-    const tx_bytes: []const u8 = std.mem.sliceAsBytes(storage.write.tx_nodes);
-    try validate_others(transport, &.{
-        storage.read.frame_buffer,
-        storage.read.close_buffer,
-        storage.read.compose_buffer,
-        tx_bytes,
-        storage.write.write_buffer,
-        storage.write.close_buffer,
-        storage.write.mask_scratch,
-    });
-}
-
-/// Rejects overlap between either transport buffer and a storage region.
-fn validate_others(transport: *const Transport, regions: []const []const u8) Error!void {
-    const read_buffer = transport.reader_state.interface.buffer;
-    const write_buffer = transport.writer_state.interface.buffer;
-
-    for (regions) |region| {
-        if (zslay.event.ranges_overlap(
-            @intFromPtr(read_buffer.ptr),
-            read_buffer.len,
-            @intFromPtr(region.ptr),
-            region.len,
-        )) return error.InvalidLength;
-        if (zslay.event.ranges_overlap(
-            @intFromPtr(write_buffer.ptr),
-            write_buffer.len,
-            @intFromPtr(region.ptr),
-            region.len,
-        )) return error.InvalidLength;
-    }
+    if (storage.overlaps(transport.reader_state.interface.buffer)) return error.InvalidLength;
+    if (storage.overlaps(transport.writer_state.interface.buffer)) return error.InvalidLength;
 }

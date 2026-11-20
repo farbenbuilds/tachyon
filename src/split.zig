@@ -81,13 +81,40 @@ pub const WriteStorage = struct {
 
 /// Combined caller-owned storage for both halves.
 ///
-/// Regions owned by different halves should not overlap: a read reply borrows
+/// Regions owned by different halves must not overlap: a read reply borrows
 /// read storage while the write half queues and drains it, and the write half
-/// rejects outbound payloads that alias its own storage. Keeping the halves
-/// disjoint preserves automatic echo and pong obligations.
+/// rejects outbound payloads that alias its own storage. `after_handshake_split`
+/// rejects cross-half aliasing with `InvalidLength`.
 pub const Storage = struct {
     read: ReadStorage,
     write: WriteStorage,
+
+    /// True when `bytes` overlaps any read or write region in this storage.
+    ///
+    /// Native adapters use this to keep caller-provided `std.Io` buffers
+    /// disjoint from every region without duplicating the storage layout.
+    pub fn overlaps(self: Storage, bytes: []const u8) bool {
+        const tx_bytes: []const u8 = std.mem.sliceAsBytes(self.write.tx_nodes);
+        const regions = [_][]const u8{
+            self.read.frame_buffer,
+            self.read.close_buffer,
+            self.read.compose_buffer,
+            tx_bytes,
+            self.write.write_buffer,
+            self.write.close_buffer,
+            self.write.mask_scratch,
+        };
+
+        for (regions) |region| {
+            if (zslay.event.ranges_overlap(
+                @intFromPtr(bytes.ptr),
+                bytes.len,
+                @intFromPtr(region.ptr),
+                region.len,
+            )) return true;
+        }
+        return false;
+    }
 };
 
 /// Raw read half over its own receive connection.
@@ -554,17 +581,25 @@ pub const FragmentCollectorRead = struct {
     /// Binds the collector to a read half and caller-owned message storage.
     ///
     /// `message_buffer` bounds one assembled message and must not overlap
-    /// `read.frame_buffer`, because accumulation copies with `@memcpy`. A
-    /// zero-length buffer is allowed and rejects every non-empty message with
+    /// `read.frame_buffer`, the read half's `std.Io.Reader` buffer, or its
+    /// `std.Io.Writer` buffer, because accumulation copies with `@memcpy` and
+    /// reader fills can move bytes between those regions. A zero-length buffer
+    /// is allowed and rejects every non-empty message with
     /// `error.BufferTooShort`.
     pub fn init(read: WebSocketRead, message_buffer: []u8) Error!FragmentCollectorRead {
         const frame_buffer = read.frame_buffer();
-        if (zslay.event.ranges_overlap(
-            @intFromPtr(message_buffer.ptr),
-            message_buffer.len,
-            @intFromPtr(frame_buffer.ptr),
-            frame_buffer.len,
-        )) return error.InvalidLength;
+        const reader_buffer = read.inner.reader.buffer;
+        const writer_buffer = read.inner.writer.buffer;
+        const byte_regions = [_][]const u8{ frame_buffer, reader_buffer, writer_buffer };
+
+        for (byte_regions) |region| {
+            if (zslay.event.ranges_overlap(
+                @intFromPtr(message_buffer.ptr),
+                message_buffer.len,
+                @intFromPtr(region.ptr),
+                region.len,
+            )) return error.InvalidLength;
+        }
 
         return .{
             .read = read,

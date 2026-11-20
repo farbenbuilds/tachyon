@@ -3,6 +3,7 @@ const zslay = @import("zslay");
 const tachyon = @import("tachyon");
 
 const native_stream = tachyon.native_stream;
+const support = @import("../support.zig");
 
 const Pair = struct {
     listener: std.Io.net.Server,
@@ -206,6 +207,16 @@ test "Native stream: split half answers a ping and exchanges text" {
     }, .{ .role = .server });
     try std.testing.expect(server_transport.is_bound());
 
+    var other_frame_buffer: [16]u8 = undefined;
+    var other_write_buffer: [32]u8 = undefined;
+    var other_close_buffer: [8]u8 = undefined;
+    try std.testing.expectError(error.InvalidLength, native_stream.WebSocket.init(&server_transport, .{
+        .frame_buffer = &other_frame_buffer,
+        .tx_nodes = &split_nodes,
+        .write_buffer = &other_write_buffer,
+        .close_buffer = &other_close_buffer,
+    }, .{ .role = .server }));
+
     var ping_payload = [_]u8{ 'p', 'i', 'n', 'g' };
     try client.write_frame(tachyon.Frame.ping(&ping_payload));
     var text_payload = [_]u8{ 'h', 'i' };
@@ -230,6 +241,53 @@ test "Native stream: split half answers a ping and exchanges text" {
     try std.testing.expectEqualStrings("ok", reply_frame.payload);
 }
 
+test "Native stream: handshake then bind preserves coalesced frame bytes" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var pair = try openPair(io);
+    defer pair.close(io);
+
+    var client_write_buffer: [256]u8 = undefined;
+    var client_writer = pair.client.writer(io, &client_write_buffer);
+    try client_writer.interface.writeAll(support.handshake_valid_request);
+
+    var payload = [_]u8{ 'h', 'i' };
+    var frame = tachyon.Frame.text(&payload);
+    frame.mask(.{ 0x01, 0x02, 0x03, 0x04 });
+    try frame.writev(&client_writer.interface);
+    try client_writer.interface.flush();
+
+    var server_read_buffer: [128]u8 = undefined;
+    var server_write_buffer: [128]u8 = undefined;
+    var server_transport = try native_stream.Transport.init(io, pair.server, .{
+        .read_buffer = &server_read_buffer,
+        .write_buffer = &server_write_buffer,
+    });
+
+    var head_storage: [1024]u8 = undefined;
+    const request = try tachyon.handshake.read_request(server_transport.reader(), &head_storage);
+    try tachyon.handshake.write_response(server_transport.writer(), request.key);
+    try server_transport.writer().flush();
+
+    var frame_buffer: [64]u8 = undefined;
+    var write_storage: [64]u8 = undefined;
+    var close_storage: [16]u8 = undefined;
+    var nodes: [2]zslay.FrameNode = undefined;
+    var server = try native_stream.WebSocket.init(&server_transport, .{
+        .frame_buffer = &frame_buffer,
+        .tx_nodes = &nodes,
+        .write_buffer = &write_storage,
+        .close_buffer = &close_storage,
+    }, .{ .role = .server });
+
+    const received = try server.read_frame();
+    try std.testing.expectEqual(tachyon.OpCode.text, received.opcode);
+    try std.testing.expectEqual(@as(?tachyon.MaskingKey, null), received.masking_key);
+    try std.testing.expectEqualStrings("hi", received.payload);
+}
+
 test "Native stream: rejects connection and split storage aliasing the transport" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -247,32 +305,36 @@ test "Native stream: rejects connection and split storage aliasing the transport
 
     var frame_buffer: [64]u8 = undefined;
     var node_storage: [64]u8 = undefined;
-    var close_storage: [16]u8 = undefined;
+    var read_close_storage: [16]u8 = undefined;
+    var write_close_storage: [16]u8 = undefined;
     var nodes: [2]zslay.FrameNode = undefined;
-
-    try std.testing.expectError(error.InvalidLength, native_stream.WebSocket.init(&transport, .{
-        .frame_buffer = &read_buffer,
-        .tx_nodes = &nodes,
-        .write_buffer = &node_storage,
-        .close_buffer = &close_storage,
-    }, .{
-        .role = .client,
-        .mask_keys = tachyon.MaskKeySource.from_seed(@splat(0x11)),
-    }));
-
-    try std.testing.expectError(error.InvalidLength, native_stream.Split.init(&transport, .{
+    const split_storage: tachyon.SplitStorage = .{
         .read = .{
             .frame_buffer = &frame_buffer,
-            .close_buffer = &close_storage,
+            .close_buffer = &read_close_storage,
             .compose_buffer = &node_storage,
         },
         .write = .{
             .tx_nodes = &nodes,
             .write_buffer = &write_buffer,
-            .close_buffer = &close_storage,
+            .close_buffer = &write_close_storage,
         },
+    };
+
+    try std.testing.expectError(error.InvalidLength, native_stream.WebSocket.init(&transport, .{
+        .frame_buffer = &read_buffer,
+        .tx_nodes = &nodes,
+        .write_buffer = &node_storage,
+        .close_buffer = &read_close_storage,
     }, .{
         .role = .client,
         .mask_keys = tachyon.MaskKeySource.from_seed(@splat(0x11)),
     }));
+    try std.testing.expect(!transport.is_bound());
+
+    try std.testing.expectError(error.InvalidLength, native_stream.Split.init(&transport, split_storage, .{
+        .role = .client,
+        .mask_keys = tachyon.MaskKeySource.from_seed(@splat(0x11)),
+    }));
+    try std.testing.expect(!transport.is_bound());
 }

@@ -195,8 +195,9 @@ pub const FragmentCollector = struct {
     ///
     /// `reader` is borrowed and must outlive the collector. The transmit path is
     /// never used, so `zslay.Conn` is initialized with an empty node slice.
-    /// `message_buffer` must not overlap `frame_buffer`, because accumulation
-    /// copies with `@memcpy`.
+    /// `message_buffer` must not overlap `frame_buffer` or the reader buffer,
+    /// because accumulation copies with `@memcpy` and header reads can copy
+    /// from the reader buffer.
     pub fn init(
         reader: *std.Io.Reader,
         frame_buffer: []u8,
@@ -208,6 +209,18 @@ pub const FragmentCollector = struct {
         if (zslay.event.ranges_overlap(
             @intFromPtr(frame_buffer.ptr),
             frame_buffer.len,
+            @intFromPtr(message_buffer.ptr),
+            message_buffer.len,
+        )) return error.InvalidLength;
+        if (zslay.event.ranges_overlap(
+            @intFromPtr(reader.buffer.ptr),
+            reader.buffer.len,
+            @intFromPtr(frame_buffer.ptr),
+            frame_buffer.len,
+        )) return error.InvalidLength;
+        if (zslay.event.ranges_overlap(
+            @intFromPtr(reader.buffer.ptr),
+            reader.buffer.len,
             @intFromPtr(message_buffer.ptr),
             message_buffer.len,
         )) return error.InvalidLength;

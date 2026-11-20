@@ -238,6 +238,28 @@ test "FragmentCollector: rejects a message buffer overlapping the frame buffer" 
     ));
 }
 
+test "FragmentCollector: rejects buffers overlapping the reader buffer" {
+    var shared: [16]u8 = undefined;
+    var reader = std.Io.Reader.fixed(&shared);
+    var frame_buffer: [16]u8 = undefined;
+    var message_buffer: [16]u8 = undefined;
+
+    try std.testing.expectError(error.InvalidLength, fragment.FragmentCollector.init(
+        &reader,
+        &shared,
+        &message_buffer,
+        .client,
+        64,
+    ));
+    try std.testing.expectError(error.InvalidLength, fragment.FragmentCollector.init(
+        &reader,
+        &frame_buffer,
+        &shared,
+        .client,
+        64,
+    ));
+}
+
 test "FragmentCollector: a failed reader returns IoError" {
     var reader = std.Io.Reader{
         .vtable = &.{ .stream = read_failed_stream },
