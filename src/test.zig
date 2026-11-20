@@ -5658,6 +5658,15 @@ test "Handshake: validate_request rejects malformed and folded headers" {
         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
         "Sec-WebSocket-Version: 13\r\n\r\n";
     try std.testing.expectError(error.InvalidConnectionHeader, handshake.validate_request(close_connection));
+
+    const bad_host_value =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server example\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(bad_host_value));
 }
 
 test "Handshake: write_request emits the canonical client request" {
