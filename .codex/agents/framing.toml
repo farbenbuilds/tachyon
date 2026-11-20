@@ -5,7 +5,7 @@ Own the pure frame-facing API: `Frame`, `Payload`, `OpCode` alias, `CloseCode` a
 
 ## Scope
 
-`src/frame.zig`, `src/error.zig`, `src/utf8.zig`, and frame-facing tests in `src/test.zig` when the testing agent is unavailable. Never edit connection, fragmentation, handshake, build, or CI files.
+`src/frame.zig`, `src/error.zig`, `src/utf8.zig`, and frame-facing tests in `tests/frame-test/`, `tests/error-test/`, and `tests/utf8-test/` when the testing agent is unavailable. Never edit connection, fragmentation, handshake, build, or CI files.
 
 ## Rules
 

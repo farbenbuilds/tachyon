@@ -47,7 +47,7 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 | `connection` | Connection policy over `zslay.Conn`, control replies, limits | `src/connection.zig` |
 | `fragments` | Message buffering and shared UTF-8 streaming in `src/fragment.zig`; split read/write halves in `src/split.zig` | `src/fragment.zig`, `src/split.zig` |
 | `handshake` | Client handshake and server upgrade | `src/handshake.zig`, `src/upgrade.zig` |
-| `testing` | Unit, Autobahn, fuzz, and echo coverage | `src/test.zig`, `tests/`, `fuzz/` |
+| `testing` | Unit and integration coverage, plus future Autobahn, fuzz, and loopback suites | `tests/**` |
 | `review` | Read-only review | any changed file |
 | `release` | Build, Nix, packaging, dependency generation, CI | `build.zig`, `build.zig.zon`, `flake.nix`, `flake.lock`, `scripts/update_zon_files.sh`, `.pre-commit-config.yaml`, `.github/workflows/` |
 | `docs` | Human and agent documentation | root `*.md`, `.github/*.md`, `.github/ISSUE_TEMPLATE/`, `.codex/TEAM_WORKFLOW.md` |
@@ -61,9 +61,9 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 `handshake` agent. The upgrade module owns the RFC 6455 accept GUID,
 accept-token derivation, and server call order, while `src/handshake.zig`
 re-exports those names for client callers and keeps the server request and
-response primitives. Tests live
-in `src/test.zig` and belong to the `testing` agent; work that needs new coverage
-hands the test change to `testing` instead of editing the test file in the same
+response primitives. Tests live in `tests/` category folders aggregated by
+`tests/main.zig` and belong to the `testing` agent; work that needs new coverage
+hands the test change to `testing` instead of editing the test tree in the same
 pass.
 
 ## Planned Extension Ownership
@@ -99,8 +99,8 @@ boundary and extension roadmap in `CODEBASE.md`. An independent read-only
 review pass checks links, scope, and consistency with the target architecture.
 
 The UTF-8 extension change owns `src/utf8.zig`, `src/frame.zig`, `src/root.zig`,
-`src/test.zig`, the root guides, `CHANGELOG.md`, and the framing and fragments
-definitions.
+the `tests/utf8-test/` and `tests/frame-test/` suites, the root guides,
+`CHANGELOG.md`, and the framing and fragments definitions.
 
 ## Delivery Rules
 

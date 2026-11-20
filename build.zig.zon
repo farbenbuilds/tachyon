@@ -12,7 +12,12 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "build.zig.zon.json",
+        "build.zig.zon.nix",
+        "build.zig.zon.txt",
         "src",
+        "flake.nix",
+        "flake.lock",
         "LICENSE",
         "README.md",
     },

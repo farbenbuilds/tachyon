@@ -75,7 +75,11 @@ verification including `Sec-WebSocket-Accept`, server request validation, and
 buffered for the frame path, and the module never allocates or opens a socket.
 `src/root.zig` re-exports the facade, the error model, the UTF-8 validator, the
 fragment accumulator and collector, the connection layer, the split halves, the
-handshake primitives, and the server upgrade call order.
+handshake primitives, and the server upgrade call order. The test suite lives
+under `tests/` and is aggregated by `tests/main.zig`; category folders such as
+`tests/frame-test/` and `tests/connection-test/` mirror the protocol layers, and
+`tests/support.zig` holds shared fixtures. Library sources contain no test
+blocks, and `zig build test` runs the aggregate under Debug and ReleaseSafe.
 
 `src/upgrade.zig` implements the server call order over those primitives:
 `incoming` reads and strictly validates a request without writing,
@@ -164,7 +168,7 @@ Library commands:
 
 ```sh
 zig build
-zig build test
+zig build test              # Debug and ReleaseSafe suites over tests/main.zig
 zig build check
 zig fmt --check .
 ```
@@ -179,6 +183,8 @@ zig fmt --check .
 - [SECURITY.md](SECURITY.md): vulnerability reporting.
 - [AGENTS.md](AGENTS.md): rules for coding agents.
 - [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md): ownership and review roles.
+- [tests/README.md](tests/README.md): test tree, aggregator, and category
+  naming.
 - [SKILL.md](SKILL.md): vendored skill catalog and graphify setup.
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): dependency attribution.
 - [.github/](.github/): pull request template, commit convention, code of

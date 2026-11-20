@@ -179,6 +179,14 @@ This project follows semantic versioning.
 
 ### Changed
 
+- Moved all Zig tests out of library sources into the `tests/` tree. The new
+  `tests/main.zig` aggregator imports category folders for module, error, frame,
+  UTF-8, fragment, connection, split, handshake, and upgrade coverage, and both
+  the Debug and ReleaseSafe test steps target that aggregator. The published
+  Zig package remains runtime-only: `build.zig.zon` ships the build files,
+  generated zon2nix views, `flake.nix`, `flake.lock`, `src/`, `LICENSE`, and
+  `README.md`; tests, scripts, and the remaining documentation stay in the
+  repository.
 - Documented the zslay ownership boundary: header coding, length handling,
   masking, the close predicate and payload validator, masking direction,
   fragment ordering, limits, and the bounded connection state machine are

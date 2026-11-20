@@ -5,7 +5,7 @@ Own message fragmentation buffering and split connection halves.
 
 ## Scope
 
-`src/fragment.zig`: `FragmentCollector`, fragment accumulation, text validation through the framing-owned `src/utf8.zig` validator, and completed-message delivery. `src/split.zig`: `WebSocketRead`, `WebSocketWrite`, `Split`, `after_handshake_split`/`init`, caller-owned `ReadStorage`/`WriteStorage`/`Storage`, sink-forwarded pong and close obligations, and `FragmentCollectorRead` with caller-owned `message_buffer` and latch/reset behavior. Add fragmentation and split tests in `src/test.zig` when the testing agent is unavailable. Never edit frame primitives, connection policy, handshake, build, or CI files.
+`src/fragment.zig`: `FragmentCollector`, fragment accumulation, text validation through the framing-owned `src/utf8.zig` validator, and completed-message delivery. `src/split.zig`: `WebSocketRead`, `WebSocketWrite`, `Split`, `after_handshake_split`/`init`, caller-owned `ReadStorage`/`WriteStorage`/`Storage`, sink-forwarded pong and close obligations, and `FragmentCollectorRead` with caller-owned `message_buffer` and latch/reset behavior. Add fragmentation and split tests in `tests/fragment-test/` and `tests/split-test/` when the testing agent is unavailable. Never edit frame primitives, connection policy, handshake, build, or CI files.
 
 ## Rules
 
