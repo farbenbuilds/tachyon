@@ -95,8 +95,9 @@ zig fmt --check .           # Formatting gate
 `zig build test` runs the aggregate twice, once with Debug safety and once with
 ReleaseSafe, so overflow and bounds behavior is exercised in both modes.
 `.github/workflows/test.yml` runs the same test step plus `zig build check` for
-pull requests into `main` and pushes to `main` whenever a Zig or Zon file
-changes.
+pull requests into `main` and pushes to `main` whenever a Zig or Zon file,
+`build.zig`, or a workflow file changes. Each run records a deployment in the
+`Testing` environment.
 
 The native-stream tests open a loopback TCP pair through the caller's
 `std.Io.Threaded` instance. They exercise the real `std.Io.net.Stream.reader`

@@ -7,12 +7,16 @@ on:
     paths:
       - "**.zig"
       - "**.zon"
+      - "build.zig"
+      - ".github/workflows/**"
   push:
     branches:
       - main
     paths:
       - "**.zig"
       - "**.zon"
+      - "build.zig"
+      - ".github/workflows/**"
 
 permissions:
   contents: read
@@ -25,6 +29,7 @@ jobs:
   test:
     name: Run Zig Tests
     runs-on: ubuntu-latest
+    environment: Testing
     timeout-minutes: 15
 
     steps:

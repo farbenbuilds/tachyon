@@ -9,7 +9,7 @@ the release workflow is specified here and remains planned.
 | Workflow | Trigger | Status and purpose |
 | --- | --- | --- |
 | `.github/workflows/lint.yml` | Pull request into `main` changing `.zig`, `.zon`, or `build.zig` files | Implemented. `zig fmt --check .` with Zig 0.17.1. |
-| `.github/workflows/test.yml` | Pull request into `main` and push to `main` changing Zig or Zon files | Implemented. `zig build test --summary all` and `zig build check` with Zig 0.17.1. |
+| `.github/workflows/test.yml` | Pull request into `main` and push to `main` changing Zig or Zon files or workflows | Implemented. `zig build test --summary all` and `zig build check` with Zig 0.17.1. |
 | `.github/workflows/publish.yml` | Push of a `v*` tag | Planned. Verify version and changelog, build cross-target packages, publish release assets. |
 
 ## Lint Pipeline
@@ -29,9 +29,11 @@ waiting for a full flake evaluation.
 ## Test Pipeline
 
 Implemented in `.github/workflows/test.yml`. Runs on pull requests into `main`
-and pushes to `main` that change a `.zig` or `.zon` file. The workflow requests
-`contents: read`, cancels superseded runs for the same ref, and defines one job,
-`test`, named `Run Zig Tests`, on `ubuntu-latest`.
+and pushes to `main` that change a `.zig` or `.zon` file, `build.zig`, or a
+workflow file. The workflow requests `contents: read`, cancels superseded runs
+for the same ref, and defines one job, `test`, named `Run Zig Tests`, on
+`ubuntu-latest` in the `Testing` environment. Every test run therefore records
+a `Testing` deployment, alongside the `Linting` deployment from the lint job.
 
 1. Check out the repository with `actions/checkout` v7.
 2. Install Zig 0.17.1 with `mlugg/setup-zig` v2.
@@ -55,13 +57,17 @@ because the build sandbox has no network access.
 
 ## Path Filters
 
-The implemented test workflow runs when either of these changes:
+The implemented test workflow runs when any of these changes:
 
 - `**/*.zig`
 - `**/*.zon`
+- `build.zig`
+- `.github/workflows/**`
 
-The lint workflow uses the same Zig and Zon path set. Documentation-only and
-workflow-only changes do not trigger either job.
+The lint workflow uses the Zig and Zon path set plus `build.zig`.
+Documentation-only changes do not trigger either job. Workflow-only changes run
+the test workflow so CI configuration changes are exercised before merge and
+publish a `Testing` deployment.
 
 ## Release Pipeline
 
