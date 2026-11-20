@@ -9,42 +9,45 @@ suite from a full repository checkout; a fetched package ships the build files,
 the generated zon2nix views, `flake.nix`, `flake.lock`, `src/`, `LICENSE`, and
 `README.md` only.
 
-## Layout
+## File Tree
 
 ```text
 tests/
-  main.zig
-  support.zig
-  module-test/
-    module_test.zig
-  error-test/
-    error_test.zig
-  frame-test/
-    frame_test.zig
-  utf8-test/
-    utf8_test.zig
-  fragment-test/
-    fragments_test.zig
-    collector_read_test.zig
-    collector_policy_test.zig
-  connection-test/
-    connection_core_test.zig
-    connection_control_test.zig
-    connection_close_test.zig
-    connection_limits_test.zig
-    connection_read_test.zig
-    connection_write_test.zig
-  split-test/
-    split_core_test.zig
-    split_read_test.zig
-    split_collector_test.zig
-  handshake-test/
-    handshake_request_test.zig
-    handshake_head_test.zig
-    handshake_response_test.zig
-    handshake_client_test.zig
-  upgrade-test/
-    upgrade_test.zig
+├── README.md
+├── main.zig                              # Aggregates every category test file.
+├── support.zig                           # Shared fixtures and test-only readers and writers.
+├── module-test/
+│   └── module_test.zig                   # Dependency boundary and public re-exports.
+├── error-test/
+│   └── error_test.zig                    # Error taxonomy, mappings, and close-code policy.
+├── frame-test/
+│   └── frame_test.zig                    # Frame facade, close codes, masking, and write paths.
+├── utf8-test/
+│   └── utf8_test.zig                     # Incremental UTF-8 validation and reader adaptation.
+├── fragment-test/
+│   ├── fragments_test.zig                # Fragment accumulator.
+│   ├── collector_read_test.zig           # Collector reads and continuation assembly.
+│   └── collector_policy_test.zig         # Collector limits and failure latching.
+├── connection-test/
+│   ├── connection_core_test.zig          # Construction, storage, and role policy.
+│   ├── connection_control_test.zig       # Automatic ping and pong behavior.
+│   ├── connection_close_test.zig         # Close validation, echo, and gating.
+│   ├── connection_limits_test.zig        # Message-size limits and bounds.
+│   ├── connection_read_test.zig          # Raw read path and failure latches.
+│   └── connection_write_test.zig         # Copied and vectored write paths.
+├── split-test/
+│   ├── split_core_test.zig               # Split construction and frame exchange.
+│   ├── split_read_test.zig               # Read-half obligations and gating.
+│   └── split_collector_test.zig          # FragmentCollectorRead over a split half.
+├── native-stream-test/
+│   └── native_stream_test.zig            # std.Io.net.Stream transport, WebSocket, and Split.
+├── handshake-test/
+│   ├── handshake_request_test.zig        # Server request construction and validation.
+│   ├── handshake_head_test.zig           # Bounded HTTP head parsing.
+│   ├── handshake_response_test.zig       # Response verification and token checks.
+│   └── handshake_client_test.zig         # Client handshake flow.
+└── upgrade-test/
+    └── upgrade_test.zig                  # Server upgrade call order and async borrowing.
 ```
 
 Category folders use the `<area>-test/` naming pattern, and test files use
@@ -59,6 +62,7 @@ Category folders use the `<area>-test/` naming pattern, and test files use
 | `fragment-test` | Fragment accumulator, collector reads, and collector policy. |
 | `connection-test` | Connection core, control replies, close handling, limits, reads, and writes. |
 | `split-test` | Split core, reads, and `FragmentCollectorRead`. |
+| `native-stream-test` | `std.Io.net.Stream` transport binding, native `WebSocket`, native `Split`, and buffer-alias rejection. |
 | `handshake-test` | Request, head, response, and client handshake behavior. |
 | `upgrade-test` | Server upgrade call order, including validation and async behavior. |
 
@@ -79,12 +83,21 @@ input coverage in [AGENTS.md](../AGENTS.md#testing-guidelines).
 ```sh
 zig build test              # Debug and ReleaseSafe suites over tests/main.zig
 zig build test --summary all
-zig build check             # type-check the library and tests
-zig fmt --check .           # formatting gate
+zig build check             # Type-check the library and tests
+zig fmt --check .           # Formatting gate
 ```
 
 `zig build test` runs the aggregate twice, once with Debug safety and once with
 ReleaseSafe, so overflow and bounds behavior is exercised in both modes.
+`.github/workflows/test.yml` runs the same test step plus `zig build check` for
+pull requests into `main` and pushes to `main` whenever a Zig or Zon file
+changes.
+
+The native-stream tests open a loopback TCP pair through the caller's
+`std.Io.Threaded` instance. They exercise the real `std.Io.net.Stream.reader`
+and `std.Io.net.Stream.writer` paths without spawning a test task: the listening
+backlog lets `connect` complete before `accept`, and the frames fit in the
+kernel socket buffers.
 
 ## Adding Coverage
 
@@ -94,11 +107,15 @@ ReleaseSafe, so overflow and bounds behavior is exercised in both modes.
    file for a distinct concern.
 3. Import a new file from `tests/main.zig`.
 4. Reuse `tests/support.zig` for fixtures shared by more than one category.
-5. Run `zig build test` and `zig fmt --check .` before review.
+5. Add the new file to the tree above and to the category table when it
+   introduces a folder.
+6. Run `zig build test` and `zig fmt --check .` before review.
 
 ## Future Integration Suites
 
-Autobahn, fuzz, and loopback suites belong under `tests/` as new category
-folders. None is implemented yet. This tree currently provides unit coverage
-only; do not claim Autobahn, fuzz, or loopback compliance until those suites
+Autobahn, fuzz, and loopback echo suites belong under `tests/` as new category
+folders. None of these compliance suites is implemented yet. This tree currently
+provides unit coverage
+plus the loopback native-stream integration described above; do not claim
+Autobahn, fuzz, or a full loopback echo compliance suite until those suites
 exist and pass.

@@ -1,15 +1,15 @@
 # tachyon - CI/CD Pipeline
 
-Contract for the GitHub Actions pipelines. The lint workflow is implemented in
-`.github/workflows/lint.yml`; the test and release workflows are specified here
-and remain planned.
+Contract for the GitHub Actions pipelines. The lint and test workflows are
+implemented in `.github/workflows/lint.yml` and `.github/workflows/test.yml`;
+the release workflow is specified here and remains planned.
 
 ## Workflows
 
 | Workflow | Trigger | Status and purpose |
 | --- | --- | --- |
 | `.github/workflows/lint.yml` | Pull request into `main` changing `.zig`, `.zon`, or `build.zig` files | Implemented. `zig fmt --check .` with Zig 0.17.1. |
-| `.github/workflows/test.yml` | Pull request into `main` and push to `main` | Planned. Formatting plus `nix flake check` for native and musl test derivations. |
+| `.github/workflows/test.yml` | Pull request into `main` and push to `main` changing Zig or Zon files | Implemented. `zig build test --summary all` and `zig build check` with Zig 0.17.1. |
 | `.github/workflows/publish.yml` | Push of a `v*` tag | Planned. Verify version and changelog, build cross-target packages, publish release assets. |
 
 ## Lint Pipeline
@@ -28,21 +28,26 @@ waiting for a full flake evaluation.
 
 ## Test Pipeline
 
-Planned. When implemented, runs on pull requests into `main` and pushes to
-`main`.
+Implemented in `.github/workflows/test.yml`. Runs on pull requests into `main`
+and pushes to `main` that change a `.zig` or `.zon` file. The workflow requests
+`contents: read`, cancels superseded runs for the same ref, and defines one job,
+`test`, named `Run Zig Tests`, on `ubuntu-latest`.
 
-1. Check out the repository.
-2. Install Nix with flakes enabled.
-3. Cache Nix evaluation keyed on `flake.lock`.
-4. Run `nix develop -c zig fmt --check .`.
-5. Run `nix flake check --print-build-logs`.
+1. Check out the repository with `actions/checkout` v7.
+2. Install Zig 0.17.1 with `mlugg/setup-zig` v2.
+3. Run `zig build test --summary all`, which executes the aggregate suite under
+   Debug and ReleaseSafe.
+4. Run `zig build check` to type-check the library and both test roots.
 
-The test flake performs:
+The job does not use Nix, so the result does not depend on the runner's Nix
+installation or on a cached flake evaluation. The flake still exposes the
+`format`, `test-default`, and `test-musl` checks for hermetic offline runs,
+plus `packages.default`:
 
-- a formatting check in a minimal derivation,
-- a native `zig build test` check,
-- a musl `zig build test` check on Linux,
-- native and cross-target package builds when requested.
+- `format` checks `flake.nix` with alejandra,
+- `test-default` runs a native `zig build test`,
+- `test-musl` runs a musl `zig build test` on Linux,
+- `packages.default` builds `libtachyon.a` with `ReleaseSafe`.
 
 `zig build test` runs the suite in Debug and ReleaseSafe. The Nix check
 derivations seed Zig's package cache from the generated `build.zig.zon.nix`
@@ -50,16 +55,13 @@ because the build sandbox has no network access.
 
 ## Path Filters
 
-When implemented, the test workflow should run when any of these change:
+The implemented test workflow runs when either of these changes:
 
 - `**/*.zig`
 - `**/*.zon`
-- `build.zig`
-- `flake.nix`
-- `flake.lock`
-- `.github/workflows/**`
-- `src/**`
-- root project documentation that changes build or verification instructions
+
+The lint workflow uses the same Zig and Zon path set. Documentation-only and
+workflow-only changes do not trigger either job.
 
 ## Release Pipeline
 
@@ -98,9 +100,9 @@ Planned. Releases are tag-driven, not push-to-main-driven.
 | `contents: read` | Checkout, lint, flake checks, and test jobs. |
 | `contents: write` | Release job only. |
 
-The lint workflow requests `contents: read`. The remaining entries apply to the
-planned test and release workflows. No third-party registry credentials are
-required.
+The lint and test workflows request `contents: read`. The `contents: write`
+entry applies to the planned release workflow. No third-party registry
+credentials are required.
 
 ## Versioning Rules
 

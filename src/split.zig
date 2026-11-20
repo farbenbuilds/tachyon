@@ -81,13 +81,40 @@ pub const WriteStorage = struct {
 
 /// Combined caller-owned storage for both halves.
 ///
-/// Regions owned by different halves should not overlap: a read reply borrows
+/// Regions owned by different halves must not overlap: a read reply borrows
 /// read storage while the write half queues and drains it, and the write half
-/// rejects outbound payloads that alias its own storage. Keeping the halves
-/// disjoint preserves automatic echo and pong obligations.
+/// rejects outbound payloads that alias its own storage. `after_handshake_split`
+/// rejects cross-half aliasing with `InvalidLength`.
 pub const Storage = struct {
     read: ReadStorage,
     write: WriteStorage,
+
+    /// True when `bytes` overlaps any read or write region in this storage.
+    ///
+    /// Native adapters use this to keep caller-provided `std.Io` buffers
+    /// disjoint from every region without duplicating the storage layout.
+    pub fn overlaps(self: Storage, bytes: []const u8) bool {
+        const tx_bytes: []const u8 = std.mem.sliceAsBytes(self.write.tx_nodes);
+        const regions = [_][]const u8{
+            self.read.frame_buffer,
+            self.read.close_buffer,
+            self.read.compose_buffer,
+            tx_bytes,
+            self.write.write_buffer,
+            self.write.close_buffer,
+            self.write.mask_scratch,
+        };
+
+        for (regions) |region| {
+            if (zslay.event.ranges_overlap(
+                @intFromPtr(bytes.ptr),
+                bytes.len,
+                @intFromPtr(region.ptr),
+                region.len,
+            )) return true;
+        }
+        return false;
+    }
 };
 
 /// Raw read half over its own receive connection.
@@ -476,19 +503,52 @@ pub const Split = struct {
 
 /// Builds both halves after a successful handshake.
 ///
-/// The write half is built first so a missing transmit queue fails before the
-/// read half is constructed. Both halves borrow the same reader and writer
-/// pointers and independent copies of `config`, including any client mask
-/// source.
+/// Read and write storage are checked for cross-half overlap before either half
+/// is constructed. The write half is then built first so a missing transmit
+/// queue fails before the read half is constructed. Both halves borrow the same
+/// reader and writer pointers and independent copies of `config`, including any
+/// client mask source.
 pub fn after_handshake_split(
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
     storage: Storage,
     config: Config,
 ) Error!Split {
+    try validate_halves(storage);
+
     const write = try WebSocketWrite.init(reader, writer, storage.write, config);
     const read = try WebSocketRead.init(reader, writer, storage.read, config);
     return .{ .read = read, .write = write };
+}
+
+/// Rejects read storage that aliases write storage.
+///
+/// `connection.validate_storage` checks each half's regions independently; the
+/// split pair also needs the cross product because a read reply can borrow read
+/// storage while the write half queues or composes from its own storage.
+fn validate_halves(storage: Storage) Error!void {
+    const read_regions = [_][]const u8{
+        storage.read.frame_buffer,
+        storage.read.close_buffer,
+        storage.read.compose_buffer,
+    };
+    const write_regions = [_][]const u8{
+        std.mem.sliceAsBytes(storage.write.tx_nodes),
+        storage.write.write_buffer,
+        storage.write.close_buffer,
+        storage.write.mask_scratch,
+    };
+
+    for (read_regions) |read_region| {
+        for (write_regions) |write_region| {
+            if (zslay.event.ranges_overlap(
+                @intFromPtr(read_region.ptr),
+                read_region.len,
+                @intFromPtr(write_region.ptr),
+                write_region.len,
+            )) return error.InvalidLength;
+        }
+    }
 }
 
 /// Alias for `after_handshake_split`.
@@ -521,11 +581,25 @@ pub const FragmentCollectorRead = struct {
     /// Binds the collector to a read half and caller-owned message storage.
     ///
     /// `message_buffer` bounds one assembled message and must not overlap
-    /// `read.frame_buffer`, because accumulation copies with `@memcpy`. A
-    /// zero-length buffer is allowed and rejects every non-empty message with
+    /// `read.frame_buffer`, the read half's `std.Io.Reader` buffer, or its
+    /// `std.Io.Writer` buffer, because accumulation copies with `@memcpy` and
+    /// reader fills can move bytes between those regions. A zero-length buffer
+    /// is allowed and rejects every non-empty message with
     /// `error.BufferTooShort`.
     pub fn init(read: WebSocketRead, message_buffer: []u8) Error!FragmentCollectorRead {
-        if (overlaps(message_buffer, read.frame_buffer())) return error.InvalidLength;
+        const frame_buffer = read.frame_buffer();
+        const reader_buffer = read.inner.reader.buffer;
+        const writer_buffer = read.inner.writer.buffer;
+        const byte_regions = [_][]const u8{ frame_buffer, reader_buffer, writer_buffer };
+
+        for (byte_regions) |region| {
+            if (zslay.event.ranges_overlap(
+                @intFromPtr(message_buffer.ptr),
+                message_buffer.len,
+                @intFromPtr(region.ptr),
+                region.len,
+            )) return error.InvalidLength;
+        }
 
         return .{
             .read = read,
@@ -594,14 +668,3 @@ pub const FragmentCollectorRead = struct {
         return self.fragments.message_len();
     }
 };
-
-/// True when two caller-owned byte regions share memory.
-fn overlaps(a: []const u8, b: []const u8) bool {
-    if (a.len == 0 or b.len == 0) return false;
-
-    const a_start = @intFromPtr(a.ptr);
-    const b_start = @intFromPtr(b.ptr);
-    const a_end = std.math.add(usize, a_start, a.len) catch return true;
-    const b_end = std.math.add(usize, b_start, b.len) catch return true;
-    return a_start < b_end and b_start < a_end;
-}

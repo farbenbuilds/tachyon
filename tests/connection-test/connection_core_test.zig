@@ -252,3 +252,27 @@ test "WebSocket: role, pending, and limit accessors track state" {
     try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
     try std.testing.expect(server.ws.is_at_wire_boundary());
 }
+
+test "WebSocket: rejects storage aliasing the reader or writer buffer" {
+    var shared: [64]u8 = undefined;
+    var reader = std.Io.Reader.fixed(&shared);
+    var out: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&out);
+    var tx_nodes: [1]zslay.FrameNode = undefined;
+    var write_buffer: [64]u8 = undefined;
+    var close_buffer: [8]u8 = undefined;
+
+    try std.testing.expectError(error.InvalidLength, connection.WebSocket.init(&reader, &writer, .{
+        .frame_buffer = &shared,
+        .tx_nodes = &tx_nodes,
+        .write_buffer = &write_buffer,
+        .close_buffer = &close_buffer,
+    }, .{ .role = .server }));
+
+    try std.testing.expectError(error.InvalidLength, connection.WebSocket.init(&reader, &writer, .{
+        .frame_buffer = &write_buffer,
+        .tx_nodes = &tx_nodes,
+        .write_buffer = out[0..32],
+        .close_buffer = &close_buffer,
+    }, .{ .role = .server }));
+}

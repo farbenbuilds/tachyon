@@ -179,10 +179,11 @@ Releases use semantic versioning and a `v*` tag. The version in
 5. Tag the release commit and push the tag.
 
 The release pipeline is specified in [CI_CD_PIPELINE.md](CI_CD_PIPELINE.md). The
-lint workflow runs `zig fmt --check .` on pull requests into `main` that change
-`.zig`, `.zon`, or `build.zig` files; the test and publish workflows are not
-implemented yet. Until the publish workflow exists, attach the `libtachyon.a`
-artifacts produced by the build to the GitHub release manually.
+lint workflow runs `zig fmt --check .` and the test workflow runs
+`zig build test --summary all` plus `zig build check` on pull requests into
+`main` and pushes to `main` that change Zig or Zon files. The publish workflow is
+not implemented yet. Until it exists, attach the `libtachyon.a` artifacts
+produced by the build to the GitHub release manually.
 
 The published Zig package is runtime-only. `build.zig.zon` `.paths` includes
 the build files, the generated zon2nix views, `flake.nix`, `flake.lock`, `src/`,

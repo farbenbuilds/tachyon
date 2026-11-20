@@ -140,7 +140,10 @@ see [CONTRIBUTE.md](CONTRIBUTE.md).
 - Tests must exercise both success and failure paths for changed protocol code.
 - Cover the length boundaries in [AGENTS.md](AGENTS.md#testing-guidelines).
 - Prefer fixed byte arrays and explicit expected values over generated data.
-- Do not let a test depend on wall-clock time, network access, or host locale.
+- Do not let a test depend on wall-clock time, external network access, or host
+  locale. The native-stream tests are the only loopback exception: they use an
+  ephemeral `127.0.0.1` listener through the caller's `std.Io` and send no
+  external traffic.
 - Run `zig build test` and `zig fmt --check .` before review.
 
 ## 10. Verification

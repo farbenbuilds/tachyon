@@ -288,3 +288,15 @@ test "Split: server read honors the exclusive maximum at short and extended leng
 
     try std.testing.expectError(error.FrameTooLarge, parts.split.read_frame());
 }
+
+test "Split: FragmentCollectorRead rejects a message buffer overlapping the reader buffer" {
+    var input: [16]u8 = undefined;
+    var reader = std.Io.Reader.fixed(&input);
+    var parts: SplitRig(16, 1, 32, 8, 0, 8) = .{};
+    try parts.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(
+        error.InvalidLength,
+        split.FragmentCollectorRead.init(parts.split.read, &input),
+    );
+}

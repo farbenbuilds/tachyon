@@ -62,6 +62,17 @@ test "UTF-8: public module re-exports the validator" {
     try validate_utf8_reader(&reader, &buffer);
 }
 
+test "Native stream: public module re-exports the transport and wrappers" {
+    const std = @import("std");
+
+    try std.testing.expect(tachyon.NativeTransport == tachyon.native_stream.Transport);
+    try std.testing.expect(tachyon.NativeTransportStorage == tachyon.native_stream.TransportStorage);
+    try std.testing.expect(tachyon.NativeWebSocket == tachyon.native_stream.WebSocket);
+    try std.testing.expect(tachyon.NativeSplit == tachyon.native_stream.Split);
+    try std.testing.expect(@hasField(tachyon.NativeTransportStorage, "read_buffer"));
+    try std.testing.expect(@hasField(tachyon.NativeTransportStorage, "write_buffer"));
+}
+
 test "Fragment: public module re-exports the fragment layer" {
     const std = @import("std");
 

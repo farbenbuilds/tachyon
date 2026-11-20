@@ -112,6 +112,32 @@ pub const Storage = struct {
     write_buffer: []u8,
     close_buffer: []u8,
     mask_scratch: []u8 = &.{},
+
+    /// True when `bytes` overlaps any caller-owned region in this storage.
+    ///
+    /// Native adapters and connection construction use this to keep
+    /// caller-provided `std.Io` buffers disjoint from protocol storage.
+    /// Empty regions never overlap.
+    pub fn overlaps(self: Storage, bytes: []const u8) bool {
+        const tx_bytes: []const u8 = std.mem.sliceAsBytes(self.tx_nodes);
+        const regions = [_][]const u8{
+            self.frame_buffer,
+            tx_bytes,
+            self.write_buffer,
+            self.close_buffer,
+            self.mask_scratch,
+        };
+
+        for (regions) |region| {
+            if (zslay.event.ranges_overlap(
+                @intFromPtr(bytes.ptr),
+                bytes.len,
+                @intFromPtr(region.ptr),
+                region.len,
+            )) return true;
+        }
+        return false;
+    }
 };
 
 /// Role-aware WebSocket policy over one `zslay.Conn`.
@@ -152,7 +178,8 @@ pub const WebSocket = struct {
     /// exclusive fastwebsockets bound. A client must supply a mask source even
     /// when `auto_apply_mask` is false, so `set_auto_apply_mask(true)` stays
     /// infallible. Empty `tx_nodes` is rejected only when an automatic reply
-    /// is enabled.
+    /// is enabled. The reader and writer buffers must not overlap each other or
+    /// any storage region.
     pub fn init(
         reader: *std.Io.Reader,
         writer: *std.Io.Writer,
@@ -161,6 +188,7 @@ pub const WebSocket = struct {
     ) Error!WebSocket {
         const max_size = clamp_max_message_size(config.options.max_message_size);
         try validate_storage(storage);
+        try validate_io_buffers(reader, writer, storage);
 
         if (config.role == .client and config.mask_keys == null) return error.MaskingKeyRequired;
         if (storage.tx_nodes.len == 0 and (config.options.auto_pong or config.options.auto_close)) {
@@ -643,9 +671,24 @@ pub const WebSocket = struct {
     fn payload_overlaps_storage(self: *const WebSocket, payload: []const u8) bool {
         const start = @intFromPtr(payload.ptr);
         if (self.conn.tx_storage_overlaps(start, payload.len)) return true;
-        if (overlaps(payload, self.mask_scratch)) return true;
-        if (overlaps(payload, self.write_buffer)) return true;
-        if (overlaps(payload, self.close_buffer)) return true;
+        if (zslay.event.ranges_overlap(
+            start,
+            payload.len,
+            @intFromPtr(self.mask_scratch.ptr),
+            self.mask_scratch.len,
+        )) return true;
+        if (zslay.event.ranges_overlap(
+            start,
+            payload.len,
+            @intFromPtr(self.write_buffer.ptr),
+            self.write_buffer.len,
+        )) return true;
+        if (zslay.event.ranges_overlap(
+            start,
+            payload.len,
+            @intFromPtr(self.close_buffer.ptr),
+            self.close_buffer.len,
+        )) return true;
         return false;
     }
 
@@ -839,18 +882,29 @@ fn validate_storage(storage: Storage) Error!void {
 
     for (regions, 0..) |region, index| {
         for (regions[index + 1 ..]) |other| {
-            if (overlaps(region, other)) return error.InvalidLength;
+            if (zslay.event.ranges_overlap(
+                @intFromPtr(region.ptr),
+                region.len,
+                @intFromPtr(other.ptr),
+                other.len,
+            )) return error.InvalidLength;
         }
     }
 }
 
-/// True when two caller-owned byte regions share memory.
-fn overlaps(a: []const u8, b: []const u8) bool {
-    if (a.len == 0 or b.len == 0) return false;
-
-    const a_start = @intFromPtr(a.ptr);
-    const b_start = @intFromPtr(b.ptr);
-    const a_end = std.math.add(usize, a_start, a.len) catch return true;
-    const b_end = std.math.add(usize, b_start, b.len) catch return true;
-    return a_start < b_end and b_start < a_end;
+/// Rejects caller `std.Io` buffers that alias each other or protocol storage.
+///
+/// `Reader.readSliceShort` can copy from its internal buffer into a payload
+/// target, and the socket reader/writer add their buffers as vectored slices.
+/// Sharing either direction with payload, queue, or composition storage would
+/// let protocol I/O overwrite live bytes.
+fn validate_io_buffers(reader: *const std.Io.Reader, writer: *const std.Io.Writer, storage: Storage) Error!void {
+    if (zslay.event.ranges_overlap(
+        @intFromPtr(reader.buffer.ptr),
+        reader.buffer.len,
+        @intFromPtr(writer.buffer.ptr),
+        writer.buffer.len,
+    )) return error.InvalidLength;
+    if (storage.overlaps(reader.buffer)) return error.InvalidLength;
+    if (storage.overlaps(writer.buffer)) return error.InvalidLength;
 }
