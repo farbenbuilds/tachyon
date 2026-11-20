@@ -719,8 +719,11 @@ second queue:
 - `ConnectionOptions.backpressure` is opt-in. `write_frame` keeps the
   fastwebsockets drain-and-write behavior; `enqueue_frame` is the batching path
   that queues without draining. `flush` drains zslay then the caller's writer.
-  Read pacing stays with the caller: the raw connection has no inbound frame
-  queue, so not calling `read_frame` is the receive-side backpressure.
+  A deferred payload must not alias the read `frame_buffer`, reader buffer, or
+  writer buffer; the synchronous path may reuse `frame_buffer` for an echo
+  because it drains before returning. Read pacing stays with the caller: the raw
+  connection has no inbound frame queue, so not calling `read_frame` is the
+  receive-side backpressure.
 - `std.Io` has no stream `WouldBlock` result. Its writer blocks or suspends
   according to the implementation; `Writer.Error` is only `WriteFailed`, so
   `src/native_stream.zig` must not poll, sleep, or retry a zero-length drain.

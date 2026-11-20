@@ -178,11 +178,13 @@ pub const WebSocket = struct {
     /// Validates and queues one outbound frame without draining it.
     ///
     /// The payload stays borrowed until `flush`, or until `reset_tx` after a
-    /// transport failure. Data admission returns `error.WouldBlock` while
-    /// backpressured or when the non-empty queue cannot fit the frame.
-    /// Application controls other than close stop at the data capacity so one
-    /// node stays free for automatic replies. The native writer blocks or
-    /// suspends through `std.Io` on flush; this method never spins.
+    /// transport failure. It must not alias the read frame, reader, or writer
+    /// buffers because a later read or drain can overwrite them. Data admission
+    /// returns `error.WouldBlock` while backpressured or when the non-empty
+    /// queue cannot fit the frame. Application controls other than close stop
+    /// at the data capacity so one node stays free for automatic replies. The
+    /// native writer blocks or suspends through `std.Io` on flush; this method
+    /// never spins.
     pub fn enqueue_frame(self: *WebSocket, outgoing: Frame) Error!void {
         return self.inner.enqueue_frame(outgoing);
     }
@@ -216,12 +218,14 @@ pub const WebSocket = struct {
         return self.inner.is_backpressured();
     }
 
-    /// Payload bytes currently charged to the watermark policy.
+    /// Payload bytes currently charged to the watermark policy. Zero without a
+    /// policy.
     pub fn queued_bytes(self: *const WebSocket) usize {
         return self.inner.queued_bytes();
     }
 
-    /// Frames currently charged to the watermark policy.
+    /// Frames currently charged to the watermark policy, or zslay `tx_pending`
+    /// without a policy.
     pub fn queued_frames(self: *const WebSocket) usize {
         return self.inner.queued_frames();
     }
@@ -317,7 +321,7 @@ pub const Split = struct {
     /// Validates and queues one outbound frame without draining it.
     ///
     /// The payload stays borrowed until `flush`, or until `reset_tx` after a
-    /// transport failure.
+    /// transport failure. It must not alias read-lifetime buffers.
     pub fn enqueue_frame(self: *Split, outgoing: Frame) Error!void {
         return self.inner.enqueue_frame(outgoing);
     }
@@ -339,12 +343,14 @@ pub const Split = struct {
         return self.inner.is_backpressured();
     }
 
-    /// Payload bytes currently charged to the write half's policy.
+    /// Payload bytes currently charged to the write half's policy. Zero without
+    /// a policy.
     pub fn queued_bytes(self: *const Split) usize {
         return self.inner.queued_bytes();
     }
 
-    /// Frames currently charged to the write half's policy.
+    /// Frames currently charged to the write half's policy, or zslay
+    /// `tx_pending` without a policy.
     pub fn queued_frames(self: *const Split) usize {
         return self.inner.queued_frames();
     }

@@ -195,9 +195,11 @@ pub const WebSocket = struct {
     /// `FragmentCollector.init`, and the derived zslay limits carry the
     /// exclusive fastwebsockets bound. A client must supply a mask source even
     /// when `auto_apply_mask` is false, so `set_auto_apply_mask(true)` stays
-    /// infallible. Empty `tx_nodes` is rejected only when an automatic reply
-    /// is enabled. The reader and writer buffers must not overlap each other or
-    /// any storage region.
+    /// infallible. Empty `tx_nodes` is rejected when an automatic reply is
+    /// enabled. A configured `backpressure` policy requires at least two nodes
+    /// and always reserves one for automatic controls, regardless of the auto
+    /// flags. The reader and writer buffers must not overlap each other or any
+    /// storage region.
     pub fn init(
         reader: *std.Io.Reader,
         writer: *std.Io.Writer,
@@ -353,7 +355,8 @@ pub const WebSocket = struct {
     /// reserved node because it suppresses later automatic replies. Automatic
     /// pong and close replies use the reserved node.
     pub fn write_frame(self: *WebSocket, outgoing: Frame) Error!void {
-        try self.enqueue_frame(outgoing);
+        try self.check_public_write(outgoing, false);
+        try self.queue_frame(outgoing, false);
 
         self.pump_tx() catch |err| {
             self.write_failure = err;
@@ -367,16 +370,22 @@ pub const WebSocket = struct {
     /// frames until `error.WouldBlock`, then call `flush()` to drain zslay's
     /// ring and the caller's writer. The payload remains borrowed until a
     /// later flush advances it, or until `reset_tx` if the transport is
-    /// discarded after a failure. Data frames are admitted while the policy is
-    /// writable; application controls may use the data capacity, and automatic
-    /// replies use the reserved node.
+    /// discarded after a failure. It must not alias the read `frame_buffer`,
+    /// the reader buffer, or the writer buffer, because a later read or drain
+    /// can overwrite those regions. Data frames are admitted while the policy
+    /// is writable; application controls may use the data capacity, and
+    /// automatic replies use the reserved node.
     pub fn enqueue_frame(self: *WebSocket, outgoing: Frame) Error!void {
+        try self.check_public_write(outgoing, true);
+        return self.queue_frame(outgoing, false);
+    }
+
+    fn check_public_write(self: *WebSocket, outgoing: Frame, deferred: bool) Error!void {
         if (self.write_failure) |failure| return failure;
         if (outgoing.masking_key != null) return error.PayloadMasked;
         if (outgoing.opcode != .close and self.closed) return error.ConnectionClosed;
         if (self.payload_overlaps_storage(outgoing.payload)) return error.InvalidLength;
-
-        return self.queue_frame(outgoing, false);
+        if (deferred and self.payload_overlaps_read_lifetime(outgoing.payload)) return error.InvalidLength;
     }
 
     /// Sends one automatic control obligation through the reserved ring slot.
@@ -388,6 +397,7 @@ pub const WebSocket = struct {
     pub fn send_control(self: *WebSocket, outgoing: Frame) Error!void {
         if (self.write_failure) |failure| return failure;
         if (!frame.is_control(outgoing.opcode)) return error.InvalidOpcode;
+        if (outgoing.opcode != .close and self.closed) return error.ConnectionClosed;
         if (outgoing.masking_key != null) return error.PayloadMasked;
 
         try self.queue_frame(outgoing, true);
@@ -449,13 +459,15 @@ pub const WebSocket = struct {
         return false;
     }
 
-    /// Payload bytes currently charged to the watermark policy.
+    /// Payload bytes currently charged to the watermark policy. Zero when no
+    /// policy is configured.
     pub fn queued_bytes(self: *const WebSocket) usize {
         if (self.flow) |flow| return flow.state.queued_bytes;
         return 0;
     }
 
-    /// Frames currently charged to the watermark policy.
+    /// Frames currently charged to the watermark policy. Without a policy this
+    /// falls back to zslay's `tx_pending` count.
     pub fn queued_frames(self: *const WebSocket) usize {
         if (self.flow) |flow| return flow.state.queued_frames;
         return self.conn.tx_pending();
@@ -771,6 +783,29 @@ pub const WebSocket = struct {
         _ = self;
         if (was_closed and outgoing.opcode != .close) return error.ConnectionClosed;
         return outgoing;
+    }
+
+    /// True when the outbound payload overlaps caller read lifetime storage.
+    ///
+    /// Deferred enqueue keeps the payload borrowed until a later flush, so it
+    /// must not point into the inbound frame buffer, the reader buffer, or the
+    /// writer buffer. The synchronous write path may reuse `frame_buffer` for
+    /// an echo because it drains before returning.
+    fn payload_overlaps_read_lifetime(self: *const WebSocket, payload: []const u8) bool {
+        const regions = [_][]const u8{
+            self.frame_buffer,
+            self.reader.buffer,
+            self.writer.buffer,
+        };
+        for (regions) |region| {
+            if (zslay.event.ranges_overlap(
+                @intFromPtr(payload.ptr),
+                payload.len,
+                @intFromPtr(region.ptr),
+                region.len,
+            )) return true;
+        }
+        return false;
     }
 
     /// True when the outbound payload overlaps connection-owned scratch or the

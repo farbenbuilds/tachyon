@@ -111,9 +111,10 @@ pub const Event = union(enum) {
     abort,
 };
 
-/// Action requested by a transition. The owning connection applies transport
-/// actions; `close_transport` and `terminate_transport` are advisory signals,
-/// because split and native wrappers keep transport lifetime with the caller.
+/// Action requested by a transition. The connection consumes the resulting
+/// state and ignores these actions; they are the standalone `Flow` contract.
+/// `close_transport` and `terminate_transport` are advisory because split and
+/// native wrappers keep transport lifetime with the caller.
 pub const Action = enum(u8) {
     none,
     write,

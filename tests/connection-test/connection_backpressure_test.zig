@@ -12,6 +12,24 @@ const FlushFailWriter = support.FlushFailWriter;
 const append_masked = support.append_masked;
 const next_wire_frame = support.next_wire_frame;
 
+test "Connection: enqueue and metrics work without a policy" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 64, 8, 0, 64) = .{};
+    try server.init(&empty, .{ .role = .server });
+
+    var payload = [_]u8{ 'o', 'k' };
+    try server.ws.enqueue_frame(Frame.text(&payload));
+    try std.testing.expectEqual(@as(usize, 0), server.writer.written);
+    try std.testing.expectEqual(@as(usize, 1), server.ws.tx_pending());
+    try std.testing.expectEqual(@as(usize, 1), server.ws.queued_frames());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.queued_bytes());
+    try std.testing.expect(!server.ws.is_backpressured());
+
+    try server.ws.flush();
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.queued_frames());
+}
+
 test "Connection: watermark batching pauses data admission until flush drains" {
     var peer = EncodedStream(64){};
     var peer_payload = [_]u8{ 'p', 'e', 'e', 'r' };
@@ -149,6 +167,60 @@ test "Connection: watermark configuration must fit the transmit ring" {
             },
         },
     }));
+
+    var no_ring: ConnectionRig(16, 0, 64, 8, 0, 64) = .{};
+    try std.testing.expectError(error.InvalidLength, no_ring.init(&empty, .{
+        .role = .server,
+        .options = .{
+            .backpressure = .{
+                .high_water_bytes = 8,
+                .high_water_frames = 1,
+            },
+        },
+    }));
+
+    var one_node: ConnectionRig(16, 1, 64, 8, 0, 64) = .{};
+    try std.testing.expectError(error.InvalidLength, one_node.init(&empty, .{
+        .role = .server,
+        .options = .{
+            .auto_pong = false,
+            .auto_close = false,
+            .backpressure = .{
+                .high_water_bytes = 8,
+                .high_water_frames = 1,
+            },
+        },
+    }));
+}
+
+test "Connection: deferred enqueue rejects read-lifetime aliases" {
+    var peer = EncodedStream(64){};
+    var peer_payload = [_]u8{ 'e', 'c', 'h', 'o' };
+    try append_masked(&peer, Frame.text(&peer_payload), .{ 1, 2, 3, 4 });
+    var reader = peer.reader();
+
+    var server: ConnectionRig(16, 3, 64, 8, 0, 64) = .{};
+    try server.init(&reader, .{
+        .role = .server,
+        .options = .{
+            .backpressure = .{
+                .high_water_bytes = 8,
+                .high_water_frames = 1,
+            },
+        },
+    });
+
+    const incoming = try server.ws.read_frame();
+    try std.testing.expectError(error.InvalidLength, server.ws.enqueue_frame(incoming));
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+
+    // The synchronous path may reuse the frame buffer because it drains before
+    // returning.
+    try server.ws.write_frame(incoming);
+
+    var index: usize = 0;
+    const echoed = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqualSlices(u8, "echo", echoed.payload);
 }
 
 test "Connection: application controls stop at the data capacity" {

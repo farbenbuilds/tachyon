@@ -67,7 +67,7 @@ Category folders use the `<area>-test/` naming pattern, and test files use
 | `fragment-test` | Fragment accumulator, collector reads, and collector policy. |
 | `connection-test` | Connection core, control replies, close handling, limits, reads, writes, and watermark batching. |
 | `split-test` | Split core, reads, outbound-pressure independence, and `FragmentCollectorRead`. |
-| `native-stream-test` | `std.Io.net.Stream` transport binding, native `WebSocket`, native `Split`, and buffer-alias rejection. |
+| `native-stream-test` | `std.Io.net.Stream` transport binding, native `WebSocket`, native `Split`, watermark delegation, and buffer-alias rejection. |
 | `handshake-test` | Request, head, response, and client handshake behavior. |
 | `upgrade-test` | Server upgrade call order, including validation and async behavior. |
 

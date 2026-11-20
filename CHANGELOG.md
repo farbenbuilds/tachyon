@@ -105,15 +105,17 @@ This project follows semantic versioning.
 - `src/backpressure.zig` with an opt-in byte/frame watermark policy over
   zslay's bounded transmit ring. `ConnectionOptions.backpressure` configures
   high and low marks, `enqueue_frame` batches without draining, data admission
-  returns `WouldBlock` when a non-empty queue cannot fit the next frame, and
-  automatic control replies use one reserved transmit node while application
-  controls other than close stop at the data capacity. The policy resumes at
-  both low marks, accounts payload bytes and completed frames at the exact
-  zslay queue/advance points, and keeps `WouldBlock` non-latching. Outbound
-  pressure never gates the read half, so peer close and ping frames stay
-  deliverable. `flush` remains the `std.Io` wait point, so the policy adds no
-  spin loop, allocation, or event loop. Exported from `src/root.zig` with
-  focused policy, connection, and split tests.
+  returns `WouldBlock` in the paused phase or when a non-empty queue cannot fit
+  the next frame, and automatic control replies use one reserved transmit node
+  while application controls other than close stop at the data capacity. Deferred
+  enqueue rejects payloads that alias read-lifetime buffers; the synchronous
+  write path keeps the frame-buffer echo shortcut. The policy resumes at both low
+  marks, accounts payload bytes and completed frames at the exact zslay
+  queue/advance points, and does not latch `WouldBlock`. Outbound pressure never
+  gates the read half, so peer close and ping frames stay deliverable. `flush`
+  remains the `std.Io` wait point, so the policy adds no spin loop, allocation,
+  or event loop. Exported from `src/root.zig` with focused policy, connection,
+  split, and native-stream tests.
 - `src/native_stream.zig` with the native `std.Io.net.Stream` transport edge.
   `Transport` builds the `std.Io.Reader` and `std.Io.Writer` interfaces with
   `stream.reader(io, read_buffer)` and `stream.writer(io, write_buffer)`, and
