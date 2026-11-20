@@ -20,6 +20,8 @@ tests/
 │   └── module_test.zig                   # Dependency boundary and public re-exports.
 ├── error-test/
 │   └── error_test.zig                    # Error taxonomy, mappings, and close-code policy.
+├── backpressure-test/
+│   └── backpressure_test.zig             # Watermarks, admission, producer pause/resume, close, reset.
 ├── frame-test/
 │   └── frame_test.zig                    # Frame facade, close codes, masking, and write paths.
 ├── utf8-test/
@@ -34,10 +36,12 @@ tests/
 │   ├── connection_close_test.zig         # Close validation, echo, and gating.
 │   ├── connection_limits_test.zig        # Message-size limits and bounds.
 │   ├── connection_read_test.zig          # Raw read path and failure latches.
-│   └── connection_write_test.zig         # Copied and vectored write paths.
+│   ├── connection_write_test.zig         # Copied and vectored write paths.
+│   └── connection_backpressure_test.zig  # Watermark batching, control reserve, and close paths.
 ├── split-test/
 │   ├── split_core_test.zig               # Split construction and frame exchange.
 │   ├── split_read_test.zig               # Read-half obligations and gating.
+│   ├── split_backpressure_test.zig       # Backpressure-independent reads and collector behavior.
 │   └── split_collector_test.zig          # FragmentCollectorRead over a split half.
 ├── native-stream-test/
 │   └── native_stream_test.zig            # std.Io.net.Stream transport, WebSocket, and Split.
@@ -57,11 +61,12 @@ Category folders use the `<area>-test/` naming pattern, and test files use
 | --- | --- |
 | `module-test` | Dependency boundary and public module re-exports. |
 | `error-test` | Error taxonomy, mappings, close-code policy, and classification helpers. |
+| `backpressure-test` | Watermark validation, data admission, control bypass, close draining, overflow, and reset. |
 | `frame-test` | Frame facade, close codes, masking, and write paths. |
 | `utf8-test` | Incremental UTF-8 validation and reader adaptation. |
 | `fragment-test` | Fragment accumulator, collector reads, and collector policy. |
-| `connection-test` | Connection core, control replies, close handling, limits, reads, and writes. |
-| `split-test` | Split core, reads, and `FragmentCollectorRead`. |
+| `connection-test` | Connection core, control replies, close handling, limits, reads, writes, and watermark batching. |
+| `split-test` | Split core, reads, outbound-pressure independence, and `FragmentCollectorRead`. |
 | `native-stream-test` | `std.Io.net.Stream` transport binding, native `WebSocket`, native `Split`, and buffer-alias rejection. |
 | `handshake-test` | Request, head, response, and client handshake behavior. |
 | `upgrade-test` | Server upgrade call order, including validation and async behavior. |

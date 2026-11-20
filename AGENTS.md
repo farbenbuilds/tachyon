@@ -9,8 +9,10 @@ writes, automatic close and pong handling, automatic mask application, maximum
 message limits, vectored writes, fragmentation collection, HTTP server upgrade,
 client handshake, split read/write halves, and the native `std.Io.net.Stream`
 adapter. The 0.10.0 surface is the parity baseline, not the ceiling:
-backpressure, streaming messages, permessage-deflate (RFC 7692), and pub/sub are
-planned post-parity extensions documented in `CODEBASE.md`. Incremental UTF-8
+streaming messages, permessage-deflate (RFC 7692), and pub/sub are planned
+post-parity extensions documented in `CODEBASE.md`. Backpressure is now
+implemented in `src/backpressure.zig` as an opt-in byte/frame watermark policy
+over zslay's bounded transmit ring. Incremental UTF-8
 validation is implemented in `src/utf8.zig`: the fragment collector validates
 assembled messages across fragments and the raw connection read path validates
 clear FIN text frames.
@@ -95,6 +97,18 @@ documentation foundation:
   continuations and split UTF-8 code points, and rejects a `message_buffer`
   overlapping the read `frame_buffer` with `InvalidLength`. All storage is
   caller-owned and zero allocation.
+- `src/backpressure.zig` implements the opt-in flow-control policy over zslay's
+  bounded transmit ring. `Limits` carries byte and frame high/low watermarks;
+  `Flow` tracks queued payload bytes and completed frames, pauses data admission
+  at a high mark, resumes at both low marks, and lets automatic control replies
+  through while paused. Application controls other than close stop at the data
+  capacity so one node stays reserved. `ConnectionOptions.backpressure`
+  configures it per connection; `enqueue_frame` batches without draining,
+  `write_frame` remains the drain-and-write path, and `flush` is the `std.Io`
+  wait point. The policy stores no frame, never spins, and returns `WouldBlock`
+  before mask-key or zslay queue side effects. The high frame mark must fit
+  `tx_nodes` after reserving one node for automatic control replies. Read pacing
+  stays with the caller because the raw connection has no inbound frame queue.
 - `src/native_stream.zig` implements the `std.Io.net.Stream` transport edge.
   `Transport` builds `std.Io.Reader` and `std.Io.Writer` interfaces with
   `stream.reader(io, read_buffer)` and `stream.writer(io, write_buffer)`, then
@@ -102,9 +116,10 @@ documentation foundation:
   `connection.WebSocket` and `split.Split`. Transport buffers must be non-empty,
   mutually disjoint, and disjoint from connection or split storage; a bound
   transport must keep a stable address because the connection stores pointers to
-  its embedded interfaces. Reads and writes suspend through the caller's
-  `std.Io`. The module adds no allocation, event loop, task, or implicit socket
-  close; the original `std.Io.net.Stream` keeps socket lifetime and shutdown.
+  its embedded interfaces. Reads and writes block or suspend through the
+  caller's `std.Io`, depending on the implementation. The module adds no
+  allocation, event loop, task, or implicit socket close; the original
+  `std.Io.net.Stream` keeps socket lifetime and shutdown.
 - `src/handshake.zig` implements the RFC 6455 HTTP handshake boundary:
   canonical 16-byte key generation through `std.Io.randomSecure`, base64 key
   encoding and validation, `std.Io.Reader`/`Writer` request and response heads,
@@ -258,8 +273,8 @@ Target source layout, roughly in dependency order:
 | `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` alias, `CloseCode` alias and conversions, `unmask`/`unmask_at`, header-length bridge, and write paths. |
 | `src/utf8.zig` | Incremental zero-allocation UTF-8 validation for text messages: `std.unicode` complete ranges, split code-point `State`, and a `std.Io.Reader` adapter. |
-| `src/backpressure.zig` | Planned extension: byte/frame watermarks and admission policy over zslay's bounded queue. |
-| `src/connection.zig` | Implemented: role-aware `WebSocket` policy over `zslay.Conn`, caller-owned storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, and vectored or copied writes. |
+| `src/backpressure.zig` | Implemented: byte/frame watermarks, data admission, control headroom, and close draining over zslay's bounded queue. |
+| `src/connection.zig` | Implemented: role-aware `WebSocket` policy over `zslay.Conn`, caller-owned storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, vectored or copied writes, and opt-in backpressure. |
 | `src/fragment.zig` | Implemented: `Fragments` accumulator and read-side `FragmentCollector` over `zslay.Conn`, caller-owned frame and message buffers, streaming UTF-8, and control-frame pass-through. |
 | `src/stream.zig` | Planned extension: chunked message reader/writer for large messages. |
 | `src/split.zig` | Implemented: `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned read and write storage, sink-forwarded automatic replies, and `FragmentCollectorRead`. |
@@ -270,7 +285,7 @@ Target source layout, roughly in dependency order:
 | `src/upgrade.zig` | Implemented: RFC 6455 server upgrade call order over the validated `handshake` request and response primitives, including the accept-token derivation, split construction from caller storage before the 101 write and flush, the forced server role, and `upgrade`, `incoming`, and `upgrade_async`. |
 | `tests/main.zig` | Aggregates the category test files for the Debug and ReleaseSafe test steps. |
 | `tests/support.zig` | Shared test fixtures and protocol helpers. |
-| `tests/<category>-test/*.zig` | Unit tests grouped by area: module, error, frame, UTF-8, fragment, connection, split, native stream, handshake, and upgrade. |
+| `tests/<category>-test/*.zig` | Unit tests grouped by area: module, error, backpressure, frame, UTF-8, fragment, connection, split, native stream, handshake, and upgrade. |
 | `tests/<integration>-test/` | Planned Autobahn, fuzz, and loopback integration suites; no adapter exists yet. |
 
 The handshake/upgrade pair deliberately forms a small re-export cycle:

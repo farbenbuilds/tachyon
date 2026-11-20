@@ -7,6 +7,7 @@
 test {
     _ = @import("module-test/module_test.zig");
     _ = @import("error-test/error_test.zig");
+    _ = @import("backpressure-test/backpressure_test.zig");
     _ = @import("frame-test/frame_test.zig");
     _ = @import("utf8-test/utf8_test.zig");
     _ = @import("fragment-test/fragments_test.zig");
@@ -18,8 +19,10 @@ test {
     _ = @import("connection-test/connection_limits_test.zig");
     _ = @import("connection-test/connection_read_test.zig");
     _ = @import("connection-test/connection_write_test.zig");
+    _ = @import("connection-test/connection_backpressure_test.zig");
     _ = @import("split-test/split_core_test.zig");
     _ = @import("split-test/split_read_test.zig");
+    _ = @import("split-test/split_backpressure_test.zig");
     _ = @import("split-test/split_collector_test.zig");
     _ = @import("native-stream-test/native_stream_test.zig");
     _ = @import("handshake-test/handshake_request_test.zig");

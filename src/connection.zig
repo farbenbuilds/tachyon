@@ -13,13 +13,16 @@
 //!
 //! zslay owns the header codec, masking direction, fragment ordering, frame and
 //! message limits, close payload validation, and the bounded transmit queue.
-//! Nothing here allocates, opens a socket, or spawns a task.
+//! The optional `Options.backpressure` policy adds byte/frame watermarks above
+//! that queue; `enqueue_frame` batches, `write_frame` drains, and `flush` is the
+//! `std.Io` wait point. Nothing here allocates, opens a socket, or spawns a task.
 
 const std = @import("std");
 const zslay = @import("zslay");
 const errors = @import("error.zig");
 const frame = @import("frame.zig");
 const utf8 = @import("utf8.zig");
+const backpressure = @import("backpressure.zig");
 
 /// Local endpoint role, re-exported from zslay.
 ///
@@ -62,6 +65,10 @@ pub const Options = struct {
     /// Exclusive bound, clamped to `zslay.MaxPayloadLen` by init and the
     /// setter.
     max_message_size: usize = default_max_message_size,
+    /// Optional byte and frame watermarks. Null keeps the fastwebsockets
+    /// synchronous write behavior and never gates admission on a high-water
+    /// mark. The high frame mark must leave headroom for automatic controls.
+    backpressure: ?backpressure.Limits = null,
 };
 
 /// Seeded ChaCha8 source for client-to-server mask keys.
@@ -146,17 +153,28 @@ pub const WebSocket = struct {
     writer: *std.Io.Writer,
 
     /// Combined zslay receive and transmit state.
+    ///
+    /// Treat this as read-only when `flow` is configured: external queue or
+    /// drain mutations bypass the watermark accounting.
     conn: zslay.Conn,
 
     frame_buffer: []u8,
     write_buffer: []u8,
     close_buffer: []u8,
     mask_scratch: []u8,
+    /// Caller transmit-ring capacity, captured for the control reserve.
+    tx_capacity: usize,
 
     /// Null only for a server, which never masks outbound frames.
     mask_keys: ?MaskKeySource,
 
     options: Options,
+
+    /// Optional watermarks over zslay's bounded transmit queue.
+    ///
+    /// The connection owns every policy transition when this is non-null;
+    /// callers must not reset or enqueue through this value directly.
+    flow: ?backpressure.Flow = null,
 
     /// Set after a close frame is successfully queued, or by a validated peer
     /// close whose reply was suppressed by configuration. Terminal for
@@ -198,6 +216,22 @@ pub const WebSocket = struct {
         var options = config.options;
         options.max_message_size = max_size;
 
+        var flow: ?backpressure.Flow = null;
+        if (options.backpressure) |limits| {
+            // A policy without a ring has nothing to observe. One node is
+            // always reserved for automatic control replies, independent of
+            // the current auto flags, so a later setter cannot invalidate the
+            // reserve.
+            if (storage.tx_nodes.len < 2) return error.InvalidLength;
+            const data_capacity = storage.tx_nodes.len - 1;
+            const configured = backpressure.Flow.init(limits) catch return error.InvalidLength;
+            if (configured.state.limits.high_water_frames > data_capacity) {
+                return error.InvalidLength;
+            }
+            options.backpressure = configured.state.limits;
+            flow = configured;
+        }
+
         const limit = derived_limit(max_size);
         const conn = zslay.Conn.init(storage.tx_nodes, .{
             .role = config.role,
@@ -213,8 +247,10 @@ pub const WebSocket = struct {
             .write_buffer = storage.write_buffer,
             .close_buffer = storage.close_buffer,
             .mask_scratch = storage.mask_scratch,
+            .tx_capacity = storage.tx_nodes.len,
             .mask_keys = config.mask_keys,
             .options = options,
+            .flow = flow,
         };
     }
 
@@ -248,7 +284,9 @@ pub const WebSocket = struct {
                 self.send_obligation(reply_capable, was_closed, outgoing) catch |err| {
                     // A prepare or queue failure emits nothing and is a read
                     // failure, matching a failure inside the old read loop.
-                    if (err != error.ConnectionClosed and self.write_failure == null) self.read_failure = err;
+                    if (err != error.ConnectionClosed and self.write_failure == null) {
+                        self.read_failure = err;
+                    }
                     return err;
                 };
             }
@@ -301,17 +339,69 @@ pub const WebSocket = struct {
     ///
     /// The payload must be clear (`masking_key == null`); the connection owns
     /// mask application and masks chunks at write time so close validation
-    /// sees clear bytes. The payload must remain valid until the call returns;
-    /// the call drains the zslay queue into the `std.Io.Writer`. It does not
-    /// call `writer.flush()`; call `flush()` for buffered transports. Outbound
-    /// text is not UTF-8 validated, matching fastwebsockets and zslay.
+    /// sees clear bytes. On success the payload must remain valid until the
+    /// call returns; if the drain fails after a node is queued, the node keeps
+    /// borrowing it until `reset_tx` or transport discard. The call drains the
+    /// zslay queue into the `std.Io.Writer` but does not call `writer.flush()`;
+    /// call `flush()` for buffered transports. Outbound text is not UTF-8
+    /// validated, matching fastwebsockets and zslay.
+    ///
+    /// When watermarks are configured, a data frame is refused with
+    /// `error.WouldBlock` while the policy is backpressured or when a non-empty
+    /// queue cannot fit the frame without crossing a high mark. Application
+    /// controls other than close stop at the data capacity; a close may use the
+    /// reserved node because it suppresses later automatic replies. Automatic
+    /// pong and close replies use the reserved node.
     pub fn write_frame(self: *WebSocket, outgoing: Frame) Error!void {
+        try self.enqueue_frame(outgoing);
+
+        self.pump_tx() catch |err| {
+            self.write_failure = err;
+            return err;
+        };
+    }
+
+    /// Validates and queues one outbound frame without draining it.
+    ///
+    /// This is the batching path for the watermark policy. A caller can enqueue
+    /// frames until `error.WouldBlock`, then call `flush()` to drain zslay's
+    /// ring and the caller's writer. The payload remains borrowed until a
+    /// later flush advances it, or until `reset_tx` if the transport is
+    /// discarded after a failure. Data frames are admitted while the policy is
+    /// writable; application controls may use the data capacity, and automatic
+    /// replies use the reserved node.
+    pub fn enqueue_frame(self: *WebSocket, outgoing: Frame) Error!void {
         if (self.write_failure) |failure| return failure;
         if (outgoing.masking_key != null) return error.PayloadMasked;
         if (outgoing.opcode != .close and self.closed) return error.ConnectionClosed;
         if (self.payload_overlaps_storage(outgoing.payload)) return error.InvalidLength;
 
-        return self.write_internal(outgoing);
+        return self.queue_frame(outgoing, false);
+    }
+
+    /// Sends one automatic control obligation through the reserved ring slot.
+    ///
+    /// This is the sink path used by split reads. It bypasses the application
+    /// control cap so a pong or close reply can use the node that
+    /// `Options.backpressure` reserves. It still respects zslay's hard ring
+    /// capacity and close payload validation.
+    pub fn send_control(self: *WebSocket, outgoing: Frame) Error!void {
+        if (self.write_failure) |failure| return failure;
+        if (!frame.is_control(outgoing.opcode)) return error.InvalidOpcode;
+        if (outgoing.masking_key != null) return error.PayloadMasked;
+
+        try self.queue_frame(outgoing, true);
+
+        self.pump_tx() catch |err| {
+            self.write_failure = err;
+            return err;
+        };
+
+        self.writer.flush() catch |err| {
+            const mapped = errors.from_writer(err);
+            self.write_failure = mapped;
+            return mapped;
+        };
     }
 
     /// Drains any queued zslay nodes and flushes the caller's writer.
@@ -345,6 +435,29 @@ pub const WebSocket = struct {
     }
 
     pub fn tx_pending(self: *const WebSocket) usize {
+        return self.conn.tx_pending();
+    }
+
+    /// True while the configured watermark policy is backpressured.
+    ///
+    /// This reports only the latched phase. A data write can also return
+    /// `error.WouldBlock` when a non-empty queue cannot fit the frame without
+    /// crossing a high mark; use that error, not this accessor, as the
+    /// admission result, and `flush` before retrying.
+    pub fn is_backpressured(self: *const WebSocket) bool {
+        if (self.flow) |flow| return flow.is_backpressured();
+        return false;
+    }
+
+    /// Payload bytes currently charged to the watermark policy.
+    pub fn queued_bytes(self: *const WebSocket) usize {
+        if (self.flow) |flow| return flow.state.queued_bytes;
+        return 0;
+    }
+
+    /// Frames currently charged to the watermark policy.
+    pub fn queued_frames(self: *const WebSocket) usize {
+        if (self.flow) |flow| return flow.state.queued_frames;
         return self.conn.tx_pending();
     }
 
@@ -458,6 +571,7 @@ pub const WebSocket = struct {
         self.conn.reset_tx();
         self.write_failure = null;
         self.closed = false;
+        if (self.flow) |*flow| flow.reset();
     }
 
     /// Applies automatic pong, close, and text policy for one wire frame.
@@ -649,14 +763,7 @@ pub const WebSocket = struct {
     /// failure.
     fn send_obligation(self: *WebSocket, reply_capable: bool, was_closed: bool, outgoing: Frame) Error!void {
         if (!reply_capable or was_closed) return;
-        if (self.write_failure) |failure| return failure;
-        try self.write_internal(outgoing);
-
-        self.writer.flush() catch |err| {
-            const mapped = errors.from_writer(err);
-            self.write_failure = mapped;
-            return mapped;
-        };
+        return self.send_control(outgoing);
     }
 
     /// Reports a non-close frame read after a close as `ConnectionClosed`.
@@ -692,15 +799,40 @@ pub const WebSocket = struct {
         return false;
     }
 
-    /// Prepares, queues, and drains a frame without the public payload checks.
+    /// Prepares and queues a frame without the public payload checks.
     ///
     /// Obligations borrow known-disjoint internal storage, so only the public
-    /// `write_frame` needs the overlap and pre-mask checks.
-    fn write_internal(self: *WebSocket, outgoing: Frame) Error!void {
+    /// entry points need the overlap and pre-mask checks. Admission happens
+    /// before mask-key consumption and header preparation so a rejected frame
+    /// has no side effects. The flow counters are restored if preparation or
+    /// zslay's queue mutation fails, keeping the policy and ring in lockstep.
+    /// `allow_control_reserve` is true only for automatic pong and close
+    /// replies; application control frames stay at or below the data capacity.
+    fn queue_frame(self: *WebSocket, outgoing: Frame, allow_control_reserve: bool) Error!void {
         self.apply_message_limit();
 
+        if (self.flow != null and frame.is_control(outgoing.opcode) and
+            outgoing.opcode != .close and !allow_control_reserve)
+        {
+            const data_capacity = self.tx_capacity - 1;
+            if (self.conn.tx_pending() >= data_capacity) return error.WouldBlock;
+        }
+
+        const saved_flow: ?backpressure.Flow = if (self.flow) |flow| flow else null;
+        if (self.flow) |*flow| {
+            const charge = backpressure.Charge.frame(outgoing.payload.len);
+            if (frame.is_control(outgoing.opcode)) {
+                _ = flow.enqueue_control(charge) catch |err| return flow_error(err);
+            } else {
+                _ = flow.enqueue_data(charge) catch |err| return flow_error(err);
+            }
+        }
+
         const masked = self.conn.role == .client and self.options.auto_apply_mask;
-        const key: ?MaskingKey = if (masked) try self.next_mask_key() else null;
+        const key: ?MaskingKey = if (masked) self.next_mask_key() catch |err| {
+            self.restore_flow(saved_flow);
+            return err;
+        } else null;
 
         const node = self.conn.prepare_frame(
             outgoing.fin,
@@ -708,16 +840,26 @@ pub const WebSocket = struct {
             outgoing.payload,
             masked,
             key,
-        ) catch |err| return errors.from_zslay(err);
-
-        self.conn.queue_frame(node) catch |err| return errors.from_zslay_queue(err);
-
-        if (outgoing.opcode == .close) self.closed = true;
-
-        self.pump_tx() catch |err| {
-            self.write_failure = err;
-            return err;
+        ) catch |err| {
+            self.restore_flow(saved_flow);
+            return errors.from_zslay(err);
         };
+
+        self.conn.queue_frame(node) catch |err| {
+            self.restore_flow(saved_flow);
+            return errors.from_zslay_queue(err);
+        };
+
+        if (outgoing.opcode == .close) {
+            self.closed = true;
+            if (self.flow) |*flow| _ = flow.close() catch |err| return flow_error(err);
+        }
+    }
+
+    fn restore_flow(self: *WebSocket, saved: ?backpressure.Flow) void {
+        if (self.flow) |*flow| {
+            if (saved) |value| flow.* = value;
+        }
     }
 
     /// Returns the next client mask key.
@@ -727,9 +869,22 @@ pub const WebSocket = struct {
     }
 
     /// Drains the zslay transmit queue until it is empty.
+    ///
+    /// Frame completion is observed through `tx_pending` because zslay discards
+    /// fully sent nodes inside `advance_tx`. Payload bytes are accounted at the
+    /// point each chunk advances, so a partial transport write leaves both the
+    /// queue and the policy counters intact.
     fn pump_tx(self: *WebSocket) Error!void {
         while (true) {
-            const action = self.conn.advance_tx() orelse return;
+            const before = self.conn.tx_pending();
+            const action = self.conn.advance_tx() orelse {
+                try self.flow_flushed(.{ .frames = before });
+                if (self.flow) |flow| std.debug.assert(flow.state.is_idle());
+                return;
+            };
+            const after = self.conn.tx_pending();
+            try self.flow_flushed(.{ .frames = before - after });
+
             switch (action) {
                 .write_header => try self.emit_header_step(),
                 .write_payload => try self.emit_payload_step(),
@@ -737,6 +892,28 @@ pub const WebSocket = struct {
                 else => unreachable,
             }
         }
+    }
+
+    fn flow_flushed(self: *WebSocket, charge: backpressure.Charge) Error!void {
+        if (charge.bytes == 0 and charge.frames == 0) return;
+        if (self.flow) |*flow| {
+            _ = flow.flushed(charge) catch return error.SendError;
+        }
+    }
+
+    fn advance_payload(self: *WebSocket, count: usize) Error!void {
+        if (count == 0) return;
+        self.conn.advance_tx_payload(count) catch |err| return errors.from_zslay(err);
+        try self.flow_flushed(.{ .bytes = count });
+    }
+
+    fn flow_error(err: backpressure.TransitionError) Error {
+        return switch (err) {
+            error.WouldBlock => error.WouldBlock,
+            error.StreamClosed => error.ConnectionClosed,
+            // Local policy bookkeeping failures are not peer protocol errors.
+            error.ByteCountOverflow, error.FlushExceedsQueue => error.SendError,
+        };
     }
 
     /// Emits the remaining header, plus one masked or unmasked payload chunk
@@ -767,9 +944,7 @@ pub const WebSocket = struct {
             self.writer.writeVecAll(&iovecs) catch |err| return errors.from_writer(err);
 
             self.conn.advance_tx_header(header.len) catch |err| return errors.from_zslay(err);
-            if (chunk.len != 0) {
-                self.conn.advance_tx_payload(chunk.len) catch |err| return errors.from_zslay(err);
-            }
+            try self.advance_payload(chunk.len);
             return;
         }
 
@@ -800,9 +975,7 @@ pub const WebSocket = struct {
             return errors.from_writer(err);
 
         self.conn.advance_tx_header(header.len) catch |err| return errors.from_zslay(err);
-        if (chunk_len != 0) {
-            self.conn.advance_tx_payload(chunk_len) catch |err| return errors.from_zslay(err);
-        }
+        try self.advance_payload(chunk_len);
     }
 
     /// Emits one remaining payload chunk, masking through scratch or the write
@@ -815,7 +988,7 @@ pub const WebSocket = struct {
         // An unmasked large payload goes straight to the writer.
         if (key == null and self.options.writev and payload.len > self.options.writev_threshold) {
             self.writer.writeAll(payload) catch |err| return errors.from_writer(err);
-            self.conn.advance_tx_payload(payload.len) catch |err| return errors.from_zslay(err);
+            try self.advance_payload(payload.len);
             return;
         }
 
@@ -826,7 +999,7 @@ pub const WebSocket = struct {
                 @memcpy(self.mask_scratch[0..chunk_len], payload[0..chunk_len]);
                 zslay.mask(self.mask_scratch[0..chunk_len], masking_key, @intCast(offset));
                 self.writer.writeAll(self.mask_scratch[0..chunk_len]) catch |err| return errors.from_writer(err);
-                self.conn.advance_tx_payload(chunk_len) catch |err| return errors.from_zslay(err);
+                try self.advance_payload(chunk_len);
                 return;
             }
 
@@ -835,7 +1008,7 @@ pub const WebSocket = struct {
             @memcpy(self.write_buffer[0..chunk_len], payload[0..chunk_len]);
             zslay.mask(self.write_buffer[0..chunk_len], masking_key, @intCast(offset));
             self.writer.writeAll(self.write_buffer[0..chunk_len]) catch |err| return errors.from_writer(err);
-            self.conn.advance_tx_payload(chunk_len) catch |err| return errors.from_zslay(err);
+            try self.advance_payload(chunk_len);
             return;
         }
 
@@ -843,7 +1016,7 @@ pub const WebSocket = struct {
         const chunk_len = @min(payload.len, self.write_buffer.len);
         @memcpy(self.write_buffer[0..chunk_len], payload[0..chunk_len]);
         self.writer.writeAll(self.write_buffer[0..chunk_len]) catch |err| return errors.from_writer(err);
-        self.conn.advance_tx_payload(chunk_len) catch |err| return errors.from_zslay(err);
+        try self.advance_payload(chunk_len);
     }
 };
 

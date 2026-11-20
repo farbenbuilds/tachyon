@@ -102,18 +102,30 @@ This project follows semantic versioning.
   originating read error only after a successful send without changing unsplit
   behavior. All storage is caller-owned and zero allocation; exported from
   `src/root.zig` with Debug and ReleaseSafe tests.
+- `src/backpressure.zig` with an opt-in byte/frame watermark policy over
+  zslay's bounded transmit ring. `ConnectionOptions.backpressure` configures
+  high and low marks, `enqueue_frame` batches without draining, data admission
+  returns `WouldBlock` when a non-empty queue cannot fit the next frame, and
+  automatic control replies use one reserved transmit node while application
+  controls other than close stop at the data capacity. The policy resumes at
+  both low marks, accounts payload bytes and completed frames at the exact
+  zslay queue/advance points, and keeps `WouldBlock` non-latching. Outbound
+  pressure never gates the read half, so peer close and ping frames stay
+  deliverable. `flush` remains the `std.Io` wait point, so the policy adds no
+  spin loop, allocation, or event loop. Exported from `src/root.zig` with
+  focused policy, connection, and split tests.
 - `src/native_stream.zig` with the native `std.Io.net.Stream` transport edge.
   `Transport` builds the `std.Io.Reader` and `std.Io.Writer` interfaces with
   `stream.reader(io, read_buffer)` and `stream.writer(io, write_buffer)`, and
   the native `WebSocket` and `Split` wrappers delegate to
   `connection.WebSocket` and `split.Split` with no additional protocol state.
   Transport buffers are validated as non-empty, mutually disjoint, and disjoint
-  from connection or split storage. Reads and writes suspend through the
-  caller's `std.Io`; the module allocates nothing, starts no task, creates no
-  event loop, and never closes the stream. The original `std.Io.net.Stream`
-  keeps socket lifetime and shutdown. Detailed reader or writer failures are
-  available behind the mapped `IoError`. Exported from `src/root.zig` with
-  Debug and ReleaseSafe loopback tests.
+  from connection or split storage. Reads and writes block or suspend through
+  the caller's `std.Io`, depending on the implementation; the module allocates
+  nothing, starts no task, creates no event loop, and never closes the stream.
+  The original `std.Io.net.Stream` keeps socket lifetime and shutdown. Detailed
+  reader or writer failures are available behind the mapped `IoError`. Exported
+  from `src/root.zig` with Debug and ReleaseSafe loopback tests.
 - `.github/workflows/test.yml` running `zig build test --summary all` and
   `zig build check` for pull requests into `main` and pushes to `main` that
   change Zig or Zon files.

@@ -11,6 +11,8 @@
 //! collector's `message_buffer` until the next read. Automatic pong and close
 //! replies are handed to the write half through `send_obligation`, which writes
 //! and flushes before the read call returns, matching the unsplit connection.
+//! The write half may carry the optional watermark policy; reads are paced by
+//! the caller, so outbound pressure never blocks a peer close from arriving.
 //! A validated (clear) close under `auto_close` is terminal: the read half and
 //! any shared split pair gate later non-close reads and writes. With
 //! `auto_close` off, or for a masked close delivered unvalidated when
@@ -141,6 +143,9 @@ pub const WebSocketRead = struct {
         var options = config.options;
         options.auto_close = false;
         options.auto_pong = false;
+        // The read half has no transmit ring. Backpressure belongs to the
+        // write half and never gates this read path.
+        options.backpressure = null;
 
         var inner = try connection.WebSocket.init(reader, writer, .{
             .frame_buffer = storage.frame_buffer,
@@ -162,17 +167,21 @@ pub const WebSocketRead = struct {
     /// Reads one raw frame, forwarding automatic replies to `sink`.
     ///
     /// `sink` must expose `send_obligation(Frame) Error!void`, `is_closed() bool`,
-    /// and `failure() ?Error`. The sink's write failure latch is checked before
-    /// any read. A reply is sent even when `read_event` reports a close or
-    /// protocol error, so a 1002 reply is not lost; a send failure wins over the
-    /// original read error. A send failure that emits no bytes and leaves the
-    /// sink's latch unset becomes a read failure, while a transport failure
-    /// keeps the sink's write latch authoritative. A validated (clear) close
-    /// returned under `auto_close` marks the read half closed even with an
-    /// external sink, so later split calls gate. Non-close frames are refused
-    /// once either half is closed, including a close whose reply was suppressed
-    /// on a client that cannot mask.
+    /// and `failure() ?Error`. A sink obligation must complete or return a
+    /// terminal error; a `WouldBlock` result after the frame was consumed is
+    /// converted to `SendError` and latched because the reply cannot be
+    /// recovered by retrying. The read half's latch is checked first, then the
+    /// sink's write failure latch. A reply is sent even when `read_event`
+    /// reports a close or protocol error, so a 1002 reply is not lost; a send
+    /// failure wins over the original read error. A send failure that emits no
+    /// bytes and leaves the sink's latch unset becomes a read failure, while a
+    /// transport failure keeps the sink's write latch authoritative. A
+    /// validated (clear) close returned under `auto_close` marks the read half
+    /// closed even with an external sink, so later split calls gate. Non-close
+    /// frames are refused once either half is closed, including a close whose
+    /// reply was suppressed on a client that cannot mask.
     pub fn read_frame(self: *WebSocketRead, sink: anytype) Error!Frame {
+        if (self.inner.read_failure) |failure| return failure;
         if (sink.failure()) |failure| return failure;
 
         // Each iteration consumes one wire frame or returns; a peer that only
@@ -186,8 +195,15 @@ pub const WebSocketRead = struct {
             // A prepare or queue failure emits nothing and becomes a read
             // failure; a transport failure is owned by the sink's write latch.
             if (reply) |outgoing| {
-                sink.send_obligation(outgoing) catch |err| {
-                    if (err != error.ConnectionClosed and sink.failure() == null) self.inner.read_failure = err;
+                sink.send_obligation(outgoing) catch |raw_err| {
+                    // The frame has already been consumed, so a retryable sink
+                    // result cannot recover the pong or close reply. Treat it
+                    // as a terminal send failure instead of silently dropping
+                    // the obligation.
+                    const err = if (raw_err == error.WouldBlock) error.SendError else raw_err;
+                    if (err != error.ConnectionClosed and sink.failure() == null) {
+                        self.inner.read_failure = err;
+                    }
                     return err;
                 };
                 // A close reply, including a 1002, is terminal even when the
@@ -327,12 +343,26 @@ pub const WebSocketWrite = struct {
 
     /// Queues and drains one outbound frame without flushing.
     ///
-    /// The payload must be clear and caller-owned. It must stay valid until the
-    /// call returns; the zslay queue is fully drained into the writer. A close
-    /// sets the terminal closed flag, and later non-close writes return
-    /// `error.ConnectionClosed`.
+    /// The payload must be clear and caller-owned. On success it must stay
+    /// valid until the call returns; after a partial drain failure the queued
+    /// node keeps borrowing it until `reset_tx` or transport discard. The zslay
+    /// queue is fully drained into the writer. A close sets the terminal closed
+    /// flag, and later non-close writes return `error.ConnectionClosed`.
+    /// `error.WouldBlock` reports either the paused phase or a non-empty queue
+    /// that cannot fit the frame without crossing a high mark.
     pub fn write_frame(self: *WebSocketWrite, outgoing: Frame) Error!void {
         return self.inner.write_frame(outgoing);
+    }
+
+    /// Validates and queues one outbound frame without draining it.
+    ///
+    /// The payload stays borrowed until `flush`, or until `reset_tx` if the
+    /// transport is discarded after a failure. A configured watermark policy
+    /// returns `error.WouldBlock` for a data frame while backpressured or when
+    /// the non-empty queue cannot fit it; application controls other than close
+    /// stop at the data capacity so one node stays free for automatic replies.
+    pub fn enqueue_frame(self: *WebSocketWrite, outgoing: Frame) Error!void {
+        return self.inner.enqueue_frame(outgoing);
     }
 
     /// Drains queued nodes and flushes the caller's writer.
@@ -375,6 +405,24 @@ pub const WebSocketWrite = struct {
         return self.inner.tx_pending();
     }
 
+    /// True while the configured watermark policy is backpressured.
+    ///
+    /// This is the latched phase only; a write can also return `WouldBlock`
+    /// for a non-empty queue that cannot fit the next frame.
+    pub fn is_backpressured(self: *const WebSocketWrite) bool {
+        return self.inner.is_backpressured();
+    }
+
+    /// Payload bytes currently charged to the watermark policy.
+    pub fn queued_bytes(self: *const WebSocketWrite) usize {
+        return self.inner.queued_bytes();
+    }
+
+    /// Frames currently charged to the watermark policy.
+    pub fn queued_frames(self: *const WebSocketWrite) usize {
+        return self.inner.queued_frames();
+    }
+
     /// Local endpoint role.
     pub fn role(self: *const WebSocketWrite) Role {
         return self.inner.role();
@@ -403,10 +451,10 @@ pub const WebSocketWrite = struct {
     ///
     /// The reply borrows read-half storage and must stay valid for the call.
     /// This matches the unsplit connection, which never leaves an obligation in
-    /// a buffered writer.
+    /// a buffered writer. `send_control` may use the node reserved for automatic
+    /// replies; application control frames cannot consume it.
     pub fn send_obligation(self: *WebSocketWrite, outgoing: Frame) Error!void {
-        try self.write_frame(outgoing);
-        try self.flush();
+        return self.inner.send_control(outgoing);
     }
 
     /// Latched transmit failure, cleared only by `reset_tx`.
@@ -436,10 +484,21 @@ pub const Split = struct {
     /// Queues and drains one outbound frame without flushing.
     ///
     /// Non-close frames are refused once either half observed a close; a
-    /// repeated close frame is still allowed.
+    /// repeated close frame is still allowed. Payload lifetime and
+    /// `error.WouldBlock` follow `WebSocketWrite.write_frame`.
     pub fn write_frame(self: *Split, outgoing: Frame) Error!void {
         if (outgoing.opcode != .close and self.is_closed()) return error.ConnectionClosed;
         return self.write.write_frame(outgoing);
+    }
+
+    /// Validates and queues one outbound frame without draining it.
+    ///
+    /// Non-close frames are refused once either half observed a close. The
+    /// payload stays borrowed until `flush`, or until `reset_tx` after a
+    /// transport failure.
+    pub fn enqueue_frame(self: *Split, outgoing: Frame) Error!void {
+        if (outgoing.opcode != .close and self.is_closed()) return error.ConnectionClosed;
+        return self.write.enqueue_frame(outgoing);
     }
 
     /// Drains queued nodes and flushes the caller's writer.
@@ -460,6 +519,24 @@ pub const Split = struct {
     /// True after either half observed a terminal close.
     pub fn is_closed(self: *const Split) bool {
         return self.read.inner.is_closed() or self.write.is_closed();
+    }
+
+    /// True while the write half's watermark policy is backpressured.
+    ///
+    /// This is the latched phase only; a write can also return `WouldBlock`
+    /// for a non-empty queue that cannot fit the next frame.
+    pub fn is_backpressured(self: *const Split) bool {
+        return self.write.is_backpressured();
+    }
+
+    /// Payload bytes currently charged to the write half's policy.
+    pub fn queued_bytes(self: *const Split) usize {
+        return self.write.queued_bytes();
+    }
+
+    /// Frames currently charged to the write half's policy.
+    pub fn queued_frames(self: *const Split) usize {
+        return self.write.queued_frames();
     }
 
     /// Enables or disables vectored writes.
@@ -632,8 +709,12 @@ pub const FragmentCollectorRead = struct {
                 // matching the unsplit collector, not a latched failure. A
                 // sink-owned transport failure stays in the write latch, so
                 // `reset_tx` recovers it and the next read can continue.
+                // A consumed obligation that the sink cannot send is terminal
+                // and already converted to `SendError` by the read half.
                 if (err == error.FrameTooLarge and self.read.max_message_size() == 0) return err;
-                if (err != error.ConnectionClosed and sink.failure() == null) self.failure = err;
+                if (err != error.ConnectionClosed and sink.failure() == null) {
+                    self.failure = err;
+                }
                 return err;
             };
 
