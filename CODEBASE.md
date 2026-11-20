@@ -303,8 +303,8 @@ probe and `validate_request` as the strict gate: GET over HTTP/1.1, both token
 lists, exactly one `Sec-WebSocket-Version: 13`, and exactly one canonical
 `Sec-WebSocket-Key`. `write_response` computes the SHA-1 and base64 accept token
 and emits the 101 response. The RFC 6455 GUID is defined once as `accept_guid`
-and hashed incrementally with the key, so there is no `websocket_magic`
-concatenation buffer or empty-token fallback.
+and hashed incrementally with the key, so there is no fixed concatenation
+buffer or empty-token fallback.
 
 `read_head` stops exactly after the blank line and leaves following bytes
 buffered in the `std.Io.Reader`, so a server may coalesce the 101 response with

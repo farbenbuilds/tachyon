@@ -33,8 +33,8 @@ pub const Error = errors.WebSocketError;
 /// RFC 6455 Section 1.3 GUID used to derive `Sec-WebSocket-Accept`.
 ///
 /// The value is fixed by the protocol. Keeping it in one named constant with a
-/// streaming hash replaces the previous local `websocket_magic` concatenation
-/// buffer; it is never negotiated, overridden, or formatted by callers.
+/// streaming hash avoids a local concatenation buffer; it is never negotiated,
+/// overridden, or formatted by callers.
 pub const accept_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// Decoded client key length required by RFC 6455 Section 4.1.
@@ -129,9 +129,9 @@ pub fn encode_key(key: KeyBytes, out_buffer: *KeyBuffer) []const u8 {
 
 /// Reports whether a key is the canonical base64 encoding of 16 bytes.
 ///
-/// HTTP optional whitespace around the field value is ignored. The caller must
-/// pass the same trimmed slice to `compute_accept_token` if it hashes a key
-/// outside `validate_request` or `write_response`.
+/// HTTP optional whitespace around the field value is ignored.
+/// `compute_accept_token` applies the same trimming, so a validated value and
+/// its accept token cannot disagree about surrounding whitespace.
 pub fn valid_client_key(client_key: []const u8) bool {
     const key_value = trim_ows(client_key);
     if (key_value.len != encoded_key_len) return false;
@@ -168,9 +168,11 @@ pub fn compute_accept_token(client_key: []const u8, out_buffer: *AcceptTokenBuff
 /// after that line, so bytes that follow the header remain buffered in
 /// `reader` for the WebSocket frame path. The scan is chunked, so a header is
 /// bounded by `storage`, not by the transport reader's internal buffer.
-/// `storage` must not overlap the reader's internal buffer.
+/// `storage` must not overlap the reader's internal buffer, and a reader with
+/// no internal buffer returns `IoError`.
 pub fn read_head(reader: *std.Io.Reader, storage: []u8) Error![]const u8 {
     if (storage.len < 4) return error.BufferTooShort;
+    if (reader.buffer.len == 0) return error.IoError;
     if (overlaps(reader.buffer, storage)) return error.BufferTooShort;
 
     var len: usize = 0;
@@ -212,9 +214,9 @@ pub fn read_head(reader: *std.Io.Reader, storage: []u8) Error![]const u8 {
 /// Reports whether a request head carries both RFC 6455 upgrade tokens.
 ///
 /// This is the `is_upgrade_request` probe: it checks `Connection` for
-/// `Upgrade` and `Upgrade` for `websocket`, including comma-separated lists.
-/// It intentionally does not validate the key, version, method, or target;
-/// call `validate_request` before upgrading.
+/// `Upgrade` and `Upgrade` for `websocket`, including comma-separated lists,
+/// and rejects `Connection: close`. It intentionally does not validate the key,
+/// version, method, or target; call `validate_request` before upgrading.
 pub fn is_request(head: []const u8) bool {
     if (!valid_head_bytes(head)) return false;
     const fields = scan_request_headers(head) orelse return false;
@@ -242,13 +244,13 @@ pub fn validate_request(head: []const u8) Error!Request {
     if (!fields.connection_upgrade) return error.InvalidConnectionHeader;
     if (!fields.upgrade_websocket) return error.InvalidUpgradeHeader;
 
-    if (fields.version_count == 0) return error.InvalidSecWebsocketVersion;
-    if (fields.version_count != 1) return error.InvalidSecWebsocketVersion;
-    if (!std.mem.eql(u8, fields.version.?, "13")) return error.InvalidSecWebsocketVersion;
-
     if (fields.key_count == 0) return error.MissingSecWebSocketKey;
     if (fields.key_count != 1) return error.InvalidHttpRequest;
     if (!valid_client_key(fields.key.?)) return error.InvalidHttpRequest;
+
+    if (fields.version_count == 0) return error.InvalidSecWebsocketVersion;
+    if (fields.version_count != 1) return error.InvalidSecWebsocketVersion;
+    if (!std.mem.eql(u8, fields.version.?, "13")) return error.InvalidSecWebsocketVersion;
 
     return .{ .key = fields.key.?, .head = head };
 }
@@ -261,15 +263,19 @@ pub fn read_request(reader: *std.Io.Reader, storage: []u8) Error!Request {
 
 /// Validates an HTTP response against the expected accept token.
 ///
-/// `status_out` always receives the parsed status, including a rejection, the
-/// same convention as `errors.invalid_status_code`. The accept check is
-/// deliberate hardening beyond fastwebsockets 0.10.0, which does not verify it.
+/// For a well-formed status line, `status_out` receives the parsed status,
+/// including a non-101 rejection, following `errors.invalid_status_code`.
+/// A malformed status line returns `InvalidHttpRequest` without writing it.
+/// The accept check is deliberate hardening beyond fastwebsockets 0.10.0, which
+/// does not verify it.
 pub fn validate_response(
     head: []const u8,
     expected_accept: []const u8,
     status_out: *u16,
 ) Error!Response {
     if (!valid_head_bytes(head)) return error.InvalidHttpRequest;
+    if (!valid_response_status_line(head)) return error.InvalidHttpRequest;
+
     const parsed = std.http.Client.Response.Head.parse(head) catch return error.InvalidHttpRequest;
     status_out.* = @as(u16, @backingInt(parsed.status));
 
@@ -415,83 +421,106 @@ const ResponseFields = struct {
     protocol_count: usize = 0,
 };
 
+const HeaderLine = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+const HeaderScanner = struct {
+    lines: std.mem.SplitIterator(u8, .sequence),
+    count: usize = 0,
+    failed: bool = false,
+
+    fn init(head: []const u8) HeaderScanner {
+        var lines = std.mem.splitSequence(u8, head, "\r\n");
+        _ = lines.next();
+        return .{ .lines = lines };
+    }
+
+    fn next(self: *HeaderScanner) ?HeaderLine {
+        const line = self.lines.next() orelse {
+            self.failed = true;
+            return null;
+        };
+        if (line.len == 0) return null;
+        if (line[0] == ' ' or line[0] == '\t') {
+            self.failed = true;
+            return null;
+        }
+
+        self.count += 1;
+        if (self.count > max_header_count) {
+            self.failed = true;
+            return null;
+        }
+
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse {
+            self.failed = true;
+            return null;
+        };
+        const name = line[0..colon];
+        if (!valid_header_name(name)) {
+            self.failed = true;
+            return null;
+        }
+
+        return .{ .name = name, .value = std.mem.trim(u8, line[colon + 1 ..], " \t") };
+    }
+};
+
 fn scan_request_headers(head: []const u8) ?RequestFields {
     var fields = RequestFields{};
-    var lines = std.mem.splitSequence(u8, head, "\r\n");
-    _ = lines.next() orelse return null;
+    var headers = HeaderScanner.init(head);
 
-    var header_count: usize = 0;
-    while (lines.next()) |line| {
-        if (line.len == 0) return fields;
-        if (line[0] == ' ' or line[0] == '\t') return null;
-        header_count += 1;
-        if (header_count > max_header_count) return null;
-
-        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return null;
-        const name = line[0..colon];
-        if (!valid_header_name(name)) return null;
-        const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
-
-        if (std.ascii.eqlIgnoreCase(name, "connection")) {
-            fields.connection_upgrade = fields.connection_upgrade or has_token(value, "upgrade");
-            fields.connection_close = fields.connection_close or has_token(value, "close");
-        } else if (std.ascii.eqlIgnoreCase(name, "upgrade")) {
-            fields.upgrade_websocket = fields.upgrade_websocket or has_token(value, "websocket");
-        } else if (std.ascii.eqlIgnoreCase(name, "sec-websocket-version")) {
+    while (headers.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "connection")) {
+            fields.connection_upgrade = fields.connection_upgrade or has_token(header.value, "upgrade");
+            fields.connection_close = fields.connection_close or has_token(header.value, "close");
+        } else if (std.ascii.eqlIgnoreCase(header.name, "upgrade")) {
+            fields.upgrade_websocket = fields.upgrade_websocket or has_token(header.value, "websocket");
+        } else if (std.ascii.eqlIgnoreCase(header.name, "sec-websocket-version")) {
             fields.version_count += 1;
-            if (fields.version_count == 1) fields.version = value;
-        } else if (std.ascii.eqlIgnoreCase(name, "sec-websocket-key")) {
+            if (fields.version_count == 1) fields.version = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "sec-websocket-key")) {
             fields.key_count += 1;
-            if (fields.key_count == 1) fields.key = value;
-        } else if (std.ascii.eqlIgnoreCase(name, "host")) {
+            if (fields.key_count == 1) fields.key = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "host")) {
             fields.host_count += 1;
-            if (fields.host_count == 1) fields.host = value;
-        } else if (std.ascii.eqlIgnoreCase(name, "content-length") or
-            std.ascii.eqlIgnoreCase(name, "transfer-encoding") or
-            std.ascii.eqlIgnoreCase(name, "expect"))
+            if (fields.host_count == 1) fields.host = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "content-length") or
+            std.ascii.eqlIgnoreCase(header.name, "transfer-encoding") or
+            std.ascii.eqlIgnoreCase(header.name, "expect"))
         {
             fields.has_body_header = true;
         }
     }
-    return null;
+    return if (headers.failed) null else fields;
 }
 
 fn scan_response_headers(head: []const u8) ?ResponseFields {
     var fields = ResponseFields{};
-    var lines = std.mem.splitSequence(u8, head, "\r\n");
-    _ = lines.next() orelse return null;
+    var headers = HeaderScanner.init(head);
 
-    var header_count: usize = 0;
-    while (lines.next()) |line| {
-        if (line.len == 0) return fields;
-        if (line[0] == ' ' or line[0] == '\t') return null;
-        header_count += 1;
-        if (header_count > max_header_count) return null;
-
-        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return null;
-        const name = line[0..colon];
-        if (!valid_header_name(name)) return null;
-        const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
-
-        if (std.ascii.eqlIgnoreCase(name, "connection")) {
-            fields.connection_upgrade = fields.connection_upgrade or has_token(value, "upgrade");
-            fields.connection_close = fields.connection_close or has_token(value, "close");
-        } else if (std.ascii.eqlIgnoreCase(name, "upgrade")) {
-            fields.upgrade_websocket = fields.upgrade_websocket or has_token(value, "websocket");
-        } else if (std.ascii.eqlIgnoreCase(name, "sec-websocket-accept")) {
+    while (headers.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "connection")) {
+            fields.connection_upgrade = fields.connection_upgrade or has_token(header.value, "upgrade");
+            fields.connection_close = fields.connection_close or has_token(header.value, "close");
+        } else if (std.ascii.eqlIgnoreCase(header.name, "upgrade")) {
+            fields.upgrade_websocket = fields.upgrade_websocket or has_token(header.value, "websocket");
+        } else if (std.ascii.eqlIgnoreCase(header.name, "sec-websocket-accept")) {
             fields.accept_count += 1;
-            if (fields.accept_count == 1) fields.accept = value;
-        } else if (std.ascii.eqlIgnoreCase(name, "sec-websocket-protocol")) {
+            if (fields.accept_count == 1) fields.accept = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "sec-websocket-protocol")) {
             fields.protocol_count += 1;
-        } else if (std.ascii.eqlIgnoreCase(name, "sec-websocket-extensions")) {
+        } else if (std.ascii.eqlIgnoreCase(header.name, "sec-websocket-extensions")) {
             fields.extension_count += 1;
-        } else if (std.ascii.eqlIgnoreCase(name, "content-length") or
-            std.ascii.eqlIgnoreCase(name, "transfer-encoding"))
+        } else if (std.ascii.eqlIgnoreCase(header.name, "content-length") or
+            std.ascii.eqlIgnoreCase(header.name, "transfer-encoding"))
         {
             fields.has_body_header = true;
         }
     }
-    return null;
+    return if (headers.failed) null else fields;
 }
 
 fn overlaps(left: []const u8, right: []const u8) bool {
@@ -514,6 +543,18 @@ fn contains_bare_lf(bytes: []const u8, previous: ?u8) bool {
         if (prev != '\r') return true;
     }
     return false;
+}
+
+fn valid_response_status_line(head: []const u8) bool {
+    const line_end = std.mem.indexOf(u8, head, "\r\n") orelse return false;
+    const status_line = head[0..line_end];
+    if (status_line.len < 12) return false;
+    if (!std.mem.eql(u8, status_line[0..9], "HTTP/1.1 ")) return false;
+    if (!std.ascii.isDigit(status_line[9])) return false;
+    if (!std.ascii.isDigit(status_line[10])) return false;
+    if (!std.ascii.isDigit(status_line[11])) return false;
+    if (status_line.len > 12 and status_line[12] != ' ') return false;
+    return true;
 }
 
 fn valid_head_bytes(head: []const u8) bool {

@@ -112,8 +112,7 @@ This project follows semantic versioning.
   verifies status 101 plus `Upgrade`, `Connection`, and `Sec-WebSocket-Accept`,
   validates server requests before writing the 101 reply, and rejects duplicate
   key, version, accept, and Host headers plus body-bearing upgrade or 101
-  heads. It replaces the previous `websocket_magic` concatenation buffer and
-  empty-token fallback.
+  heads. It avoids a fixed concatenation buffer and an empty-token fallback.
   RFC 7692 negotiation and RFC 8441 extended CONNECT stay deferred with their
   compression and HTTP/2 dependencies. The shared server request validation and
   101 response construction are exported for the planned `src/upgrade.zig`

@@ -5470,7 +5470,14 @@ test "Handshake: is_request checks both upgrade token lists" {
     );
     try std.testing.expect(handshake.is_request(token_lists));
 
-    const wrong_connection = try build_request_head(&buffer, "GET", "keep-alive", "websocket", handshake_sample_key, "13");
+    const wrong_connection = try build_request_head(
+        &buffer,
+        "GET",
+        "keep-alive",
+        "websocket",
+        handshake_sample_key,
+        "13",
+    );
     try std.testing.expect(!handshake.is_request(wrong_connection));
 
     const wrong_upgrade = try build_request_head(&buffer, "GET", "Upgrade", "h2c", handshake_sample_key, "13");
@@ -5517,7 +5524,14 @@ test "Handshake: validate_request rejects method, version, and token failures" {
     const no_connection = try build_request_head(&buffer, "GET", null, "websocket", handshake_sample_key, "13");
     try std.testing.expectError(error.InvalidConnectionHeader, handshake.validate_request(no_connection));
 
-    const wrong_connection = try build_request_head(&buffer, "GET", "keep-alive", "websocket", handshake_sample_key, "13");
+    const wrong_connection = try build_request_head(
+        &buffer,
+        "GET",
+        "keep-alive",
+        "websocket",
+        handshake_sample_key,
+        "13",
+    );
     try std.testing.expectError(error.InvalidConnectionHeader, handshake.validate_request(wrong_connection));
 
     const no_upgrade = try build_request_head(&buffer, "GET", "Upgrade", null, handshake_sample_key, "13");
@@ -5532,6 +5546,9 @@ test "Handshake: validate_request rejects missing, wrong, and duplicate key fiel
 
     const no_key = try build_request_head(&buffer, "GET", "Upgrade", "websocket", null, "13");
     try std.testing.expectError(error.MissingSecWebSocketKey, handshake.validate_request(no_key));
+
+    const no_key_or_version = try build_request_head(&buffer, "GET", "Upgrade", "websocket", null, null);
+    try std.testing.expectError(error.MissingSecWebSocketKey, handshake.validate_request(no_key_or_version));
 
     const bad_key = try build_request_head(&buffer, "GET", "Upgrade", "websocket", "not a key", "13");
     try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(bad_key));
@@ -5597,8 +5614,25 @@ test "Handshake: validate_request rejects excessive header counts" {
         try writer.print("X-{d}: v\r\n", .{index});
     }
     try writer.writeAll("\r\n");
-
     try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(writer.buffered()));
+
+    var exact_buffer: [4096]u8 = undefined;
+    var exact_writer = std.Io.Writer.fixed(&exact_buffer);
+    try exact_writer.writeAll(
+        "GET /chat HTTP/1.1\r\n" ++
+            "Host: server.example.com\r\n" ++
+            "Upgrade: websocket\r\n" ++
+            "Connection: Upgrade\r\n" ++
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+            "Sec-WebSocket-Version: 13\r\n",
+    );
+    index = 0;
+    while (index < handshake.max_header_count - 5) : (index += 1) {
+        try exact_writer.print("X-{d}: v\r\n", .{index});
+    }
+    try exact_writer.writeAll("\r\n");
+    const request = try handshake.validate_request(exact_writer.buffered());
+    try std.testing.expectEqualStrings(handshake_sample_key, request.key);
 }
 
 test "Handshake: validate_request rejects malformed and folded headers" {
@@ -5778,6 +5812,25 @@ test "Handshake: read_head rejects short buffers, bare LF, and truncated heads" 
         error.BufferTooShort,
         handshake.read_head(&overlap_reader, overlap_reader.buffer[0..64]),
     );
+
+    var zero_buffer = std.Io.Reader.failing;
+    try std.testing.expectError(error.IoError, handshake.read_head(&zero_buffer, &storage));
+
+    var read_failed = std.Io.Reader.failing;
+    var failing_storage: [4]u8 = undefined;
+    read_failed.buffer = &failing_storage;
+    try std.testing.expectError(error.IoError, handshake.read_head(&read_failed, &storage));
+}
+
+test "Handshake: read_head accepts an exact-fit buffer and rejects one byte short" {
+    var exact: [handshake_valid_request.len]u8 = undefined;
+    var exact_reader = std.Io.Reader.fixed(handshake_valid_request);
+    const head = try handshake.read_head(&exact_reader, &exact);
+    try std.testing.expectEqualStrings(handshake_valid_request, head);
+
+    var short: [handshake_valid_request.len - 1]u8 = undefined;
+    var short_reader = std.Io.Reader.fixed(handshake_valid_request);
+    try std.testing.expectError(error.BufferTooShort, handshake.read_head(&short_reader, &short));
 }
 
 test "Handshake: validate_response accepts token lists and the expected accept" {
@@ -5943,6 +5996,22 @@ test "Handshake: validate_response rejects duplicate accepts and malformed heads
         error.InvalidConnectionHeader,
         handshake.validate_response(close_connection, handshake_sample_accept, &status),
     );
+
+    status = 7;
+    try std.testing.expectError(
+        error.InvalidHttpRequest,
+        handshake.validate_response(
+            "HTTP/1.1 09; Switching Protocols\r\n\r\n",
+            handshake_sample_accept,
+            &status,
+        ),
+    );
+    try std.testing.expectEqual(@as(u16, 7), status);
+    try std.testing.expectError(
+        error.InvalidHttpRequest,
+        handshake.validate_response("HTTP/1.1 abc Nope\r\n\r\n", handshake_sample_accept, &status),
+    );
+    try std.testing.expectEqual(@as(u16, 7), status);
 }
 
 test "Handshake: write_response emits the computed 101 accept token" {
