@@ -195,6 +195,8 @@ pub const FragmentCollector = struct {
     ///
     /// `reader` is borrowed and must outlive the collector. The transmit path is
     /// never used, so `zslay.Conn` is initialized with an empty node slice.
+    /// `message_buffer` must not overlap `frame_buffer`, because accumulation
+    /// copies with `@memcpy`.
     pub fn init(
         reader: *std.Io.Reader,
         frame_buffer: []u8,
@@ -203,6 +205,12 @@ pub const FragmentCollector = struct {
         max_message_size: usize,
     ) Error!FragmentCollector {
         if (@as(u64, @intCast(max_message_size)) > zslay.MaxPayloadLen) return error.InvalidLength;
+        if (zslay.event.ranges_overlap(
+            @intFromPtr(frame_buffer.ptr),
+            frame_buffer.len,
+            @intFromPtr(message_buffer.ptr),
+            message_buffer.len,
+        )) return error.InvalidLength;
 
         // fastwebsockets rejects `payload_len >= max_message_size`, so zslay's
         // inclusive limit carries the exclusive bound minus one.
@@ -297,7 +305,16 @@ pub const FragmentCollector = struct {
     fn fill_header(self: *FragmentCollector) Error!void {
         const target = self.conn.get_header_buffer();
         const read_len = self.reader.readSliceShort(target) catch |err| return errors.from_reader(err);
-        if (read_len < target.len) return error.UnexpectedEOF;
+
+        if (read_len < target.len) {
+            // Bytes consumed by a short read must reach zslay so the wire
+            // boundary predicate does not report a clean frame start while the
+            // reader sits mid-header. This mirrors the connection read path.
+            if (read_len != 0) {
+                self.conn.advance_header_read(read_len) catch |err| return errors.from_zslay(err);
+            }
+            return error.UnexpectedEOF;
+        }
 
         self.conn.advance_header_read(read_len) catch |err| return errors.from_zslay(err);
     }

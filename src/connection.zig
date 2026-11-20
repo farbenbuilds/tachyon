@@ -643,9 +643,24 @@ pub const WebSocket = struct {
     fn payload_overlaps_storage(self: *const WebSocket, payload: []const u8) bool {
         const start = @intFromPtr(payload.ptr);
         if (self.conn.tx_storage_overlaps(start, payload.len)) return true;
-        if (overlaps(payload, self.mask_scratch)) return true;
-        if (overlaps(payload, self.write_buffer)) return true;
-        if (overlaps(payload, self.close_buffer)) return true;
+        if (zslay.event.ranges_overlap(
+            start,
+            payload.len,
+            @intFromPtr(self.mask_scratch.ptr),
+            self.mask_scratch.len,
+        )) return true;
+        if (zslay.event.ranges_overlap(
+            start,
+            payload.len,
+            @intFromPtr(self.write_buffer.ptr),
+            self.write_buffer.len,
+        )) return true;
+        if (zslay.event.ranges_overlap(
+            start,
+            payload.len,
+            @intFromPtr(self.close_buffer.ptr),
+            self.close_buffer.len,
+        )) return true;
         return false;
     }
 
@@ -839,18 +854,12 @@ fn validate_storage(storage: Storage) Error!void {
 
     for (regions, 0..) |region, index| {
         for (regions[index + 1 ..]) |other| {
-            if (overlaps(region, other)) return error.InvalidLength;
+            if (zslay.event.ranges_overlap(
+                @intFromPtr(region.ptr),
+                region.len,
+                @intFromPtr(other.ptr),
+                other.len,
+            )) return error.InvalidLength;
         }
     }
-}
-
-/// True when two caller-owned byte regions share memory.
-fn overlaps(a: []const u8, b: []const u8) bool {
-    if (a.len == 0 or b.len == 0) return false;
-
-    const a_start = @intFromPtr(a.ptr);
-    const b_start = @intFromPtr(b.ptr);
-    const a_end = std.math.add(usize, a_start, a.len) catch return true;
-    const b_end = std.math.add(usize, b_start, b.len) catch return true;
-    return a_start < b_end and b_start < a_end;
 }

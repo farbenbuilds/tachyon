@@ -520,3 +520,28 @@ test "Split: client pong masking uses the write-half key schedule" {
     try std.testing.expectEqualStrings("ping", &plaintext);
     try std.testing.expectEqual(parts.writer.written, index);
 }
+
+test "Split: rejects read and write storage that overlap" {
+    var reader = std.Io.Reader.fixed("");
+    var out: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&out);
+
+    var shared: [32]u8 = undefined;
+    var read_close: [2]u8 = undefined;
+    var compose: [32]u8 = undefined;
+    var write_close: [2]u8 = undefined;
+    var nodes: [1]zslay.FrameNode = undefined;
+
+    try std.testing.expectError(error.InvalidLength, split.after_handshake_split(&reader, &writer, .{
+        .read = .{
+            .frame_buffer = &shared,
+            .close_buffer = &read_close,
+            .compose_buffer = &compose,
+        },
+        .write = .{
+            .tx_nodes = &nodes,
+            .write_buffer = &shared,
+            .close_buffer = &write_close,
+        },
+    }, .{ .role = .server }));
+}

@@ -476,19 +476,52 @@ pub const Split = struct {
 
 /// Builds both halves after a successful handshake.
 ///
-/// The write half is built first so a missing transmit queue fails before the
-/// read half is constructed. Both halves borrow the same reader and writer
-/// pointers and independent copies of `config`, including any client mask
-/// source.
+/// Read and write storage are checked for cross-half overlap before either half
+/// is constructed. The write half is then built first so a missing transmit
+/// queue fails before the read half is constructed. Both halves borrow the same
+/// reader and writer pointers and independent copies of `config`, including any
+/// client mask source.
 pub fn after_handshake_split(
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
     storage: Storage,
     config: Config,
 ) Error!Split {
+    try validate_halves(storage);
+
     const write = try WebSocketWrite.init(reader, writer, storage.write, config);
     const read = try WebSocketRead.init(reader, writer, storage.read, config);
     return .{ .read = read, .write = write };
+}
+
+/// Rejects read storage that aliases write storage.
+///
+/// `connection.validate_storage` checks each half's regions independently; the
+/// split pair also needs the cross product because a read reply can borrow read
+/// storage while the write half queues or composes from its own storage.
+fn validate_halves(storage: Storage) Error!void {
+    const read_regions = [_][]const u8{
+        storage.read.frame_buffer,
+        storage.read.close_buffer,
+        storage.read.compose_buffer,
+    };
+    const write_regions = [_][]const u8{
+        std.mem.sliceAsBytes(storage.write.tx_nodes),
+        storage.write.write_buffer,
+        storage.write.close_buffer,
+        storage.write.mask_scratch,
+    };
+
+    for (read_regions) |read_region| {
+        for (write_regions) |write_region| {
+            if (zslay.event.ranges_overlap(
+                @intFromPtr(read_region.ptr),
+                read_region.len,
+                @intFromPtr(write_region.ptr),
+                write_region.len,
+            )) return error.InvalidLength;
+        }
+    }
 }
 
 /// Alias for `after_handshake_split`.
@@ -525,7 +558,13 @@ pub const FragmentCollectorRead = struct {
     /// zero-length buffer is allowed and rejects every non-empty message with
     /// `error.BufferTooShort`.
     pub fn init(read: WebSocketRead, message_buffer: []u8) Error!FragmentCollectorRead {
-        if (overlaps(message_buffer, read.frame_buffer())) return error.InvalidLength;
+        const frame_buffer = read.frame_buffer();
+        if (zslay.event.ranges_overlap(
+            @intFromPtr(message_buffer.ptr),
+            message_buffer.len,
+            @intFromPtr(frame_buffer.ptr),
+            frame_buffer.len,
+        )) return error.InvalidLength;
 
         return .{
             .read = read,
@@ -594,14 +633,3 @@ pub const FragmentCollectorRead = struct {
         return self.fragments.message_len();
     }
 };
-
-/// True when two caller-owned byte regions share memory.
-fn overlaps(a: []const u8, b: []const u8) bool {
-    if (a.len == 0 or b.len == 0) return false;
-
-    const a_start = @intFromPtr(a.ptr);
-    const b_start = @intFromPtr(b.ptr);
-    const a_end = std.math.add(usize, a_start, a.len) catch return true;
-    const b_end = std.math.add(usize, b_start, b.len) catch return true;
-    return a_start < b_end and b_start < a_end;
-}
