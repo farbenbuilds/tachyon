@@ -5,8 +5,9 @@ Library sources contain no test blocks; new coverage belongs in the category
 folders described here.
 
 The published Zig package is runtime-only and does not include `tests/`. Run the
-suite from a full repository checkout; a fetched package ships `build.zig`,
-`build.zig.zon`, `src/`, `LICENSE`, and `README.md` only.
+suite from a full repository checkout; a fetched package ships the build files,
+the generated zon2nix views, `flake.nix`, `flake.lock`, `src/`, `LICENSE`, and
+`README.md` only.
 
 ## Layout
 
