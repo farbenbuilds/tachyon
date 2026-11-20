@@ -73,6 +73,20 @@ test "Native stream: public module re-exports the transport and wrappers" {
     try std.testing.expect(@hasField(tachyon.NativeTransportStorage, "write_buffer"));
 }
 
+test "Backpressure: public module re-exports the policy" {
+    const std = @import("std");
+
+    try std.testing.expect(tachyon.BackpressureLimits == tachyon.backpressure.Limits);
+    try std.testing.expect(tachyon.BackpressureFlow == tachyon.backpressure.Flow);
+    try std.testing.expect(tachyon.BackpressureState == tachyon.backpressure.State);
+    try std.testing.expect(tachyon.BackpressurePhase == tachyon.backpressure.Phase);
+    try std.testing.expect(@hasField(tachyon.ConnectionOptions, "backpressure"));
+
+    const charge = tachyon.BackpressureCharge.frame(3);
+    try std.testing.expectEqual(@as(usize, 3), charge.bytes);
+    try std.testing.expectEqual(@as(usize, 1), charge.frames);
+}
+
 test "Fragment: public module re-exports the fragment layer" {
     const std = @import("std");
 

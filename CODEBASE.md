@@ -12,9 +12,10 @@ The boundary is verified against the pinned zslay sources (`src/root.zig`,
 `src/fragment.rs`, `src/handshake.rs`, and `src/upgrade.rs`). zslay is a framing
 engine with a bounded connection state machine, not only a header codec.
 
-The 0.10.0 surface is the parity baseline, not the ceiling. Backpressure,
+The 0.10.0 surface is the parity baseline, not the ceiling. Backpressure is
+implemented in `src/backpressure.zig` as an opt-in byte/frame watermark policy;
 streaming messages, permessage-deflate, and pub/sub are planned extension
-modules at the edge; the native `std.Io.net.Stream` adapter is implemented in
+modules at the edge, and the native `std.Io.net.Stream` adapter is implemented in
 `src/native_stream.zig`. Incremental UTF-8 validation is
 implemented in `src/utf8.zig`: the raw connection read path validates clear FIN
 text frames and the fragment collector validates assembled messages across
@@ -91,15 +92,30 @@ documentation foundation:
   caller-owned `message_buffer`, assembles continuations and split UTF-8 code
   points, and rejects a `message_buffer` overlapping the read `frame_buffer`
   with `InvalidLength`.
+- `src/backpressure.zig` implements the opt-in flow-control policy over zslay's
+  bounded transmit ring. `Limits` carries byte and frame high/low watermarks;
+  `Flow` tracks queued payload bytes and completed frames, pauses data admission
+  at a high mark, resumes only when both counters reach their low marks, and
+  lets automatic control replies through while paused. Application controls
+  other than close stop at the data capacity so one node stays reserved.
+  `ConnectionOptions` exposes the optional `backpressure` limits,
+  `enqueue_frame` batches without draining, `write_frame` keeps the
+  drain-and-write behavior, and `flush` is the `std.Io` wait point. The policy
+  stores no frame, allocates nothing, never spins, rejects a data frame before
+  mask-key or zslay queue side effects, and requires its high frame mark to fit
+  `tx_nodes` after reserving one node for automatic control replies. Read
+  pacing stays with the caller because the raw connection has no inbound frame
+  queue.
 - `src/native_stream.zig` implements the `std.Io.net.Stream` transport edge.
   `Transport` binds the stream's `std.Io.Reader` and `std.Io.Writer` directions
   to caller-owned buffers, and the native `WebSocket` and `Split` wrappers
   delegate to `connection.WebSocket` and `split.Split` without adding protocol
   state. Transport buffers are validated for emptiness, mutual overlap, and
   aliasing with connection or split storage before a wrapper binds them. Reads
-  and writes suspend through the caller's `std.Io`; the module never allocates,
-  opens or closes a socket automatically, or starts a task. Explicit `close`
-  and `shutdown` helpers keep socket ownership with the caller.
+  and writes block or suspend through the caller's `std.Io`, depending on the
+  implementation; the module never allocates, opens or closes a socket
+  automatically, or starts a task. Explicit `close` and `shutdown` helpers keep
+  socket ownership with the caller.
 - `src/handshake.zig` implements the RFC 6455 handshake boundary. The caller
   supplies a `std.Io.Reader`, a `std.Io.Writer`, and a header buffer. The module
   generates 16 key bytes through `std.Io.randomSecure`, encodes them as
@@ -487,8 +503,8 @@ policy, and the transmit queue still belong to zslay.
 | `src/frame.zig` | `Frame` facade, `Payload`, `OpCode`/`CloseCode` aliases and conversions, masking delegates, header-length bridge, and write paths. |
 | `src/utf8.zig` | Implemented extension: incremental zero-allocation UTF-8 validation with `std.unicode` complete ranges, a split code-point `State`, and an optional `std.Io.Reader` adapter. |
 | `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
-| `src/backpressure.zig` | Planned extension: byte/frame watermarks and admission policy over zslay's bounded queue. |
-| `src/connection.zig` | Implemented: role-aware `WebSocket` policy over `zslay.Conn`, caller-owned storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, and vectored or copied writes. |
+| `src/backpressure.zig` | Implemented extension: byte/frame high and low watermarks, data admission, control headroom, and close draining over zslay's bounded queue. |
+| `src/connection.zig` | Implemented: role-aware `WebSocket` policy over `zslay.Conn`, caller-owned storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, vectored or copied writes, and opt-in backpressure. |
 | `src/fragment.zig` | Implemented: `Fragments` accumulator and read-side `FragmentCollector` over `zslay.Conn`, caller-owned frame/message buffers, streaming UTF-8, and completed-message delivery. |
 | `src/stream.zig` | Planned extension: chunked message reader/writer for large messages without whole-message buffering. |
 | `src/split.zig` | Implemented: `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned `ReadStorage`/`WriteStorage`, sink-forwarded obligations, and `FragmentCollectorRead`. |
@@ -499,7 +515,7 @@ policy, and the transmit queue still belong to zslay.
 | `src/upgrade.zig` | Implemented: RFC 6455 server upgrade call order over the validated `handshake` request and response primitives, including the accept GUID and accept-token derivation, `incoming` validation without writing, split construction from caller storage before the 101 write and flush, the forced server role, and `upgrade_async` over `std.Io.Future`. |
 | `tests/main.zig` | Aggregates every category test file for the Debug and ReleaseSafe test steps. |
 | `tests/support.zig` | Shared fixtures and test-only protocol readers and writers. |
-| `tests/<category>-test/` | Unit coverage grouped by area: module, error, frame, UTF-8, fragment, connection, split, native stream, handshake, and upgrade. |
+| `tests/<category>-test/` | Unit coverage grouped by area: module, error, backpressure, frame, UTF-8, fragment, connection, split, native stream, handshake, and upgrade. |
 | `tests/<integration>-test/` | Planned Autobahn, fuzz, and loopback integration suites; no adapter exists yet. |
 | `src/bench.zig` | Frame, connection, streaming, and extension microbenchmarks. |
 
@@ -658,15 +674,16 @@ and remain optional: a build that does not use them behaves like the core
 library. The frame layer stays pure and zslay remains the only wire codec.
 
 Implementation order: finish the parity core first, then backpressure,
-streaming messages, then deflate, then pub/sub. Native stream landed ahead of
-backpressure; UTF-8 also landed
-ahead of its call sites; the fragment collector and the raw connection read path
-now use it. Deflate without the zslay RSV1 change is a non-goal.
+streaming messages, then deflate, then pub/sub. Backpressure, native stream, and
+UTF-8 have landed; the fragment collector and the raw connection read path now
+use UTF-8, and the connection and split layers consume the backpressure policy.
+The remaining rows are future work. Deflate without the zslay RSV1 change is a
+non-goal.
 
 | Module | Capability | Depends on | Exit criteria |
 | --- | --- | --- | --- |
 | `src/utf8.zig` | Incremental text validation across frame boundaries | `std.unicode` for contiguous slices | Implemented: rejects overlong, surrogate, truncated, and above-U+10FFFF sequences; zero allocation; no replacement characters |
-| `src/backpressure.zig` | Byte/frame high and low watermarks over `zslay.Queue`, plus read-buffer limits | `zslay.Queue`, connection state | Bounded queues, explicit `WouldBlock`, no drops, no spin, slow consumers pause |
+| `src/backpressure.zig` | Byte/frame high and low watermarks over `zslay.Queue` | `zslay.Queue`, connection state | Implemented: bounded admission, explicit `WouldBlock`, no drops, no spin, control headroom, `flush` is the `std.Io` wait point |
 | `src/native_stream.zig` | Native `std.Io.net.Stream` transport binding plus `WebSocket` and `Split` wrappers | Zig 0.17.1 `std.Io` | Implemented: caller owns socket and buffers; readiness comes from `std.Io`; no libxev; zero allocation |
 | `src/stream.zig` | Chunked message reader/writer for large messages | connection, `utf8`, `backpressure` | Control frames interleave; no whole-message buffering; UTF-8 and deflate hooks |
 | `src/deflate.zig` | RFC 7692 permessage-deflate | zslay negotiated RSV1, `std.compress.flate`, stream/fragment | Negotiated only after zslay RSV1 support; decompressed output capped; control frames never compressed |
@@ -678,14 +695,45 @@ zslay already owns the bounded transmit ring, `QueueFull`, `tx_pending`, and the
 header/payload progress cursors. `src/backpressure.zig` is a policy layer, not a
 second queue:
 
-- track queued bytes and frames with high and low watermarks,
-- return `error.WouldBlock` or a typed `backpressured` result instead of
-  dropping frames or growing a buffer,
-- stop reading when the receive buffer is above its high watermark and resume
-  below the low watermark,
-- let `src/native_stream.zig` await writability through `std.Io` rather than
-  spinning,
-- keep every queue and buffer caller-owned and bounded.
+- `Limits` carries byte and frame high/low watermarks; the low marks default to
+  zero, both high marks must be nonzero, and the high frame mark must fit the
+  caller's `tx_nodes` after reserving one node for automatic pong or close
+  replies.
+- `Flow`/`State` account queued payload bytes and frames. Data admission pauses
+  at either high mark, resumes only when both counters reach their low marks,
+  and an empty queue always admits one frame so a retryable `WouldBlock` always
+  has bytes that `flush` can drain. Byte charges exclude frame headers and mask
+  bytes; headers are bounded by the frame count, and the caller-sized writer
+  buffer is drained by `flush` rather than counted as a second queue.
+- `error.WouldBlock` is admission, not transport readiness. It is non-fatal,
+  never latched, and happens before mask-key consumption or `prepare_frame`.
+  zslay's `QueueFull` remains the hard capacity error.
+- Control frames bypass the paused phase so pong and close obligations stay
+  deliverable; application controls other than close stop at the data capacity,
+  and the connection reserves one transmit node for automatic replies. zslay
+  still applies its own ring capacity and close validation.
+- `connection.WebSocket` updates the policy when a node enters zslay's queue and
+  at the exact `advance_tx_header`/`advance_tx_payload` points. Completed frames
+  are observed through `tx_pending` before/after `advance_tx`, which may discard
+  several finished nodes in one call. `reset_tx` resets the policy.
+- `ConnectionOptions.backpressure` is opt-in. `write_frame` keeps the
+  fastwebsockets drain-and-write behavior; `enqueue_frame` is the batching path
+  that queues without draining. `flush` drains zslay then the caller's writer.
+  A deferred payload must not alias the read `frame_buffer`, reader buffer, or
+  writer buffer; the synchronous path may reuse `frame_buffer` for an echo
+  because it drains before returning. Read pacing stays with the caller: the raw
+  connection has no inbound frame queue, so not calling `read_frame` is the
+  receive-side backpressure.
+- `std.Io` has no stream `WouldBlock` result. Its writer blocks or suspends
+  according to the implementation; `Writer.Error` is only `WriteFailed`, so
+  `src/native_stream.zig` must not poll, sleep, or retry a zero-length drain.
+  `std.Io.Threaded` is the supported 0.17.1 implementation. `flush` is the wait
+  point; the policy adds no event loop and no spin.
+- `src/split.zig` disables the policy on the read half because it has no ring.
+  Outbound pressure never gates the read half, so a peer close or ping remains
+  deliverable while the producer is paused.
+- Every queue, payload, and watermark is caller-owned and bounded; neither the
+  policy nor the connection allocates.
 
 ### Incremental UTF-8
 
@@ -765,10 +813,11 @@ connection stores a payload or composes a write. A bound `Transport` must keep a
 stable address: the connection stores pointers to its embedded reader and writer
 interfaces.
 
-Reads and writes enter the caller's `std.Io` through `net_read` and `net_write`,
-so a cooperating implementation suspends the calling task instead of blocking a
-thread. The module creates no event loop, no task, and no allocation. Socket
-ownership, lifetime, and shutdown stay with the caller.
+Reads and writes enter the caller's `std.Io` through `net_read` and `net_write`.
+The implementation may block the calling thread or suspend the calling task;
+`std.Io.Threaded` is the supported 0.17.1 implementation. The module creates no
+event loop, no task, and no allocation. Socket ownership, lifetime, and shutdown
+stay with the caller.
 
 ### permessage-deflate
 

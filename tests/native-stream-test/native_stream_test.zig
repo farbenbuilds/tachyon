@@ -338,3 +338,53 @@ test "Native stream: rejects connection and split storage aliasing the transport
     }));
     try std.testing.expect(!transport.is_bound());
 }
+
+test "Native stream: WebSocket delegates watermark batching and flush" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var pair = try openPair(io);
+    defer pair.close(io);
+
+    var read_buffer: [64]u8 = undefined;
+    var write_buffer: [64]u8 = undefined;
+    var transport = try native_stream.Transport.init(io, pair.client, .{
+        .read_buffer = &read_buffer,
+        .write_buffer = &write_buffer,
+    });
+
+    var frame_buffer: [64]u8 = undefined;
+    var write_storage: [64]u8 = undefined;
+    var close_storage: [16]u8 = undefined;
+    var nodes: [2]zslay.FrameNode = undefined;
+
+    var ws = try native_stream.WebSocket.init(&transport, .{
+        .frame_buffer = &frame_buffer,
+        .tx_nodes = &nodes,
+        .write_buffer = &write_storage,
+        .close_buffer = &close_storage,
+    }, .{
+        .role = .client,
+        .mask_keys = tachyon.MaskKeySource.from_seed(@splat(0x5a)),
+        .options = .{
+            .backpressure = .{
+                .high_water_bytes = 8,
+                .high_water_frames = 1,
+            },
+        },
+    });
+
+    var first = [_]u8{'a'};
+    var second = [_]u8{'b'};
+    try ws.enqueue_frame(tachyon.Frame.text(&first));
+    try std.testing.expect(ws.is_backpressured());
+    try std.testing.expectEqual(@as(usize, 1), ws.queued_frames());
+    try std.testing.expectEqual(@as(usize, 1), ws.queued_bytes());
+    try std.testing.expectError(error.WouldBlock, ws.enqueue_frame(tachyon.Frame.text(&second)));
+
+    try ws.flush();
+    try std.testing.expect(!ws.is_backpressured());
+    try std.testing.expectEqual(@as(usize, 0), ws.queued_frames());
+    try std.testing.expectEqual(@as(usize, 0), ws.queued_bytes());
+}

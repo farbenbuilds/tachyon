@@ -12,7 +12,9 @@
 //! The caller owns the socket, both `std.Io` buffers, and every connection or
 //! split storage slice. Readiness and suspension come from the caller's
 //! `std.Io` through the stream's `net_read` and `net_write` operations; this
-//! module never allocates, opens a socket, or spawns a task. The original
+//! module never allocates, opens a socket, or spawns a task. `flush` is the
+//! wait point when an opt-in backpressure watermark pauses admission; the
+//! adapter never polls or retries a drain. The original
 //! `std.Io.net.Stream` keeps socket ownership and lifetime; the adapter never
 //! closes it.
 //!
@@ -74,8 +76,8 @@ pub const TransportStorage = struct {
 /// The struct is movable before a wrapper binds it and must not move
 /// afterwards. The caller keeps the original `std.Io.net.Stream` and owns its
 /// close and shutdown calls; this adapter never closes the handle. Reads and
-/// writes suspend through the caller-provided `std.Io`, so no event loop or
-/// worker task is created here.
+/// writes block or suspend through the caller-provided `std.Io`, depending on
+/// the implementation, so no event loop or worker task is created here.
 ///
 /// A transport accepts one wrapper. `bound` is set after a `WebSocket` or
 /// `Split` binds the reader and writer interfaces, because two wrappers over
@@ -164,8 +166,27 @@ pub const WebSocket = struct {
     }
 
     /// Queues and drains one outbound frame without flushing.
+    ///
+    /// On success the payload is borrowed until the call returns; after a
+    /// partial drain failure it stays borrowed until `reset_tx` or transport
+    /// discard. `error.WouldBlock` reports the paused phase or a non-empty
+    /// queue that cannot fit the frame without crossing a high mark.
     pub fn write_frame(self: *WebSocket, outgoing: Frame) Error!void {
         return self.inner.write_frame(outgoing);
+    }
+
+    /// Validates and queues one outbound frame without draining it.
+    ///
+    /// The payload stays borrowed until `flush`, or until `reset_tx` after a
+    /// transport failure. It must not alias the read frame, reader, or writer
+    /// buffers because a later read or drain can overwrite them. Data admission
+    /// returns `error.WouldBlock` while backpressured or when the non-empty
+    /// queue cannot fit the frame. Application controls other than close stop
+    /// at the data capacity so one node stays free for automatic replies. The
+    /// native writer blocks or suspends through `std.Io` on flush; this method
+    /// never spins.
+    pub fn enqueue_frame(self: *WebSocket, outgoing: Frame) Error!void {
+        return self.inner.enqueue_frame(outgoing);
     }
 
     /// Drains queued nodes and flushes the native writer.
@@ -187,6 +208,26 @@ pub const WebSocket = struct {
 
     pub fn tx_pending(self: *const WebSocket) usize {
         return self.inner.tx_pending();
+    }
+
+    /// True while the connection's watermark policy is backpressured.
+    ///
+    /// This is the latched phase only; a write can also return `WouldBlock`
+    /// for a non-empty queue that cannot fit the next frame.
+    pub fn is_backpressured(self: *const WebSocket) bool {
+        return self.inner.is_backpressured();
+    }
+
+    /// Payload bytes currently charged to the watermark policy. Zero without a
+    /// policy.
+    pub fn queued_bytes(self: *const WebSocket) usize {
+        return self.inner.queued_bytes();
+    }
+
+    /// Frames currently charged to the watermark policy, or zslay `tx_pending`
+    /// without a policy.
+    pub fn queued_frames(self: *const WebSocket) usize {
+        return self.inner.queued_frames();
     }
 
     pub fn is_at_wire_boundary(self: *const WebSocket) bool {
@@ -270,8 +311,19 @@ pub const Split = struct {
     }
 
     /// Queues and drains one outbound frame without flushing.
+    ///
+    /// Payload lifetime and `error.WouldBlock` follow the unsplit
+    /// `WebSocket.write_frame`.
     pub fn write_frame(self: *Split, outgoing: Frame) Error!void {
         return self.inner.write_frame(outgoing);
+    }
+
+    /// Validates and queues one outbound frame without draining it.
+    ///
+    /// The payload stays borrowed until `flush`, or until `reset_tx` after a
+    /// transport failure. It must not alias read-lifetime buffers.
+    pub fn enqueue_frame(self: *Split, outgoing: Frame) Error!void {
+        return self.inner.enqueue_frame(outgoing);
     }
 
     /// Drains queued nodes and flushes the native writer.
@@ -281,6 +333,26 @@ pub const Split = struct {
 
     pub fn is_closed(self: *const Split) bool {
         return self.inner.is_closed();
+    }
+
+    /// True while the write half's watermark policy is backpressured.
+    ///
+    /// This is the latched phase only; a write can also return `WouldBlock`
+    /// for a non-empty queue that cannot fit the next frame.
+    pub fn is_backpressured(self: *const Split) bool {
+        return self.inner.is_backpressured();
+    }
+
+    /// Payload bytes currently charged to the write half's policy. Zero without
+    /// a policy.
+    pub fn queued_bytes(self: *const Split) usize {
+        return self.inner.queued_bytes();
+    }
+
+    /// Frames currently charged to the write half's policy, or zslay
+    /// `tx_pending` without a policy.
+    pub fn queued_frames(self: *const Split) usize {
+        return self.inner.queued_frames();
     }
 
     pub fn is_at_wire_boundary(self: *const Split) bool {

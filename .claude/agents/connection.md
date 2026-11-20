@@ -13,7 +13,7 @@ Own the connection policy layer that wraps zslay's bounded `Conn` state machine 
 
 ## Scope
 
-`src/connection.zig`: `Role`, post-handshake `WebSocket`, read and write loops, automatic close and pong replies, automatic mask application, maximum message size, and vectored-write settings. `src/native_stream.zig`: the `std.Io.net.Stream` transport binding, native `WebSocket` and `Split` wrappers, buffer-alias validation, and caller-owned socket lifetime; it delegates policy to the connection and split layers and never owns or closes the socket. Add connection or native-stream tests in `tests/connection-test/` or `tests/native-stream-test/` when the testing agent is unavailable. Never edit frame primitives, handshake, upgrade, build, or CI files.
+`src/connection.zig`: `Role`, post-handshake `WebSocket`, read and write loops, automatic close and pong replies, automatic mask application, maximum message size, vectored-write settings, and the opt-in watermark policy. `src/backpressure.zig`: byte/frame high and low watermarks, data admission, read gating, control bypass, and close draining over zslay's bounded transmit ring. `src/native_stream.zig`: the `std.Io.net.Stream` transport binding, native `WebSocket` and `Split` wrappers, buffer-alias validation, and caller-owned socket lifetime; it delegates policy to the connection and split layers and never owns or closes the socket. Add connection, backpressure, or native-stream tests in `tests/connection-test/`, `tests/backpressure-test/`, or `tests/native-stream-test/` when the testing agent is unavailable. Never edit frame primitives, handshake, upgrade, build, or CI files.
 
 ## Rules
 
