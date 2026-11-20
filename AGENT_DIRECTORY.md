@@ -56,10 +56,12 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 | `reviewer` | Read-only quality gate | any changed file |
 | `integrator` | Findings, final diff, verification | affected paths through owners |
 
-`src/connection.zig` is a current file owned by the `connection` agent. Its
-tests live in `src/test.zig` and belong to the `testing` agent; connection work
-that needs new coverage hands the test change to `testing` instead of editing
-the test file in the same pass.
+`src/connection.zig` is a current file owned by the `connection` agent.
+`src/handshake.zig` is a current file owned by the `handshake` agent; its HTTP
+server orchestration counterpart `src/upgrade.zig` remains planned. Tests live
+in `src/test.zig` and belong to the `testing` agent; work that needs new coverage
+hands the test change to `testing` instead of editing the test file in the same
+pass.
 
 ## Planned Extension Ownership
 

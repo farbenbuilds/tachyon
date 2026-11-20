@@ -102,6 +102,22 @@ This project follows semantic versioning.
   originating read error only after a successful send without changing unsplit
   behavior. All storage is caller-owned and zero allocation; exported from
   `src/root.zig` with Debug and ReleaseSafe tests.
+- `src/handshake.zig` with the RFC 6455 client handshake and shared server
+  upgrade primitives over caller-provided `std.Io.Reader` and `std.Io.Writer`
+  values. The module generates 16 key bytes with `std.Io.randomSecure`, encodes
+  and validates canonical base64 keys, computes `Sec-WebSocket-Accept` with a
+  streaming SHA-1 over the single RFC `accept_guid` constant, parses a bounded
+  request or response head in chunks independent of the transport buffer while
+  leaving coalesced frame bytes buffered, writes the client GET request,
+  exposes the fastwebsockets-named `verify` response gate for status 101 plus
+  `Upgrade`, `Connection`, and `Sec-WebSocket-Accept`, validates server requests
+  before writing the 101 reply, and rejects duplicate
+  key, version, accept, and Host headers plus body-bearing upgrade or 101
+  heads. It avoids a fixed concatenation buffer and an empty-token fallback.
+  RFC 7692 negotiation and RFC 8441 extended CONNECT stay deferred with their
+  compression and HTTP/2 dependencies. The shared server request validation and
+  101 response construction are exported for the planned `src/upgrade.zig`
+  call order. Exported from `src/root.zig` with Debug and ReleaseSafe tests.
 - zslay dependency pinned in `build.zig.zon` and exposed from `src/root.zig`,
   plus the generated `build.zig.zon.nix`, `.json`, and `.txt` views.
 - Nix flake and lock file for the Zig 0.17.1 development shell, Nix formatting

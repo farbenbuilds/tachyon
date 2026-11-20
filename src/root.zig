@@ -2,7 +2,8 @@
 //!
 //! Re-exports the pinned zslay codec, the frame facade, the incremental UTF-8
 //! validator, the WebSocket error model, the fragment collector, the role-aware
-//! connection layer, and the split read and write halves.
+//! connection layer, the split read and write halves, and the HTTP client
+//! handshake and shared server upgrade primitives.
 
 pub const zslay = @import("zslay");
 
@@ -63,6 +64,29 @@ pub const ConnectionStorage = connection.Storage;
 pub const MaskKeySource = connection.MaskKeySource;
 pub const default_max_message_size = connection.default_max_message_size;
 pub const default_writev_threshold = connection.default_writev_threshold;
+
+pub const handshake = @import("handshake.zig");
+pub const HandshakeError = handshake.Error;
+pub const HandshakeClientOptions = handshake.ClientOptions;
+pub const HandshakeRequest = handshake.Request;
+pub const HandshakeResponse = handshake.Response;
+pub const accept_guid = handshake.accept_guid;
+pub const has_token = handshake.has_token;
+pub const generate_handshake_key = handshake.generate_key;
+pub const encode_handshake_key = handshake.encode_key;
+pub const valid_client_key = handshake.valid_client_key;
+pub const compute_accept_token = handshake.compute_accept_token;
+pub const read_handshake_head = handshake.read_head;
+pub const verify_handshake_response = handshake.verify;
+pub const validate_handshake_response = handshake.verify;
+pub const read_handshake_response = handshake.read_response;
+pub const write_handshake_request = handshake.write_request;
+pub const client_handshake = handshake.client;
+pub const client_handshake_with_key = handshake.client_with_key;
+pub const is_upgrade_request = handshake.is_request;
+pub const validate_upgrade_request = handshake.validate_request;
+pub const read_upgrade_request = handshake.read_request;
+pub const write_upgrade_response = handshake.write_response;
 
 pub const split = @import("split.zig");
 pub const Split = split.Split;
