@@ -251,7 +251,7 @@ Current files:
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
 | `.github/workflows/lint.yml` | Pull-request Zig formatting lint with Zig 0.17.1. |
-| `.github/workflows/test.yml` | Pull-request and main-push Zig test and check jobs for Zig or Zon changes. |
+| `.github/workflows/test.yml` | Pull-request and main-push Zig test and check jobs for Zig, Zon, `build.zig`, and workflow changes, recorded in the `Testing` deployment environment. |
 | `scripts/update_zon_files.sh` | Regenerates `build.zig.zon.nix`, `.json`, and `.txt` with zon2nix. |
 | `.agents/skills/`, `skills-lock.json` | Shared skill pack, lock file, and the Antigravity graphify skill copy. |
 | `.agents/agents/`, `.opencode/agents/`, `.codex/agents/`, `.claude/agents/` | Matching agent definitions for agy, OpenCode, Codex, and Claude Code. |

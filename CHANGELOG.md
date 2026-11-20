@@ -130,7 +130,8 @@ This project follows semantic versioning.
   from `src/root.zig` with Debug and ReleaseSafe loopback tests.
 - `.github/workflows/test.yml` running `zig build test --summary all` and
   `zig build check` for pull requests into `main` and pushes to `main` that
-  change Zig or Zon files.
+  change Zig or Zon files, `build.zig`, or workflow files. The job runs in the
+  `Testing` environment so every test run appears on the deployments page.
 - `src/handshake.zig` with the RFC 6455 client handshake and shared server
   upgrade primitives over caller-provided `std.Io.Reader` and `std.Io.Writer`
   values. The module generates 16 key bytes with `std.Io.randomSecure`, encodes
