@@ -1,19 +1,20 @@
-//! RFC 6455 HTTP client handshake and server upgrade primitives.
+//! RFC 6455 HTTP client handshake and shared server upgrade primitives.
 //!
 //! The module owns the handshake boundary from fastwebsockets 0.10.0:
 //! key generation, request construction, response verification, request
-//! validation, accept-token generation, and the `101 Switching Protocols`
-//! reply. The HTTP request line and status line use `std.http` parsers, header
-//! fields use a local bounded scanner, and all transport I/O goes through
-//! caller-provided `std.Io.Reader` and
-//! `std.Io.Writer` values. Nothing here allocates, opens a socket, or retains
-//! state after a call. zslay remains the RFC 6455 frame codec; HTTP upgrade
-//! parsing and key handling are outside its wire boundary and live here.
+//! validation, and the `101 Switching Protocols` reply. The HTTP request line
+//! and status line use `std.http` parsers, header fields use a local bounded
+//! scanner, and all transport I/O goes through caller-provided
+//! `std.Io.Reader` and `std.Io.Writer` values. Nothing here allocates, opens a
+//! socket, or retains state after a call. zslay remains the RFC 6455 frame
+//! codec; HTTP upgrade parsing and key handling are outside its wire boundary
+//! and live here.
 //!
-//! The RFC 6455 accept GUID is a protocol constant, not a configurable value.
-//! It is defined once as `accept_guid` and hashed incrementally with the client
-//! key, so no caller buffer must be sized for the concatenation and no error
-//! path can silently return an empty token.
+//! The RFC 6455 accept GUID and the accept-token derivation are owned by
+//! `src/upgrade.zig`. This module re-exports `accept_guid`, `accept_token_len`,
+//! `AcceptTokenBuffer`, and `compute_accept_token` so the client path and
+//! existing callers share that single definition without duplicating the magic
+//! value or the streaming SHA-1 construction.
 //!
 //! Returned request and response values borrow the caller's header buffer until
 //! the next read on that buffer. Extra bytes after the header stay buffered in
@@ -26,18 +27,13 @@
 
 const std = @import("std");
 const errors = @import("error.zig");
+const upgrade = @import("upgrade.zig");
 
 /// Handshake failures use the shared fastwebsockets error taxonomy.
 pub const Error = errors.WebSocketError;
 
-/// RFC 6455 Section 1.3 GUID used to derive `Sec-WebSocket-Accept`.
-///
-/// The value is required by RFC 6455 and cannot be removed. It is shared with
-/// the server upgrade primitive in this module and moves with that primitive if
-/// it is split into `src/upgrade.zig`; it is never negotiated or overridden.
-/// Keeping it in one named constant with a streaming hash avoids a local
-/// concatenation buffer.
-pub const accept_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+/// RFC 6455 Section 1.3 accept GUID, owned by `src/upgrade.zig`.
+pub const accept_guid = upgrade.accept_guid;
 
 /// Decoded client key length required by RFC 6455 Section 4.1.
 pub const key_len = 16;
@@ -45,8 +41,8 @@ pub const key_len = 16;
 /// Canonical base64 length of a 16-byte client key.
 pub const encoded_key_len = 24;
 
-/// Base64 length of a SHA-1 accept token.
-pub const accept_token_len = 28;
+/// Base64 length of a SHA-1 accept token, owned by `src/upgrade.zig`.
+pub const accept_token_len = upgrade.accept_token_len;
 
 /// Maximum header fields accepted in one handshake head.
 pub const max_header_count = 128;
@@ -58,11 +54,10 @@ pub const KeyBytes = [key_len]u8;
 pub const KeyBuffer = [encoded_key_len]u8;
 
 /// Caller-owned storage for the base64-encoded accept token.
-pub const AcceptTokenBuffer = [accept_token_len]u8;
+pub const AcceptTokenBuffer = upgrade.AcceptTokenBuffer;
 
 comptime {
     std.debug.assert(std.base64.standard.Encoder.calcSize(key_len) == encoded_key_len);
-    std.debug.assert(std.base64.standard.Encoder.calcSize(std.crypto.hash.Sha1.digest_length) == accept_token_len);
 }
 
 /// Client request fields. `key` is null until `client` generates one, or may be
@@ -151,18 +146,10 @@ pub fn valid_client_key(client_key: []const u8) bool {
 
 /// Writes the `Sec-WebSocket-Accept` token and returns a slice into `out_buffer`.
 ///
-/// The SHA-1 input is `client_key` followed by the RFC 6455 GUID. Hashing the
-/// two pieces incrementally avoids a fixed concatenation buffer and makes the
-/// output length independent of the caller's key length.
-pub fn compute_accept_token(client_key: []const u8, out_buffer: *AcceptTokenBuffer) []const u8 {
-    var hasher = std.crypto.hash.Sha1.init(.{});
-    hasher.update(trim_ows(client_key));
-    hasher.update(accept_guid);
-
-    var digest: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
-    hasher.final(&digest);
-    return std.base64.standard.Encoder.encode(out_buffer, &digest);
-}
+/// Delegates to `src/upgrade.zig`, which owns the RFC 6455 GUID and the
+/// streaming SHA-1 plus base64 construction. The delegation keeps the value
+/// and derivation in one place while preserving the handshake-side name.
+pub const compute_accept_token = upgrade.compute_accept_token;
 
 /// Reads one HTTP head from `reader` into caller-owned storage.
 ///
@@ -342,8 +329,9 @@ pub fn write_request(writer: *std.Io.Writer, options: ClientOptions) Error!void 
 /// Writes the `101 Switching Protocols` reply for a validated client key.
 ///
 /// The writer is not flushed; the caller sends the response before reading the
-/// upgraded transport. The accept token is computed here so a server cannot
-/// pair a validated key with an unrelated token.
+/// upgraded transport. The accept token is derived through the shared
+/// `src/upgrade.zig` computation so a server cannot pair a validated key with
+/// an unrelated token.
 pub fn write_response(writer: *std.Io.Writer, client_key: []const u8) Error!void {
     if (!valid_client_key(client_key)) return error.InvalidHttpRequest;
 

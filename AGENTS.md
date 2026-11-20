@@ -97,9 +97,8 @@ documentation foundation:
   caller-owned and zero allocation.
 - `src/handshake.zig` implements the RFC 6455 HTTP handshake boundary:
   canonical 16-byte key generation through `std.Io.randomSecure`, base64 key
-  encoding and validation, streaming SHA-1 accept-token computation over the
-  single `accept_guid` constant, `std.Io.Reader`/`Writer` request and response
-  heads, client request construction and response verification, server request
+  encoding and validation, `std.Io.Reader`/`Writer` request and response heads,
+  client request construction and response verification, server request
   validation, and `101 Switching Protocols` response construction. It verifies
   `Sec-WebSocket-Accept` as deliberate hardening beyond fastwebsockets 0.10.0,
   accepts `Connection` and `Upgrade` token lists, rejects duplicate key,
@@ -108,8 +107,36 @@ documentation foundation:
   the head buffered for the frame path, reads the head in chunks independent of
   the transport reader's buffer, and never allocates or opens a socket. The
   server primitives (`is_request`, `validate_request`, `read_request`, and
-  `write_response`) are shared from this module; `src/upgrade.zig` remains
-  planned for the HTTP server call order.
+  `write_response`) are shared from this module, and it re-exports
+  `accept_guid`, `accept_token_len`, `AcceptTokenBuffer`, and
+  `compute_accept_token` from `src/upgrade.zig` so client callers keep working;
+  the accept GUID literal and streaming accept-token derivation are owned by
+  `src/upgrade.zig`.
+- `src/upgrade.zig` implements the RFC 6455 server upgrade call order and owns
+  the `accept_guid` constant plus the accept-token derivation. `incoming` reads
+  and strictly validates a request without writing; `IncomingUpgrade.upgrade`
+  and the one-shot `upgrade` force the server role on a config copy, construct
+  the zero-allocation split from caller storage with
+  `split.after_handshake_split`, and only then write and flush the 101 through
+  `handshake.write_response`. Split construction validates caller storage and
+  configuration without I/O, so those failures precede every response byte; a
+  failed 101 write or flush discards the constructed split. `upgrade_async`
+  returns `UpgradeFut = std.Io.Future(Error!Upgrade)`; the future and the
+  resolved `Upgrade` borrow the reader, writer, head storage, split storage, and
+  request view, so callers must await or cancel before releasing them. The
+  one-shot `upgrade` does not inspect `Origin`, matching fastwebsockets, and it
+  is not an authentication boundary; callers with cookie or ambient
+  authentication should use `incoming`, inspect `request.head`, and apply origin
+  policy before `.upgrade`. `IncomingUpgrade` fields are public, so callers that
+  need the validation guarantee must use `incoming`. No response bytes are
+  written before both request validation and split-storage validation succeed,
+  coalesced bytes stay buffered in the reader, and all storage is caller-owned
+  with no allocation, socket, or task opened outside the caller-provided
+  `std.Io`. Root exports include `upgrade`, `Upgrade`,
+  `UpgradeFut`, `IncomingUpgrade`, `upgrade_websocket`,
+  `upgrade_websocket_async`, `read_incoming_upgrade`, `is_upgrade_request`,
+  `accept_guid`, `accept_token_len`, `AcceptTokenBuffer`, and
+  `compute_accept_token`.
 - `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt` are the
   generated zon2nix views used by the flake for offline builds.
 - `flake.nix`, `flake.lock`, and `.envrc` provide the Zig 0.17.1 shell.
@@ -125,9 +152,10 @@ documentation foundation:
 The test suite covers the dependency boundary, the error model, the frame
 facade, the incremental UTF-8 validator, the fragment accumulator and collector,
 the connection policy, raw frame path, and write paths, the split reads and
-writes, and the HTTP handshake; `src/root.zig` adds fragment, connection, split,
-and handshake re-export tests. Do not describe `src/upgrade.zig` as implemented
-before it exists and is tested; `src/handshake.zig` is implemented and tested.
+writes, the HTTP handshake, and the server upgrade call order, including
+validated-only `incoming`, split construction before the 101 write and flush,
+the forced server role, and the async future and its borrows; `src/root.zig`
+adds fragment, connection, split, and handshake re-export tests.
 
 ## Non-Negotiable Architecture
 
@@ -174,15 +202,16 @@ Current files:
 | --- | --- |
 | `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe tests, `check` step, and the zslay dependency. |
 | `build.zig.zon.nix`, `.json`, `.txt` | Generated zon2nix views for offline Nix builds and dependency audits. |
-| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, the error model, the fragment accumulator and collector, the connection layer, the split read and write halves, and the HTTP handshake primitives. |
+| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, the error model, the fragment accumulator and collector, the connection layer, the split read and write halves, the HTTP handshake primitives, and the server upgrade call order. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` and `CloseCode` aliases with conversions, `unmask`/`unmask_at`, the header-length bridge, and write paths. |
 | `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
 | `src/utf8.zig` | Incremental UTF-8 validation: `std.unicode` complete ranges, split code-point `State`, and a `std.Io.Reader` adapter. |
 | `src/fragment.zig` | `Fragments` accumulator and `FragmentCollector` over `zslay.Conn`: caller-owned `frame_buffer` that bounds one frame payload and `message_buffer` that bounds one collected message, streaming text validation, and control-frame pass-through. |
 | `src/connection.zig` | Role-aware `WebSocket` policy over `zslay.Conn`: caller-owned reader, writer, and storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, and vectored or copied writes. |
 | `src/split.zig` | Split `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned read and write storage, sink-forwarded obligations, and `FragmentCollectorRead`. |
-| `src/handshake.zig` | RFC 6455 client handshake and shared server upgrade primitives: `std.Io` request/response heads, key generation and validation, streaming accept-token computation, token-list validation, and the `101` response. |
-| `src/test.zig` | Unit tests for the error model, frame facade, UTF-8 validator, fragment accumulator and collector, connection policy and write paths, split reads and writes, and HTTP handshake; expanded as protocol layers land. |
+| `src/handshake.zig` | RFC 6455 client handshake and shared server upgrade primitives: `std.Io` request/response heads, key generation and validation, accept-token re-exports from `src/upgrade.zig`, token-list validation, and the `101` response. |
+| `src/upgrade.zig` | RFC 6455 server upgrade call order: `incoming` validation without writing, split construction from caller storage before the 101 write and flush through `handshake.write_response`, forced server role, and `upgrade_async` over `std.Io.Future`. |
+| `src/test.zig` | Unit tests for the error model, frame facade, UTF-8 validator, fragment accumulator and collector, connection policy and write paths, split reads and writes, HTTP handshake and server upgrade; expanded as protocol layers land. |
 | `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
@@ -199,7 +228,7 @@ Current files:
 | `.gitignore` | Nix, Zig, build, graph, and editor output. |
 | `README.md`, root `*.md` | Banner, architecture, contributor, security, release, and agent guides. |
 
-Target source layout, in dependency order:
+Target source layout, roughly in dependency order:
 
 | Path | Purpose |
 | --- | --- |
@@ -216,9 +245,14 @@ Target source layout, in dependency order:
 | `src/native_stream.zig` | Planned extension: `std.Io.Reader`/`std.Io.Writer` adapter for `std.Io.net.Stream`. |
 | `src/deflate.zig` | Planned extension: RFC 7692 permessage-deflate state and context takeover. |
 | `src/pubsub.zig` | Planned extension: bounded topic hub and fanout over the frame/stream API. |
-| `src/handshake.zig` | Implemented: RFC 6455 client handshake and shared server upgrade primitives over `std.Io.Reader`/`Writer`, including key generation, accept-token computation, head parsing, and response construction. |
-| `src/upgrade.zig` | Planned: HTTP server orchestration over the validated `handshake` request and response primitives, including the 101 write and flush. |
+| `src/handshake.zig` | Implemented: RFC 6455 client handshake and shared server upgrade primitives over `std.Io.Reader`/`Writer`, including key generation, accept-token re-exports from `src/upgrade.zig`, head parsing, and response construction. |
+| `src/upgrade.zig` | Implemented: RFC 6455 server upgrade call order over the validated `handshake` request and response primitives, including the accept-token derivation, split construction from caller storage before the 101 write and flush, the forced server role, and `upgrade`, `incoming`, and `upgrade_async`. |
 | `src/test.zig` | Unit tests for all protocol layers and extensions. |
+
+The handshake/upgrade pair deliberately forms a small re-export cycle:
+`src/upgrade.zig` uses the handshake request and response primitives, and
+`src/handshake.zig` re-exports the accept-token names from `src/upgrade.zig`.
+Treat the pair as one dependency unit rather than a strict ordering.
 
 There is no target `src/close.zig` or `src/mask.zig`. zslay already owns the
 close predicate, payload validator, outgoing close validation, and masking;
@@ -227,11 +261,10 @@ one-line delegations from `src/frame.zig`. Do not create a second enum, range
 table, or XOR loop. See `CODEBASE.md#compatibility-notes` before adapting a
 zslay behavior.
 
-Planned extension rows are roadmap items; their files do not exist yet. The
-`src/upgrade.zig` row and the remaining extension rows are unimplemented;
-`src/handshake.zig` is implemented. Extend the planned owner in
-`AGENT_DIRECTORY.md` and the matching agent definitions before creating one of
-these modules.
+Planned extension rows are roadmap items; their files do not exist yet.
+`src/handshake.zig` and `src/upgrade.zig` are implemented. Extend the planned
+owner in `AGENT_DIRECTORY.md` and the matching agent definitions before creating
+one of these modules.
 
 Keep one owner per file. Cross-scope work is handed to the owning agent or
 reviewer instead of edited in the same pass.
