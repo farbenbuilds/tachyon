@@ -6,6 +6,7 @@ const connection = @import("connection.zig");
 const errors = @import("error.zig");
 const fragment = @import("fragment.zig");
 const frame = @import("frame.zig");
+const split = @import("split.zig");
 const utf8 = @import("utf8.zig");
 
 const Frame = frame.Frame;
@@ -902,10 +903,10 @@ test "Mask: unmask_at matches unmask for a chunked payload" {
     try std.testing.expectEqualSlices(u8, &whole, &chunked);
 }
 
-fn validate_utf8_across_split(bytes: []const u8, split: usize) zslay.Error!void {
+fn validate_utf8_across_split(bytes: []const u8, split_at: usize) zslay.Error!void {
     var state: utf8.State = .{};
-    state = try state.feed(bytes[0..split]);
-    state = try state.feed(bytes[split..]);
+    state = try state.feed(bytes[0..split_at]);
+    state = try state.feed(bytes[split_at..]);
     try state.finish();
 }
 
@@ -931,9 +932,9 @@ test "UTF-8: accepts the full valid boundary corpus" {
         try utf8.validate(bytes);
         try std.testing.expect(utf8.is_valid(bytes));
 
-        var split: usize = 0;
-        while (split <= bytes.len) : (split += 1) {
-            try validate_utf8_across_split(bytes, split);
+        var split_at: usize = 0;
+        while (split_at <= bytes.len) : (split_at += 1) {
+            try validate_utf8_across_split(bytes, split_at);
         }
 
         var state: utf8.State = .{};
@@ -952,9 +953,9 @@ test "UTF-8: accepts valid text across every chunk boundary" {
     try std.testing.expect(utf8.is_valid(text));
     try std.testing.expect(!utf8.is_valid("\xff"));
 
-    var split: usize = 0;
-    while (split <= text.len) : (split += 1) {
-        try validate_utf8_across_split(text, split);
+    var split_at: usize = 0;
+    while (split_at <= text.len) : (split_at += 1) {
+        try validate_utf8_across_split(text, split_at);
     }
 
     const chunk_sizes = [_]usize{ 1, 2, 3, 4, 7 };
@@ -1039,9 +1040,9 @@ test "UTF-8: rejects malformed sequences at every chunk split" {
         try std.testing.expectError(error.InvalidUtf8, utf8.validate(bytes));
         try std.testing.expect(!utf8.is_valid(bytes));
 
-        var split: usize = 0;
-        while (split <= bytes.len) : (split += 1) {
-            try std.testing.expectError(error.InvalidUtf8, validate_utf8_across_split(bytes, split));
+        var split_at: usize = 0;
+        while (split_at <= bytes.len) : (split_at += 1) {
+            try std.testing.expectError(error.InvalidUtf8, validate_utf8_across_split(bytes, split_at));
         }
     }
 }
@@ -3071,6 +3072,57 @@ test "WebSocket: client sends a masked 1002 for an invalid close code" {
     try std.testing.expectEqual(client.writer.written, index);
 }
 
+test "WebSocket: invalid close plus failed 1002 send leaves the read latch clear" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x46);
+    var stream: EncodedStream(32) = .{};
+    var close_payload = [_]u8{ 0x03, 0xe7, 'b', 'a', 'd' };
+    var text_payload = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.close_raw(&close_payload));
+    try stream.append(Frame.text(&text_payload));
+
+    var reader = stream.reader();
+    var client: ConnectionRig(16, 2, 32, 8, 0, 16) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+    client.writer.fail_after = 0;
+
+    try std.testing.expectError(error.IoError, client.ws.read_frame());
+    try std.testing.expectEqual(@as(?WebSocketError, null), client.ws.read_failure);
+    try std.testing.expectEqual(@as(?WebSocketError, error.IoError), client.ws.write_failure);
+    try std.testing.expectEqual(@as(usize, 0), client.writer.written);
+
+    client.ws.reset_tx();
+    try std.testing.expectEqual(@as(?WebSocketError, null), client.ws.write_failure);
+
+    const received = try client.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.text, received.opcode);
+    try std.testing.expectEqualStrings("ok", received.payload);
+}
+
+test "WebSocket: successful 1002 latches InvalidCloseCode" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x45);
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 0x03, 0xe7, 'b', 'a', 'd' };
+    try stream.append(Frame.close_raw(&payload));
+
+    var reader = stream.reader();
+    var client: ConnectionRig(16, 2, 32, 8, 0, 32) = .{};
+    try client.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    try std.testing.expectError(error.InvalidCloseCode, client.ws.read_frame());
+    try std.testing.expectEqual(@as(?WebSocketError, error.InvalidCloseCode), client.ws.read_failure);
+    try std.testing.expectEqual(@as(?WebSocketError, null), client.ws.write_failure);
+    const seek_after_first = reader.seek;
+
+    try std.testing.expectError(error.InvalidCloseCode, client.ws.read_frame());
+    try std.testing.expectEqual(seek_after_first, reader.seek);
+}
+
 test "WebSocket: close code 1014 is accepted and echoed" {
     var stream: EncodedStream(32) = .{};
     var close_storage: [8]u8 = undefined;
@@ -4334,4 +4386,973 @@ test "WebSocket: a mid-frame writer failure is not retried" {
     try std.testing.expectError(error.IoError, server.ws.write_frame(Frame.text(&retry)));
     try std.testing.expectEqual(@as(usize, 1), server.writer.drain_calls);
     try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x05 }, server.bytes());
+}
+
+/// Caller-owned split storage plus a recording writer.
+///
+/// Read and write halves use disjoint regions: a read reply borrows read
+/// storage while the write half drains it, so sharing would alias queued
+/// payload bytes during composition.
+fn SplitRig(
+    comptime frame_capacity: usize,
+    comptime node_count: usize,
+    comptime compose_capacity: usize,
+    comptime close_capacity: usize,
+    comptime scratch_capacity: usize,
+    comptime out_capacity: usize,
+) type {
+    return struct {
+        frame_buffer: [frame_capacity]u8 = undefined,
+        message_buffer: [frame_capacity]u8 = undefined,
+        tx_nodes: [node_count]zslay.FrameNode = undefined,
+        read_compose_buffer: [compose_capacity]u8 = undefined,
+        write_buffer: [compose_capacity]u8 = undefined,
+        read_close_buffer: [close_capacity]u8 = undefined,
+        write_close_buffer: [close_capacity]u8 = undefined,
+        mask_scratch: [scratch_capacity]u8 = undefined,
+        out: [out_capacity]u8 = undefined,
+        writer: RecordingVecWriter = undefined,
+        split: split.Split = undefined,
+
+        const Self = @This();
+
+        fn init(self: *Self, reader: *std.Io.Reader, config: split.Config) !void {
+            self.writer = RecordingVecWriter.init(&self.out);
+            self.split = try split.after_handshake_split(reader, &self.writer.writer, .{
+                .read = .{
+                    .frame_buffer = &self.frame_buffer,
+                    .close_buffer = &self.read_close_buffer,
+                    .compose_buffer = &self.read_compose_buffer,
+                },
+                .write = .{
+                    .tx_nodes = &self.tx_nodes,
+                    .write_buffer = &self.write_buffer,
+                    .close_buffer = &self.write_close_buffer,
+                    .mask_scratch = &self.mask_scratch,
+                },
+            }, config);
+        }
+
+        fn bytes(self: *const Self) []const u8 {
+            return self.out[0..self.writer.written];
+        }
+    };
+}
+
+test "Split: server pair reads a masked client frame and writes an unmasked reply" {
+    var stream: EncodedStream(32) = .{};
+    var inbound = [_]u8{ 'h', 'i' };
+    try append_masked(&stream, Frame.text(&inbound), .{ 0x01, 0x02, 0x03, 0x04 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(64, 2, 32, 8, 0, 64) = .{};
+    try parts.init(&reader, .{ .role = .server });
+
+    const received = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.text, received.opcode);
+    try std.testing.expect(received.fin);
+    try std.testing.expectEqual(@as(?split.MaskingKey, null), received.masking_key);
+    try std.testing.expectEqualStrings("hi", received.payload);
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+
+    var outbound = [_]u8{ 'o', 'k' };
+    try parts.split.write_frame(Frame.text(&outbound));
+    try parts.split.flush();
+
+    var index: usize = 0;
+    const wire = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expectEqual(split.OpCode.text, split.OpCode.from_wire(wire.header.header.opcode).?);
+    try std.testing.expect(!wire.header.header.mask);
+    try std.testing.expectEqual(@as(?split.MaskingKey, null), wire.header.masking_key);
+    try std.testing.expectEqualStrings("ok", wire.payload);
+    try std.testing.expectEqual(parts.writer.written, index);
+}
+
+test "Split: client pair masks writes on the key schedule and reads clear inbound frames" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x2a);
+    var empty = std.Io.Reader.fixed("");
+    var parts: SplitRig(32, 2, 64, 8, 16, 64) = .{};
+    try parts.init(&empty, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    var expected_keys = connection.MaskKeySource.from_seed(seed);
+    const first_key = expected_keys.next();
+
+    var first_payload = [_]u8{ 'h', 'i' };
+    try parts.split.write_frame(Frame.text(&first_payload));
+
+    var index: usize = 0;
+    const first = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expect(first.header.header.mask);
+    try std.testing.expectEqualSlices(u8, &first_key, &first.header.masking_key.?);
+    try std.testing.expectEqual(@as(u8, 'h' ^ first_key[0]), first.payload[0]);
+    try std.testing.expectEqual(@as(u8, 'i' ^ first_key[1]), first.payload[1]);
+
+    var plaintext: [2]u8 = undefined;
+    @memcpy(&plaintext, first.payload);
+    zslay.mask(&plaintext, first_key, 0);
+    try std.testing.expectEqualStrings("hi", &plaintext);
+
+    const written_after_first = parts.writer.written;
+    var inbound: EncodedStream(16) = .{};
+    var inbound_payload = [_]u8{ 'o', 'k' };
+    try inbound.append(Frame.text(&inbound_payload));
+    empty = inbound.reader();
+
+    const received = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.text, received.opcode);
+    try std.testing.expectEqual(@as(?split.MaskingKey, null), received.masking_key);
+    try std.testing.expectEqualStrings("ok", received.payload);
+    try std.testing.expectEqual(written_after_first, parts.writer.written);
+
+    var second_payload = [_]u8{ 'g', 'o' };
+    try parts.split.write_frame(Frame.text(&second_payload));
+
+    const second_key = expected_keys.next();
+    const second = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expect(second.header.header.mask);
+    try std.testing.expectEqualSlices(u8, &second_key, &second.header.masking_key.?);
+    try std.testing.expectEqual(parts.writer.written, index);
+}
+
+test "Split: read_frame forwards an exact pong through the write half and suppresses the ping" {
+    var stream: EncodedStream(32) = .{};
+    var ping_payload = [_]u8{ 'h', 'i' };
+    var text_payload = [_]u8{ 'o', 'k' };
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x01, 0x02, 0x03, 0x04 });
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x05, 0x06, 0x07, 0x08 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{ .role = .server });
+
+    const received = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.text, received.opcode);
+    try std.testing.expectEqualStrings("ok", received.payload);
+
+    var index: usize = 0;
+    const pong = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expectEqual(split.OpCode.pong, split.OpCode.from_wire(pong.header.header.opcode).?);
+    try std.testing.expect(!pong.header.header.mask);
+    try std.testing.expectEqual(@as(?split.MaskingKey, null), pong.header.masking_key);
+    try std.testing.expectEqualStrings("hi", pong.payload);
+    try std.testing.expectEqual(parts.writer.written, index);
+    try std.testing.expectEqual(@as(usize, 0), parts.split.write.tx_pending());
+}
+
+test "Split: auto_pong off delivers the ping and writes nothing" {
+    var stream: EncodedStream(16) = .{};
+    var ping_payload = [_]u8{ 'h', 'i' };
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x09, 0x0a, 0x0b, 0x0c });
+
+    var reader = stream.reader();
+    var parts: SplitRig(16, 1, 32, 8, 0, 16) = .{};
+    try parts.init(&reader, .{ .role = .server, .options = .{ .auto_pong = false } });
+
+    const received = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.ping, received.opcode);
+    try std.testing.expect(received.fin);
+    try std.testing.expectEqual(@as(?split.MaskingKey, null), received.masking_key);
+    try std.testing.expectEqualStrings("hi", received.payload);
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+    try std.testing.expect(!parts.split.is_closed());
+    try std.testing.expect(parts.split.is_at_wire_boundary());
+}
+
+test "Split: auto_close echoes a valid close through the write half and gates later reads" {
+    var stream: EncodedStream(32) = .{};
+    var close_storage: [8]u8 = undefined;
+    var text_payload = [_]u8{'x'};
+    try append_masked(&stream, try Frame.close(1000, "bye", &close_storage), .{ 0xa1, 0xb2, 0xc3, 0xd4 });
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x11, 0x22, 0x33, 0x44 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{ .role = .server });
+
+    const received = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.close, received.opcode);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, received.payload);
+    try std.testing.expect(parts.split.write.is_closed());
+    try std.testing.expect(parts.split.is_closed());
+
+    var index: usize = 0;
+    const echo = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expectEqual(split.OpCode.close, split.OpCode.from_wire(echo.header.header.opcode).?);
+    try std.testing.expect(!echo.header.header.mask);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, echo.payload);
+    try std.testing.expectEqual(parts.writer.written, index);
+
+    const written_after_close = parts.writer.written;
+    try std.testing.expectError(error.ConnectionClosed, parts.split.read_frame());
+    try std.testing.expectEqual(written_after_close, parts.writer.written);
+}
+
+test "Split: invalid close code sends a masked 1002 with the reason and closes the write half" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x48);
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 0x03, 0xe7, 'b', 'a', 'd' };
+    try stream.append(Frame.close_raw(&payload));
+
+    var reader = stream.reader();
+    var parts: SplitRig(16, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    try std.testing.expectError(error.InvalidCloseCode, parts.split.read_frame());
+    try std.testing.expect(parts.split.write.is_closed());
+
+    var index: usize = 0;
+    const reply = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expect(reply.header.header.mask);
+    const key = reply.header.masking_key.?;
+    try std.testing.expectEqual(@as(usize, 5), reply.payload.len);
+
+    var plaintext: [5]u8 = undefined;
+    @memcpy(&plaintext, reply.payload);
+    zslay.mask(&plaintext, key, 0);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xea, 'b', 'a', 'd' }, &plaintext);
+    try std.testing.expectEqual(parts.writer.written, index);
+}
+
+test "Split: successful 1002 through an external sink is terminal and latched" {
+    const CountingSink = struct {
+        sent: usize = 0,
+
+        pub fn send_obligation(self: *@This(), outgoing: Frame) WebSocketError!void {
+            _ = outgoing;
+            self.sent += 1;
+        }
+
+        pub fn is_closed(self: *const @This()) bool {
+            _ = self;
+            return false;
+        }
+
+        pub fn failure(self: *const @This()) ?WebSocketError {
+            _ = self;
+            return null;
+        }
+    };
+
+    var stream: EncodedStream(32) = .{};
+    var close_payload = [_]u8{ 0x03, 0xe7, 'b', 'a', 'd' };
+    var trailing = [_]u8{'x'};
+    try append_masked(&stream, Frame.close_raw(&close_payload), .{ 0x81, 0x82, 0x83, 0x84 });
+    try append_masked(&stream, Frame.text(&trailing), .{ 0x85, 0x86, 0x87, 0x88 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{ .role = .server });
+
+    var sink: CountingSink = .{};
+    try std.testing.expectError(error.InvalidCloseCode, parts.split.read_frame_with(&sink));
+    try std.testing.expectEqual(@as(usize, 1), sink.sent);
+    try std.testing.expectEqual(@as(?WebSocketError, error.InvalidCloseCode), parts.split.read.inner.read_failure);
+    try std.testing.expect(parts.split.read.inner.is_closed());
+    try std.testing.expect(parts.split.is_closed());
+    const seek_after_first = reader.seek;
+
+    var text = [_]u8{'y'};
+    try std.testing.expectError(error.ConnectionClosed, parts.split.write_frame(Frame.text(&text)));
+
+    try std.testing.expectError(error.InvalidCloseCode, parts.split.read_frame_with(&sink));
+    try std.testing.expectEqual(seek_after_first, reader.seek);
+    try std.testing.expectEqual(@as(usize, 1), sink.sent);
+}
+
+test "Split: successful 1002 through the internal write half latches InvalidCloseCode" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x47);
+    const wire_key: MaskingKey = .{ 0x21, 0x22, 0x23, 0x24 };
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 0x03, 0xe7, 'b', 'a', 'd' };
+    var trailing = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.close_raw(&payload));
+    try append_masked(&stream, Frame.text(&trailing), wire_key);
+
+    var reader = stream.reader();
+    var parts: SplitRig(16, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    try std.testing.expectError(error.InvalidCloseCode, parts.split.read_frame());
+    try std.testing.expectEqual(@as(?WebSocketError, error.InvalidCloseCode), parts.split.read.inner.read_failure);
+    try std.testing.expectEqual(@as(?WebSocketError, null), parts.split.write.failure());
+    try std.testing.expect(parts.split.write.is_closed());
+    const seek_after_first = reader.seek;
+
+    try std.testing.expectError(error.InvalidCloseCode, parts.split.read_frame());
+    try std.testing.expectEqual(seek_after_first, reader.seek);
+}
+
+test "Split: invalid UTF-8 close reason returns InvalidUTF8 with no output" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 0x03, 0xe8, 0xff };
+    try append_masked(&stream, Frame.close_raw(&payload), .{ 0x1a, 0x2b, 0x3c, 0x4d });
+
+    var reader = stream.reader();
+    var parts: SplitRig(16, 2, 32, 8, 0, 16) = .{};
+    try parts.init(&reader, .{ .role = .server });
+
+    try std.testing.expectError(error.InvalidUTF8, parts.split.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+    try std.testing.expect(!parts.split.write.is_closed());
+    try std.testing.expect(parts.split.is_at_wire_boundary());
+    const seek_after_failure = reader.seek;
+
+    try std.testing.expectError(error.InvalidUTF8, parts.split.read_frame());
+    try std.testing.expectEqual(seek_after_failure, reader.seek);
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+}
+
+test "Split: client auto_apply_mask off delivers control frames without replies" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x3c);
+    var stream: EncodedStream(32) = .{};
+    var ping_payload = [_]u8{ 'h', 'i' };
+    var close_storage: [8]u8 = undefined;
+    var text_payload = [_]u8{'x'};
+    try stream.append(Frame.ping(&ping_payload));
+    try stream.append(try Frame.close(1000, "bye", &close_storage));
+    try stream.append(Frame.text(&text_payload));
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{
+        .role = .client,
+        .options = .{ .auto_apply_mask = false },
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    const ping = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.ping, ping.opcode);
+    try std.testing.expectEqualStrings("hi", ping.payload);
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+    try std.testing.expect(!parts.split.is_closed());
+
+    const close = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.close, close.opcode);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, close.payload);
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+    try std.testing.expect(parts.split.is_closed());
+    try std.testing.expect(!parts.split.write.is_closed());
+
+    try std.testing.expectError(error.ConnectionClosed, parts.split.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+}
+
+test "Split: auto_apply_mask off delivers masked frames and skips control policy" {
+    const key: MaskingKey = .{ 0x11, 0x22, 0x33, 0x44 };
+    var stream: EncodedStream(64) = .{};
+    var text_payload = [_]u8{ 'h', 'i' };
+    var ping_payload = [_]u8{'p'};
+    var close_storage: [8]u8 = undefined;
+    try append_masked(&stream, Frame.text(&text_payload), key);
+    try append_masked(&stream, Frame.ping(&ping_payload), key);
+    try append_masked(&stream, try Frame.close(1000, "bye", &close_storage), key);
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 8) = .{};
+    try parts.init(&reader, .{ .role = .server, .options = .{ .auto_apply_mask = false } });
+
+    var plaintext: [8]u8 = undefined;
+
+    const text = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.text, text.opcode);
+    try std.testing.expectEqual(@as(?split.MaskingKey, key), text.masking_key);
+    @memcpy(plaintext[0..text.payload.len], text.payload);
+    zslay.mask(plaintext[0..text.payload.len], key, 0);
+    try std.testing.expectEqualStrings("hi", plaintext[0..text.payload.len]);
+
+    const ping = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.ping, ping.opcode);
+    try std.testing.expectEqual(@as(?split.MaskingKey, key), ping.masking_key);
+    @memcpy(plaintext[0..ping.payload.len], ping.payload);
+    zslay.mask(plaintext[0..ping.payload.len], key, 0);
+    try std.testing.expectEqualStrings("p", plaintext[0..ping.payload.len]);
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+
+    const close = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.close, close.opcode);
+    try std.testing.expectEqual(@as(?split.MaskingKey, key), close.masking_key);
+    @memcpy(plaintext[0..close.payload.len], close.payload);
+    zslay.mask(plaintext[0..close.payload.len], key, 0);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, plaintext[0..close.payload.len]);
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+    try std.testing.expect(!parts.split.is_closed());
+}
+
+test "Split: automatic pong prepare failure latches the read half" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x4e);
+    var stream: EncodedStream(16) = .{};
+    var ping_payload = [_]u8{ 'p', 'i', 'n', 'g' };
+    try stream.append(Frame.ping(&ping_payload));
+
+    var reader = stream.reader();
+    var parts: SplitRig(16, 2, 32, 8, 0, 16) = .{};
+    try parts.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+    parts.split.write.set_auto_apply_mask(false);
+
+    try std.testing.expectError(error.PayloadNotMasked, parts.split.read_frame());
+    try std.testing.expectEqual(@as(?WebSocketError, error.PayloadNotMasked), parts.split.read.inner.read_failure);
+    try std.testing.expectEqual(@as(?WebSocketError, null), parts.split.write.failure());
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+
+    try std.testing.expectError(error.PayloadNotMasked, parts.split.read_frame());
+    try std.testing.expectEqual(@as(?WebSocketError, error.PayloadNotMasked), parts.split.read.inner.read_failure);
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+}
+
+test "Split: failed 1002 send leaves the read latch clear until reset_tx" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x5e);
+    var stream: EncodedStream(32) = .{};
+    var close_payload = [_]u8{ 0x03, 0xe7, 'b', 'a', 'd' };
+    var text_payload = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.close_raw(&close_payload));
+    try stream.append(Frame.text(&text_payload));
+
+    var reader = stream.reader();
+    var parts: SplitRig(16, 2, 32, 8, 0, 16) = .{};
+    try parts.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+    parts.writer.fail_after = 0;
+
+    try std.testing.expectError(error.IoError, parts.split.read_frame());
+    try std.testing.expectEqual(@as(?WebSocketError, null), parts.split.read.inner.read_failure);
+    try std.testing.expectEqual(@as(?WebSocketError, error.IoError), parts.split.write.failure());
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+
+    parts.split.reset_tx();
+    try std.testing.expectEqual(@as(?WebSocketError, null), parts.split.write.failure());
+
+    const received = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.text, received.opcode);
+    try std.testing.expectEqualStrings("ok", received.payload);
+}
+
+test "Split: FragmentCollectorRead does not latch a sink transport failure" {
+    var stream: EncodedStream(32) = .{};
+    var ping_payload = [_]u8{'p'};
+    var text_payload = [_]u8{ 'o', 'k' };
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x91, 0x92, 0x93, 0x94 });
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x95, 0x96, 0x97, 0x98 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{ .role = .server });
+    parts.writer.fail_after = 0;
+
+    var collector = try split.FragmentCollectorRead.init(parts.split.read, &parts.message_buffer);
+
+    try std.testing.expectError(error.IoError, collector.read_frame(&parts.split.write));
+    try std.testing.expectEqual(@as(?WebSocketError, null), collector.failure);
+    try std.testing.expectEqual(@as(?WebSocketError, null), collector.read.inner.read_failure);
+    try std.testing.expectEqual(@as(?WebSocketError, null), parts.split.read.inner.read_failure);
+    try std.testing.expectEqual(@as(?WebSocketError, error.IoError), parts.split.write.failure());
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+
+    parts.split.reset_tx();
+
+    const received = try collector.read_frame(&parts.split.write);
+    try std.testing.expectEqual(split.OpCode.text, received.opcode);
+    try std.testing.expectEqualStrings("ok", received.payload);
+}
+
+test "Split: read_frame_with an external sink records the close in the read half" {
+    const CountingSink = struct {
+        sent: usize = 0,
+
+        pub fn send_obligation(self: *@This(), outgoing: Frame) WebSocketError!void {
+            _ = outgoing;
+            self.sent += 1;
+        }
+
+        pub fn is_closed(self: *const @This()) bool {
+            _ = self;
+            return false;
+        }
+
+        pub fn failure(self: *const @This()) ?WebSocketError {
+            _ = self;
+            return null;
+        }
+    };
+
+    var stream: EncodedStream(32) = .{};
+    var close_storage: [8]u8 = undefined;
+    var trailing = [_]u8{'x'};
+    try append_masked(&stream, try Frame.close(1000, "bye", &close_storage), .{ 0x61, 0x62, 0x63, 0x64 });
+    try append_masked(&stream, Frame.text(&trailing), .{ 0x65, 0x66, 0x67, 0x68 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{ .role = .server });
+
+    var sink: CountingSink = .{};
+    const received = try parts.split.read_frame_with(&sink);
+    try std.testing.expectEqual(split.OpCode.close, received.opcode);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b', 'y', 'e' }, received.payload);
+    try std.testing.expectEqual(@as(usize, 1), sink.sent);
+    try std.testing.expect(parts.split.is_closed());
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+
+    var text = [_]u8{'x'};
+    try std.testing.expectError(error.ConnectionClosed, parts.split.write_frame(Frame.text(&text)));
+    try std.testing.expectError(error.ConnectionClosed, parts.split.read_frame());
+}
+
+test "Split: client pong masking uses the write-half key schedule" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x6e);
+    var stream: EncodedStream(32) = .{};
+    var ping_payload = [_]u8{ 'p', 'i', 'n', 'g' };
+    var text_payload = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.ping(&ping_payload));
+    try stream.append(Frame.text(&text_payload));
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 16, 32) = .{};
+    try parts.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+
+    var expected_keys = connection.MaskKeySource.from_seed(seed);
+    const expected_key = expected_keys.next();
+
+    const received = try parts.split.read_frame();
+    try std.testing.expectEqual(split.OpCode.text, received.opcode);
+    try std.testing.expectEqualStrings("ok", received.payload);
+
+    var index: usize = 0;
+    const pong = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expectEqual(split.OpCode.pong, split.OpCode.from_wire(pong.header.header.opcode).?);
+    try std.testing.expect(pong.header.header.mask);
+    try std.testing.expectEqualSlices(u8, &expected_key, &pong.header.masking_key.?);
+
+    var plaintext: [4]u8 = undefined;
+    @memcpy(&plaintext, pong.payload);
+    zslay.mask(&plaintext, expected_key, 0);
+    try std.testing.expectEqualStrings("ping", &plaintext);
+    try std.testing.expectEqual(parts.writer.written, index);
+}
+
+test "Split: truncated header and payload latch UnexpectedEOF until reset" {
+    {
+        var wire = [_]u8{0x81};
+        var reader = std.Io.Reader.fixed(&wire);
+        var parts: SplitRig(16, 1, 32, 8, 0, 8) = .{};
+        try parts.init(&reader, .{ .role = .server });
+
+        try std.testing.expectError(error.UnexpectedEOF, parts.split.read_frame());
+        try std.testing.expectEqual(@as(usize, 1), reader.seek);
+        try std.testing.expect(!parts.split.is_at_wire_boundary());
+        try std.testing.expectError(error.UnexpectedEOF, parts.split.read_frame());
+        try std.testing.expectEqual(@as(usize, 1), reader.seek);
+
+        parts.split.reset();
+        try std.testing.expect(parts.split.is_at_wire_boundary());
+
+        // The truncated transport is discarded; the caller positions the
+        // reader at a fresh frame boundary after reset.
+        var fresh: EncodedStream(16) = .{};
+        var payload = [_]u8{ 'o', 'k' };
+        try append_masked(&fresh, Frame.text(&payload), .{ 0x0a, 0x0b, 0x0c, 0x0d });
+        reader = fresh.reader();
+
+        const received = try parts.split.read_frame();
+        try std.testing.expectEqualStrings("ok", received.payload);
+    }
+
+    {
+        // Masked header with a three-byte payload, but only two bytes follow.
+        var wire = [_]u8{ 0x81, 0x83, 0x01, 0x02, 0x03, 0x04, 'a', 'b' };
+        var reader = std.Io.Reader.fixed(&wire);
+        var parts: SplitRig(16, 1, 32, 8, 0, 8) = .{};
+        try parts.init(&reader, .{ .role = .server });
+
+        try std.testing.expectError(error.UnexpectedEOF, parts.split.read_frame());
+        try std.testing.expectEqual(@as(usize, 8), reader.seek);
+        try std.testing.expect(!parts.split.is_at_wire_boundary());
+        try std.testing.expectError(error.UnexpectedEOF, parts.split.read_frame());
+        try std.testing.expectEqual(@as(usize, 8), reader.seek);
+
+        parts.split.reset();
+        try std.testing.expect(parts.split.is_at_wire_boundary());
+
+        var fresh: EncodedStream(16) = .{};
+        var payload = [_]u8{ 'o', 'k' };
+        try append_masked(&fresh, Frame.text(&payload), .{ 0x1a, 0x2b, 0x3c, 0x4d });
+        reader = fresh.reader();
+
+        const received = try parts.split.read_frame();
+        try std.testing.expectEqualStrings("ok", received.payload);
+    }
+}
+
+test "Split: zero max_message_size rejects before consuming and does not latch" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 'o', 'k' };
+    try append_masked(&stream, Frame.text(&payload), .{ 0x31, 0x32, 0x33, 0x34 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(16, 1, 32, 8, 0, 8) = .{};
+    try parts.init(&reader, .{ .role = .server, .options = .{ .max_message_size = 0 } });
+
+    try std.testing.expectError(error.FrameTooLarge, parts.split.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), reader.seek);
+    try std.testing.expectError(error.FrameTooLarge, parts.split.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), reader.seek);
+
+    parts.split.set_max_message_size(8);
+    try std.testing.expectEqual(@as(usize, 8), parts.split.read.max_message_size());
+    try std.testing.expectEqual(@as(usize, 8), parts.split.write.max_message_size());
+
+    const received = try parts.split.read_frame();
+    try std.testing.expectEqualStrings("ok", received.payload);
+}
+
+test "Split: a write failure latches, blocks reads, and reset_tx clears it" {
+    const seed: [connection.mask_seed_len]u8 = @splat(0x5d);
+    var stream: EncodedStream(16) = .{};
+    var inbound = [_]u8{ 'o', 'k' };
+    try stream.append(Frame.text(&inbound));
+
+    var reader = stream.reader();
+    var parts: SplitRig(16, 2, 32, 8, 0, 16) = .{};
+    try parts.init(&reader, .{
+        .role = .client,
+        .mask_keys = connection.MaskKeySource.from_seed(seed),
+    });
+    parts.writer.fail_after = 0;
+
+    var payload = [_]u8{ 'h', 'i' };
+    try std.testing.expectError(error.IoError, parts.split.write_frame(Frame.text(&payload)));
+    try std.testing.expectEqual(@as(?WebSocketError, error.IoError), parts.split.write.failure());
+    try std.testing.expectEqual(@as(usize, 1), parts.split.write.tx_pending());
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+
+    try std.testing.expectError(error.IoError, parts.split.read_frame());
+    try std.testing.expectEqual(@as(usize, 0), reader.seek);
+
+    parts.split.reset_tx();
+    try std.testing.expectEqual(@as(?WebSocketError, null), parts.split.write.failure());
+    try std.testing.expectEqual(@as(usize, 0), parts.split.write.tx_pending());
+    try std.testing.expect(!parts.split.is_closed());
+
+    const received = try parts.split.read_frame();
+    try std.testing.expectEqualStrings("ok", received.payload);
+}
+
+test "Split: write_frame after close rejects data but serializes repeated closes" {
+    var empty = std.Io.Reader.fixed("");
+    var parts: SplitRig(16, 2, 32, 8, 0, 64) = .{};
+    try parts.init(&empty, .{ .role = .server });
+
+    var first_close_storage: [8]u8 = undefined;
+    try parts.split.write_frame(try Frame.close(1000, "a", &first_close_storage));
+    const after_first_close = parts.writer.written;
+    try std.testing.expect(parts.split.write.is_closed());
+
+    var text = [_]u8{'x'};
+    try std.testing.expectError(error.ConnectionClosed, parts.split.write_frame(Frame.text(&text)));
+    try std.testing.expectEqual(after_first_close, parts.writer.written);
+
+    var second_close_storage: [8]u8 = undefined;
+    try parts.split.write_frame(try Frame.close(1000, "b", &second_close_storage));
+    try std.testing.expect(parts.split.write.is_closed());
+    try std.testing.expectEqual(@as(usize, 0), parts.split.write.tx_pending());
+
+    var index: usize = 0;
+    const first = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'a' }, first.payload);
+    const second = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'b' }, second.payload);
+    try std.testing.expectEqual(parts.writer.written, index);
+}
+
+test "Split: FragmentCollectorRead assembles a split code point with an interleaved ping" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{ 'A', 0xe2 };
+    var ping_payload = [_]u8{'p'};
+    var last = [_]u8{ 0x82, 0xac };
+    try append_masked(&stream, Frame.init(false, .text, null, &first), .{ 0x01, 0x02, 0x03, 0x04 });
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x05, 0x06, 0x07, 0x08 });
+    try append_masked(&stream, Frame.init(true, .continuation, null, &last), .{ 0x09, 0x0a, 0x0b, 0x0c });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{ .role = .server });
+
+    var collector = try split.FragmentCollectorRead.init(parts.split.read, &parts.message_buffer);
+    const message = try collector.read_frame(&parts.split.write);
+    try std.testing.expectEqual(split.OpCode.text, message.opcode);
+    try std.testing.expect(message.fin);
+    try std.testing.expectEqualSlices(u8, &.{ 'A', 0xe2, 0x82, 0xac }, message.payload);
+    try std.testing.expectEqual(@as(usize, 0), collector.message_len());
+    try std.testing.expect(collector.is_at_frame_boundary());
+
+    var index: usize = 0;
+    const pong = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expectEqual(split.OpCode.pong, split.OpCode.from_wire(pong.header.header.opcode).?);
+    try std.testing.expectEqualStrings("p", pong.payload);
+    try std.testing.expectEqual(parts.writer.written, index);
+}
+
+test "Split: FragmentCollectorRead delivers a ping between fragments without disturbing accumulation" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{ 'A', 0xe2 };
+    var ping_payload = [_]u8{'p'};
+    var last = [_]u8{ 0x82, 0xac };
+    try append_masked(&stream, Frame.init(false, .text, null, &first), .{ 0x11, 0x12, 0x13, 0x14 });
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x15, 0x16, 0x17, 0x18 });
+    try append_masked(&stream, Frame.init(true, .continuation, null, &last), .{ 0x19, 0x1a, 0x1b, 0x1c });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{ .role = .server, .options = .{ .auto_pong = false } });
+
+    var collector = try split.FragmentCollectorRead.init(parts.split.read, &parts.message_buffer);
+    const ping = try collector.read_frame(&parts.split.write);
+    try std.testing.expectEqual(split.OpCode.ping, ping.opcode);
+    try std.testing.expectEqualStrings("p", ping.payload);
+    try std.testing.expectEqual(@as(usize, 2), collector.message_len());
+    try std.testing.expect(!collector.is_at_frame_boundary());
+
+    const message = try collector.read_frame(&parts.split.write);
+    try std.testing.expectEqualSlices(u8, &.{ 'A', 0xe2, 0x82, 0xac }, message.payload);
+    try std.testing.expectEqual(@as(usize, 0), collector.message_len());
+    try std.testing.expect(collector.is_at_frame_boundary());
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+}
+
+test "Split: FragmentCollectorRead rejects a message buffer overlapping the read frame buffer" {
+    var empty = std.Io.Reader.fixed("");
+    var parts: SplitRig(16, 1, 32, 8, 0, 8) = .{};
+    try parts.init(&empty, .{ .role = .server });
+
+    try std.testing.expectError(
+        error.InvalidLength,
+        split.FragmentCollectorRead.init(parts.split.read, parts.frame_buffer[0..8]),
+    );
+}
+
+test "Split: FragmentCollectorRead reset clears an in-progress message and boundary tracking" {
+    var stream: EncodedStream(64) = .{};
+    var first = [_]u8{ 'h', 'e' };
+    var ping_payload = [_]u8{'p'};
+    var text_payload = [_]u8{ 'o', 'k' };
+    try append_masked(&stream, Frame.init(false, .text, null, &first), .{ 0x21, 0x22, 0x23, 0x24 });
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x25, 0x26, 0x27, 0x28 });
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x29, 0x2a, 0x2b, 0x2c });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{ .role = .server, .options = .{ .auto_pong = false } });
+
+    var collector = try split.FragmentCollectorRead.init(parts.split.read, &parts.message_buffer);
+    const ping = try collector.read_frame(&parts.split.write);
+    try std.testing.expectEqual(split.OpCode.ping, ping.opcode);
+    try std.testing.expectEqual(@as(usize, 2), collector.message_len());
+    try std.testing.expect(!collector.is_at_frame_boundary());
+
+    collector.reset();
+    try std.testing.expectEqual(@as(usize, 0), collector.message_len());
+    try std.testing.expect(collector.is_at_frame_boundary());
+
+    const message = try collector.read_frame(&parts.split.write);
+    try std.testing.expectEqual(split.OpCode.text, message.opcode);
+    try std.testing.expectEqualStrings("ok", message.payload);
+    try std.testing.expectEqual(@as(usize, 0), parts.writer.written);
+}
+
+test "Split: FragmentCollectorRead latches an accumulation failure until reset" {
+    var stream: EncodedStream(16) = .{};
+    var payload = [_]u8{ 'a', 'b', 'c', 'd', 'e' };
+    try append_masked(&stream, Frame.init(false, .text, null, &payload), .{ 0x31, 0x32, 0x33, 0x34 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(16, 1, 32, 8, 0, 8) = .{};
+    try parts.init(&reader, .{ .role = .server });
+
+    var collector = try split.FragmentCollectorRead.init(parts.split.read, parts.message_buffer[0..4]);
+
+    try std.testing.expectError(error.BufferTooShort, collector.read_frame(&parts.split.write));
+    try std.testing.expectEqual(@as(?WebSocketError, error.BufferTooShort), collector.failure);
+    const seek_after_failure = reader.seek;
+
+    try std.testing.expectError(error.BufferTooShort, collector.read_frame(&parts.split.write));
+    try std.testing.expectEqual(seek_after_failure, reader.seek);
+    try std.testing.expectEqual(@as(?WebSocketError, error.BufferTooShort), collector.failure);
+
+    collector.reset();
+    try std.testing.expectEqual(@as(?WebSocketError, null), collector.failure);
+    try std.testing.expect(collector.is_at_frame_boundary());
+}
+
+test "Split: FragmentCollectorRead does not latch ConnectionClosed before a peer close" {
+    var stream: EncodedStream(64) = .{};
+    var local_close_storage: [8]u8 = undefined;
+    var text_payload = [_]u8{ 'o', 'k' };
+    var peer_close_storage: [8]u8 = undefined;
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x71, 0x72, 0x73, 0x74 });
+    try append_masked(&stream, try Frame.close(1000, "peer", &peer_close_storage), .{ 0x75, 0x76, 0x77, 0x78 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{ .role = .server });
+
+    try parts.split.write_frame(try Frame.close(1000, "local", &local_close_storage));
+
+    var collector = try split.FragmentCollectorRead.init(parts.split.read, &parts.message_buffer);
+
+    try std.testing.expectError(error.ConnectionClosed, collector.read_frame(&parts.split.write));
+    try std.testing.expectEqual(@as(?WebSocketError, null), collector.failure);
+
+    const received = try collector.read_frame(&parts.split.write);
+    try std.testing.expectEqual(split.OpCode.close, received.opcode);
+    try std.testing.expectEqualSlices(u8, &.{ 0x03, 0xe8, 'p', 'e', 'e', 'r' }, received.payload);
+    try std.testing.expectEqual(@as(?WebSocketError, null), collector.failure);
+}
+
+test "Split: FragmentCollectorRead does not latch a zero-max FrameTooLarge" {
+    var stream: EncodedStream(16) = .{};
+    var text_payload = [_]u8{ 'o', 'k' };
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x79, 0x7a, 0x7b, 0x7c });
+
+    var reader = stream.reader();
+    var parts: SplitRig(16, 1, 32, 8, 0, 8) = .{};
+    try parts.init(&reader, .{ .role = .server, .options = .{ .max_message_size = 0 } });
+
+    var collector = try split.FragmentCollectorRead.init(parts.split.read, &parts.message_buffer);
+
+    try std.testing.expectError(error.FrameTooLarge, collector.read_frame(&parts.split.write));
+    try std.testing.expectEqual(@as(?WebSocketError, null), collector.failure);
+    try std.testing.expectEqual(@as(usize, 0), reader.seek);
+
+    collector.read.set_max_message_size(8);
+    const received = try collector.read_frame(&parts.split.write);
+    try std.testing.expectEqual(split.OpCode.text, received.opcode);
+    try std.testing.expectEqualStrings("ok", received.payload);
+    try std.testing.expectEqual(@as(?WebSocketError, null), collector.failure);
+}
+
+test "Split: public module re-exports the split surface" {
+    const root = @import("root.zig");
+
+    try std.testing.expect(root.Split == split.Split);
+    try std.testing.expect(root.WebSocketRead == split.WebSocketRead);
+    try std.testing.expect(root.WebSocketWrite == split.WebSocketWrite);
+    try std.testing.expect(root.FragmentCollectorRead == split.FragmentCollectorRead);
+    try std.testing.expect(root.SplitStorage == split.Storage);
+    try std.testing.expect(root.SplitReadStorage == split.ReadStorage);
+    try std.testing.expect(root.SplitWriteStorage == split.WriteStorage);
+    try std.testing.expect(root.SplitOptions == split.Options);
+    try std.testing.expect(root.SplitConfig == split.Config);
+    try std.testing.expect(root.after_handshake_split == split.after_handshake_split);
+}
+
+test "Split: setters apply to both halves and remain reachable on each half" {
+    var empty = std.Io.Reader.fixed("");
+    var parts: SplitRig(16, 2, 32, 8, 0, 64) = .{};
+    try parts.init(&empty, .{ .role = .server });
+
+    // The split-level setters reach the half that owns each option. Inbound
+    // close and pong policy belong to the read half; vectored writes belong to
+    // the write half; masking and the writev threshold are shared.
+    try std.testing.expect(parts.split.read.inner.options.auto_close);
+    try std.testing.expect(parts.split.write.inner.options.auto_close);
+
+    parts.split.set_auto_close(false);
+    try std.testing.expect(!parts.split.read.inner.options.auto_close);
+    try std.testing.expect(parts.split.write.inner.options.auto_close);
+
+    parts.split.set_auto_pong(false);
+    try std.testing.expect(!parts.split.read.inner.options.auto_pong);
+    try std.testing.expect(parts.split.write.inner.options.auto_pong);
+
+    parts.split.set_auto_apply_mask(false);
+    try std.testing.expect(!parts.split.read.inner.options.auto_apply_mask);
+    try std.testing.expect(!parts.split.write.inner.options.auto_apply_mask);
+
+    parts.split.set_writev(false);
+    try std.testing.expect(parts.split.read.inner.options.writev);
+    try std.testing.expect(!parts.split.write.inner.options.writev);
+
+    parts.split.set_writev_threshold(7);
+    try std.testing.expectEqual(@as(usize, 7), parts.split.read.inner.options.writev_threshold);
+    try std.testing.expectEqual(@as(usize, 7), parts.split.write.inner.options.writev_threshold);
+
+    parts.split.set_max_message_size(123);
+    try std.testing.expectEqual(@as(usize, 123), parts.split.read.max_message_size());
+    try std.testing.expectEqual(@as(usize, 123), parts.split.write.max_message_size());
+
+    parts.split.read.set_max_message_size(45);
+    try std.testing.expectEqual(@as(usize, 45), parts.split.read.max_message_size());
+    try std.testing.expectEqual(@as(usize, 123), parts.split.write.max_message_size());
+
+    parts.split.write.set_max_message_size(67);
+    try std.testing.expectEqual(@as(usize, 45), parts.split.read.max_message_size());
+    try std.testing.expectEqual(@as(usize, 67), parts.split.write.max_message_size());
+
+    parts.split.set_max_message_size(128);
+    try std.testing.expectEqual(@as(usize, 128), parts.split.read.max_message_size());
+    try std.testing.expectEqual(@as(usize, 128), parts.split.write.max_message_size());
+
+    parts.split.read.set_writev_threshold(0);
+    parts.split.read.set_auto_apply_mask(true);
+    parts.split.read.set_auto_close(true);
+    parts.split.read.set_auto_pong(true);
+    parts.split.write.set_writev(false);
+    parts.split.write.set_writev_threshold(0);
+    parts.split.write.set_auto_apply_mask(true);
+    parts.split.set_writev(false);
+    parts.split.set_writev_threshold(0);
+    parts.split.set_auto_apply_mask(true);
+
+    var payload = [_]u8{ 'a', 'b', 'c', 'd' };
+    try parts.split.write_frame(Frame.text(&payload));
+    try std.testing.expectEqual(@as(usize, 1), parts.writer.max_iovecs);
+    try std.testing.expectEqual(@as(usize, 1), parts.writer.drain_calls);
+}
+
+test "Split: server read honors the exclusive maximum at short and extended lengths" {
+    var stream: EncodedStream(512) = .{};
+    const lengths = [_]usize{ 0, 1, 125, 126 };
+    const keys = [_]MaskingKey{
+        .{ 0x01, 0x02, 0x03, 0x04 },
+        .{ 0x05, 0x06, 0x07, 0x08 },
+        .{ 0x09, 0x0a, 0x0b, 0x0c },
+        .{ 0x0d, 0x0e, 0x0f, 0x10 },
+    };
+    for (lengths, keys) |len, key| {
+        var payload: [126]u8 = @splat(0x41);
+        try append_masked(&stream, Frame.binary(payload[0..len]), key);
+    }
+
+    var max_payload: [127]u8 = @splat(0x41);
+    try append_masked(&stream, Frame.binary(&max_payload), .{ 0x11, 0x12, 0x13, 0x14 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(126, 2, 32, 8, 0, 8) = .{};
+    try parts.init(&reader, .{ .role = .server, .options = .{ .max_message_size = 127 } });
+
+    const expected: [126]u8 = @splat(0x41);
+    for (lengths) |len| {
+        const received = try parts.split.read_frame();
+        try std.testing.expectEqual(split.OpCode.binary, received.opcode);
+        try std.testing.expectEqual(len, received.payload.len);
+        try std.testing.expectEqualSlices(u8, expected[0..len], received.payload);
+    }
+
+    try std.testing.expectError(error.FrameTooLarge, parts.split.read_frame());
 }

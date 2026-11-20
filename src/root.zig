@@ -1,8 +1,8 @@
 //! tachyon public module.
 //!
 //! Re-exports the pinned zslay codec, the frame facade, the incremental UTF-8
-//! validator, the WebSocket error model, the fragment collector, and the
-//! role-aware connection layer.
+//! validator, the WebSocket error model, the fragment collector, the role-aware
+//! connection layer, and the split read and write halves.
 
 pub const zslay = @import("zslay");
 
@@ -63,6 +63,18 @@ pub const ConnectionStorage = connection.Storage;
 pub const MaskKeySource = connection.MaskKeySource;
 pub const default_max_message_size = connection.default_max_message_size;
 pub const default_writev_threshold = connection.default_writev_threshold;
+
+pub const split = @import("split.zig");
+pub const Split = split.Split;
+pub const WebSocketRead = split.WebSocketRead;
+pub const WebSocketWrite = split.WebSocketWrite;
+pub const FragmentCollectorRead = split.FragmentCollectorRead;
+pub const SplitStorage = split.Storage;
+pub const SplitReadStorage = split.ReadStorage;
+pub const SplitWriteStorage = split.WriteStorage;
+pub const SplitOptions = split.Options;
+pub const SplitConfig = split.Config;
+pub const after_handshake_split = split.after_handshake_split;
 
 test {
     _ = @import("test.zig");

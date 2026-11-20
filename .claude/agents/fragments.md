@@ -13,11 +13,11 @@ Own message fragmentation buffering and split connection halves.
 
 ## Scope
 
-`src/fragment.zig`: `FragmentCollector`, fragment accumulation, text validation through the framing-owned `src/utf8.zig` validator, and completed-message delivery. `src/split.zig`: read and write halves plus split constructors. Add fragmentation and split tests in `src/test.zig` when the testing agent is unavailable. Never edit frame primitives, connection policy, handshake, build, or CI files.
+`src/fragment.zig`: `FragmentCollector`, fragment accumulation, text validation through the framing-owned `src/utf8.zig` validator, and completed-message delivery. `src/split.zig`: `WebSocketRead`, `WebSocketWrite`, `Split`, `after_handshake_split`/`init`, caller-owned `ReadStorage`/`WriteStorage`/`Storage`, sink-forwarded pong and close obligations, and `FragmentCollectorRead` with caller-owned `message_buffer` and latch/reset behavior. Add fragmentation and split tests in `src/test.zig` when the testing agent is unavailable. Never edit frame primitives, connection policy, handshake, build, or CI files.
 
 ## Rules
 
-Rely on `zslay.Conn` for continuation ordering, control-frame interleaving, and cumulative message-size limits; do not reimplement those checks. The collector owns only buffering; it validates text with the framing-owned `src/utf8.zig` validator, including split code points. Preserve explicit read and write state; no hidden allocation or dynamic dispatch.
+Rely on `zslay` and `connection` for continuation ordering, control-frame interleaving, cumulative message-size limits, close policy, masking direction, fragment ordering, and the transmit queue; do not reimplement those checks. The read half never writes and the write half never reads; each half owns an independent `connection.WebSocket`/`zslay.Conn`. The collector owns only buffering; it validates text with the framing-owned `src/utf8.zig` validator, including split code points. Preserve explicit read and write state; no hidden allocation or dynamic dispatch.
 
 ## Workflow
 

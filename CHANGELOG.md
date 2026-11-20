@@ -58,14 +58,50 @@ This project follows semantic versioning.
   otherwise an empty reason. Automatic pong and close replies are flushed before
   `read_frame` returns; a client with `auto_apply_mask` off does not attempt
   automatic replies: pings are delivered, and closes are validated but not
-  echoed or answered with 1002. `closed` gates non-close reads and writes; read
-  failures latch until `reset` and write failures until `reset_tx`, and a zero
-  maximum rejects before consuming. Writes mask chunks in caller-owned scratch
-  or the write buffer, use the vectored path above the threshold and the copied
-  path at or below it, and never allocate. `MaskKeySource` is a seeded ChaCha8
-  source, so tests are deterministic and production seeds come from the caller.
+  echoed or answered with 1002. `closed` gates non-close reads and writes;
+  `read_event` does not latch an error that also fills a reply, `read_frame`
+  latches it after a successful send, a transport send failure stays with the
+  write latch until `reset_tx`, and other read failures latch until `reset`
+  except `ConnectionClosed`; a zero maximum rejects before consuming without
+  latching. Writes mask chunks in caller-owned scratch or the write buffer, use
+  the vectored path above the threshold and the copied path at or below it, and
+  never allocate. `MaskKeySource` is a seeded ChaCha8 source, so tests are
+  deterministic and production seeds come from the caller.
   `WebSocket` and the connection options, config, storage, and mask-source
   types are exported from `src/root.zig` with Debug and ReleaseSafe tests.
+- `src/split.zig` with the split read/write surface: `Split`, `WebSocketRead`,
+  `WebSocketWrite`, `FragmentCollectorRead`, `after_handshake_split`/`init`, and
+  caller-owned `ReadStorage`, `WriteStorage`, and `Storage`. `zslay.Conn`
+  couples RX and TX, so each half owns an independent `connection.WebSocket` and
+  `zslay.Conn`; both halves may share the external reader and writer pointers
+  because each uses one direction. The read half drives
+  `WebSocket.read_event` and never writes, while the write half drives
+  `write_frame` and `flush` and never reads. Automatic pong and close
+  obligations are forwarded through a sink with `send_obligation(Frame)`,
+  `is_closed()`, and `failure()`; `WebSocketWrite.send_obligation` writes and
+  flushes each reply. A successful close reply, including a 1002, marks the read
+  half closed even when the sink is external. An invalid close code still fills
+  its 1002 reply before returning `InvalidCloseCode`; a successful send also
+  latches `InvalidCloseCode` on the read half, while a transport failure while
+  sending the 1002 leaves the read latch clear so `reset_tx` recovers. A prepare
+  or queue failure still latches the send error. A close returned under
+  `auto_close` is terminal even when its echo goes to an external sink, and
+  `Split.write_frame` allows repeated closes but refuses non-close frames once
+  either half is closed; a write failure gates reads. `FragmentCollectorRead`
+  assembles continuations and split UTF-8 code points over a caller-owned
+  `message_buffer`, rejects overlap with the read `frame_buffer` with
+  `InvalidLength`, and latches read and accumulation failures until reset except
+  `ConnectionClosed`, which is not latched so a later peer close stays
+  deliverable, the zero-maximum `FrameTooLarge` configuration rejection, and a
+  sink-owned transport failure: when `sink.failure()` is set, the collector
+  leaves its own latch clear so `reset_tx` owns recovery and allows the next
+  read. Reset clears the collector latch, the read latch, and the in-progress
+  message; it is safe at `is_at_wire_boundary()` or when the transport is
+  discarded. `WebSocket.read_event` is the shared read-step API,
+  and `read_frame` now loops over it, sends the reply, and latches the
+  originating read error only after a successful send without changing unsplit
+  behavior. All storage is caller-owned and zero allocation; exported from
+  `src/root.zig` with Debug and ReleaseSafe tests.
 - zslay dependency pinned in `build.zig.zon` and exposed from `src/root.zig`,
   plus the generated `build.zig.zon.nix`, `.json`, and `.txt` views.
 - Nix flake and lock file for the Zig 0.17.1 development shell, Nix formatting
