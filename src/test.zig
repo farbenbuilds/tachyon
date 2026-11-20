@@ -5844,7 +5844,8 @@ test "Handshake: validate_response accepts token lists and the expected accept" 
         handshake_sample_accept,
     );
 
-    const response = try handshake.validate_response(head, handshake_sample_accept, &status);
+    try std.testing.expect(handshake.validate_response == handshake.verify);
+    const response = try handshake.verify(head, handshake_sample_accept, &status);
     try std.testing.expectEqual(@as(u16, 101), response.status);
     try std.testing.expectEqualStrings(handshake_sample_accept, response.accept);
     try std.testing.expectEqualStrings(head, response.head);
@@ -6155,6 +6156,7 @@ test "Handshake: public module re-exports the handshake surface" {
     try std.testing.expect(root.handshake == handshake);
     try std.testing.expect(root.client_handshake == handshake.client);
     try std.testing.expect(root.client_handshake_with_key == handshake.client_with_key);
+    try std.testing.expect(root.verify_handshake_response == handshake.verify);
     try std.testing.expect(root.is_upgrade_request == handshake.is_request);
     try std.testing.expect(root.validate_upgrade_request == handshake.validate_request);
     try std.testing.expect(root.read_upgrade_request == handshake.read_request);

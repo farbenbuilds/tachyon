@@ -109,8 +109,9 @@ This project follows semantic versioning.
   streaming SHA-1 over the single RFC `accept_guid` constant, parses a bounded
   request or response head in chunks independent of the transport buffer while
   leaving coalesced frame bytes buffered, writes the client GET request,
-  verifies status 101 plus `Upgrade`, `Connection`, and `Sec-WebSocket-Accept`,
-  validates server requests before writing the 101 reply, and rejects duplicate
+  exposes the fastwebsockets-named `verify` response gate for status 101 plus
+  `Upgrade`, `Connection`, and `Sec-WebSocket-Accept`, validates server requests
+  before writing the 101 reply, and rejects duplicate
   key, version, accept, and Host headers plus body-bearing upgrade or 101
   heads. It avoids a fixed concatenation buffer and an empty-token fallback.
   RFC 7692 negotiation and RFC 8441 extended CONNECT stay deferred with their

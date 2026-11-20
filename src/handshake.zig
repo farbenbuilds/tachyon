@@ -32,9 +32,11 @@ pub const Error = errors.WebSocketError;
 
 /// RFC 6455 Section 1.3 GUID used to derive `Sec-WebSocket-Accept`.
 ///
-/// The value is fixed by the protocol. Keeping it in one named constant with a
-/// streaming hash avoids a local concatenation buffer; it is never negotiated,
-/// overridden, or formatted by callers.
+/// The value is required by RFC 6455 and cannot be removed. It is shared with
+/// the server upgrade primitive in this module and moves with that primitive if
+/// it is split into `src/upgrade.zig`; it is never negotiated or overridden.
+/// Keeping it in one named constant with a streaming hash avoids a local
+/// concatenation buffer.
 pub const accept_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// Decoded client key length required by RFC 6455 Section 4.1.
@@ -261,14 +263,13 @@ pub fn read_request(reader: *std.Io.Reader, storage: []u8) Error!Request {
     return validate_request(head);
 }
 
-/// Validates an HTTP response against the expected accept token.
+/// Verifies an HTTP response, matching the fastwebsockets `handshake::verify`
+/// role with the additional `Sec-WebSocket-Accept` hardening.
 ///
 /// For a well-formed status line, `status_out` receives the parsed status,
 /// including a non-101 rejection, following `errors.invalid_status_code`.
 /// A malformed status line returns `InvalidHttpRequest` without writing it.
-/// The accept check is deliberate hardening beyond fastwebsockets 0.10.0, which
-/// does not verify it.
-pub fn validate_response(
+pub fn verify(
     head: []const u8,
     expected_accept: []const u8,
     status_out: *u16,
@@ -298,7 +299,10 @@ pub fn validate_response(
     return .{ .status = status_out.*, .accept = fields.accept.?, .head = head };
 }
 
-/// Reads and validates one client-side handshake response.
+/// Alias for `verify` kept for the validate/read naming used elsewhere.
+pub const validate_response = verify;
+
+/// Reads and verifies one client-side handshake response.
 pub fn read_response(
     reader: *std.Io.Reader,
     storage: []u8,
@@ -306,7 +310,7 @@ pub fn read_response(
     status_out: *u16,
 ) Error!Response {
     const head = try read_head(reader, storage);
-    return validate_response(head, expected_accept, status_out);
+    return verify(head, expected_accept, status_out);
 }
 
 /// Writes a canonical RFC 6455 client upgrade request.

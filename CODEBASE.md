@@ -293,7 +293,8 @@ upgrade primitives over `std.Io.Reader` and `std.Io.Writer`. The client path
 generates 16 bytes through `std.Io.randomSecure`, encodes them as canonical
 base64, writes a GET request with `Host`, `Upgrade`, `Connection`,
 `Sec-WebSocket-Key`, and `Sec-WebSocket-Version: 13`, flushes the writer, reads
-the response head into caller-owned storage, verifies `101 Switching Protocols`,
+the response head into caller-owned storage, and exposes the
+fastwebsockets-named `verify` gate for `101 Switching Protocols`,
 `Upgrade: websocket`, `Connection: Upgrade`, and, as deliberate hardening beyond
 fastwebsockets 0.10.0, `Sec-WebSocket-Accept`. `client_with_key` is the
 deterministic counterpart for tests or a caller-supplied key source.
