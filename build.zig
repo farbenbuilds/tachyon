@@ -1,5 +1,31 @@
 const std = @import("std");
 
+fn testRootModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    zslay: *std.Build.Module,
+) *std.Build.Module {
+    const tachyon = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zslay", .module = zslay },
+        },
+    });
+
+    return b.createModule(.{
+        .root_source_file = b.path("tests/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "tachyon", .module = tachyon },
+            .{ .name = "zslay", .module = zslay },
+        },
+    });
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -26,24 +52,10 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(lib);
 
     const test_debug = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/root.zig"),
-            .target = target,
-            .optimize = .Debug,
-            .imports = &.{
-                .{ .name = "zslay", .module = zslay },
-            },
-        }),
+        .root_module = testRootModule(b, target, .debug, zslay),
     });
     const test_safe = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/root.zig"),
-            .target = target,
-            .optimize = .ReleaseSafe,
-            .imports = &.{
-                .{ .name = "zslay", .module = zslay },
-            },
-        }),
+        .root_module = testRootModule(b, target, .safe, zslay),
     });
 
     const run_test_debug = b.addRunArtifact(test_debug);

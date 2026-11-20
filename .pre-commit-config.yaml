@@ -8,7 +8,7 @@ repos:
       - id: zig-build-test
         entry: nix develop -c zig build test
         language: system
-        files: ^(build\.zig|build\.zig\.zon|src/.*\.zig)$
+        files: ^(build\.zig|build\.zig\.zon|src/.*\.zig|tests/.*\.zig)$
         pass_filenames: false
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
