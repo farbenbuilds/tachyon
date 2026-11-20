@@ -110,8 +110,8 @@ This project follows semantic versioning.
   Transport buffers are validated as non-empty, mutually disjoint, and disjoint
   from connection or split storage. Reads and writes suspend through the
   caller's `std.Io`; the module allocates nothing, starts no task, creates no
-  event loop, and never closes the stream implicitly. `close` and `shutdown`
-  stay explicit caller operations, and detailed reader or writer failures are
+  event loop, and never closes the stream. The original `std.Io.net.Stream`
+  keeps socket lifetime and shutdown. Detailed reader or writer failures are
   available behind the mapped `IoError`. Exported from `src/root.zig` with
   Debug and ReleaseSafe loopback tests.
 - `.github/workflows/test.yml` running `zig build test --summary all` and
@@ -239,7 +239,11 @@ This project follows semantic versioning.
   by a short header read, so `is_at_wire_boundary()` stays false after a
   truncated header and `reset` remains safe only at a real frame boundary.
 - `FragmentCollector.init` now rejects a `message_buffer` overlapping
-  `frame_buffer` with `InvalidLength`, matching the split collector and avoiding
-  undefined `@memcpy` overlap.
+  `frame_buffer` or the reader buffer with `InvalidLength`, matching the split
+  collector and avoiding undefined `@memcpy` overlap.
+- `connection.WebSocket.init` now rejects reader or writer buffers that overlap
+  each other or any caller-owned protocol storage, covering the copy from the
+  reader buffer into a payload target. `FragmentCollectorRead.init` applies the
+  same rule to the collector's message buffer and the read half's buffers.
 - Connection, split, fragment, and native-stream storage checks now call
   `zslay.event.ranges_overlap` instead of maintaining local range predicates.

@@ -104,7 +104,7 @@ documentation foundation:
   transport must keep a stable address because the connection stores pointers to
   its embedded interfaces. Reads and writes suspend through the caller's
   `std.Io`. The module adds no allocation, event loop, task, or implicit socket
-  close; `close` and `shutdown` stay explicit caller operations.
+  close; the original `std.Io.net.Stream` keeps socket lifetime and shutdown.
 - `src/handshake.zig` implements the RFC 6455 HTTP handshake boundary:
   canonical 16-byte key generation through `std.Io.randomSecure`, base64 key
   encoding and validation, `std.Io.Reader`/`Writer` request and response heads,
@@ -225,7 +225,7 @@ Current files:
 | `src/fragment.zig` | `Fragments` accumulator and `FragmentCollector` over `zslay.Conn`: caller-owned `frame_buffer` that bounds one frame payload and `message_buffer` that bounds one collected message, streaming text validation, and control-frame pass-through. |
 | `src/connection.zig` | Role-aware `WebSocket` policy over `zslay.Conn`: caller-owned reader, writer, and storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, and vectored or copied writes. |
 | `src/split.zig` | Split `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned read and write storage, sink-forwarded obligations, and `FragmentCollectorRead`. |
-| `src/native_stream.zig` | Implemented `std.Io.net.Stream` transport binding: caller-owned reader and writer buffers, native `WebSocket` and `Split` wrappers, buffer-alias validation, explicit close and shutdown, and no allocation or task spawning. |
+| `src/native_stream.zig` | Implemented `std.Io.net.Stream` transport binding: caller-owned reader and writer buffers, native `WebSocket` and `Split` wrappers, buffer-alias validation, caller-owned socket lifetime, and no allocation or task spawning. |
 | `src/handshake.zig` | RFC 6455 client handshake and shared server upgrade primitives: `std.Io` request/response heads, key generation and validation, accept-token re-exports from `src/upgrade.zig`, token-list validation, and the `101` response. |
 | `src/upgrade.zig` | RFC 6455 server upgrade call order: `incoming` validation without writing, split construction from caller storage before the 101 write and flush through `handshake.write_response`, forced server role, and `upgrade_async` over `std.Io.Future`. |
 | `tests/main.zig` | Test aggregator; imports every category test file so one module runs under Debug and ReleaseSafe. |

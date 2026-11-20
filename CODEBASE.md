@@ -511,9 +511,11 @@ accept-token names from `src/upgrade.zig`. Treat the pair as one dependency
 unit rather than a strict ordering.
 
 The unit suite under `tests/` is current, and `tests/main.zig` is its only
-aggregator. Future Autobahn, fuzz, and loopback suites belong under `tests/` as
-new integration category folders; none is implemented yet. Library sources
-contain no test blocks.
+aggregator. The native-stream tests use an ephemeral loopback TCP pair through
+the caller's `std.Io`; they are the only loopback exception in the unit suite.
+Future Autobahn, fuzz, and full loopback echo suites belong under `tests/` as
+new integration category folders; none of those compliance suites is implemented
+yet. Library sources contain no test blocks.
 
 The target layout deliberately contains no `src/close.zig` or `src/mask.zig`.
 The close predicate, payload validator, masking routine, and outgoing close
@@ -627,6 +629,7 @@ These differences are deliberate and must stay visible in tests and reviews:
 | Text UTF-8 | The raw path checks only FIN text frames; the collector streams validation | `WebSocket.read_frame` validates clear FIN text frames and delivers non-FIN fragments raw; `FragmentCollector` validates the assembled message across fragments. Neither validates a non-FIN fragment in isolation |
 | Raw versus collector API | Raw `read_frame` and `FragmentCollector` are separate paths | `WebSocket.read_frame` returns wire frames with payloads borrowed from `frame_buffer`; `FragmentCollector` remains the assembled-message API with a caller-owned `message_buffer` |
 | Split halves | Read and write halves share one connection | `zslay.Conn` couples RX and TX, so each half owns an independent `connection.WebSocket` and `zslay.Conn`. `read_event` returns automatic obligations instead of writing; the read half forwards them to a sink, and `WebSocketWrite.send_obligation` writes then flushes. Under `auto_close`, a successful close reply or 1002 closes the read half even through an external sink; a successful invalid-close 1002 also latches `InvalidCloseCode`. A transport failure while sending the 1002 leaves the read latch clear for `reset_tx`, while a prepare or queue failure latches the read half. `Split.write_frame` allows repeated closes but refuses non-close frames once either half is closed |
+| Split storage aliasing | No explicit cross-half aliasing check | `split.after_handshake_split` rejects read storage overlapping write storage with `InvalidLength`; connection construction also rejects reader or writer buffers that alias protocol storage |
 | Raw fragment sequencing | Raw `read_frame` delivers orphan continuations and new data frames mid-fragment; only `FragmentCollector` enforces order | `Conn` rejects both; tachyon's raw API is stricter |
 | Payload and close construction | `Payload` has borrowed, owned, and `BytesMut` variants; `Frame::close` allocates | `Payload` is a caller-owned slice; `Frame.close` needs caller-provided storage |
 | Raw close encoding | `Frame::close` does not validate and `write_frame` sends the payload | Raw `encode_header` accepts a 1-byte close; validate and send close frames through `WebSocket.write_frame`, which uses `prepare_frame` and `queue_frame` |
@@ -742,17 +745,18 @@ contiguous message and can afford the buffer.
 stream types. `Transport.init(io, stream, storage)` calls
 `stream.reader(io, read_buffer)` and `stream.writer(io, write_buffer)` and
 exposes the resulting `std.Io.Reader` and `std.Io.Writer` to the connection and
-split layers. `Transport` keeps the `std.Io` handle and the `std.Io.net.Stream`
-handle but never closes them implicitly; `close` and `shutdown` are explicit
-calls for the owner.
+split layers. `Transport` keeps the `std.Io` handle and the
+`std.Io.net.Stream` reader/writer interfaces but never closes the stream. The
+caller keeps the original `std.Io.net.Stream` and owns its close and shutdown
+calls.
 
 `native_stream.WebSocket.init(transport, storage, config)` constructs a
 `connection.WebSocket` over the transport directions, and
 `native_stream.Split.init(transport, storage, config)` constructs a
 `split.Split`. Both wrappers delegate policy, automatic replies, masking, limits,
-and failure latches to the existing layers; they add no wire state. All fields
-and setters mirror the underlying type so callers do not need to reach through
-`inner` for normal policy changes.
+and failure latches to the existing layers; they add no wire state. The policy
+setters and accessors mirror the underlying type, so callers do not need to
+reach through `inner` for normal policy changes.
 
 Transport buffers must be non-empty, mutually disjoint, and disjoint from every
 connection or split storage slice. The wrappers validate those regions before

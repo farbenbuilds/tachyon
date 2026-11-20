@@ -40,12 +40,14 @@ and pushes to `main` that change a `.zig` or `.zon` file. The workflow requests
 4. Run `zig build check` to type-check the library and both test roots.
 
 The job does not use Nix, so the result does not depend on the runner's Nix
-installation or on a cached flake evaluation. The flake still exposes
-`test-default` and `test-musl` checks for hermetic offline runs:
+installation or on a cached flake evaluation. The flake still exposes the
+`format`, `test-default`, and `test-musl` checks for hermetic offline runs,
+plus `packages.default`:
 
-- a native `zig build test` check,
-- a musl `zig build test` check on Linux,
-- native and cross-target package builds when requested.
+- `format` checks `flake.nix` with alejandra,
+- `test-default` runs a native `zig build test`,
+- `test-musl` runs a musl `zig build test` on Linux,
+- `packages.default` builds `libtachyon.a` with `ReleaseSafe`.
 
 `zig build test` runs the suite in Debug and ReleaseSafe. The Nix check
 derivations seed Zig's package cache from the generated `build.zig.zon.nix`

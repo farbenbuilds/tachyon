@@ -114,7 +114,8 @@ kernel socket buffers.
 ## Future Integration Suites
 
 Autobahn, fuzz, and loopback echo suites belong under `tests/` as new category
-folders. None is implemented yet. This tree currently provides unit coverage
+folders. None of these compliance suites is implemented yet. This tree currently
+provides unit coverage
 plus the loopback native-stream integration described above; do not claim
 Autobahn, fuzz, or a full loopback echo compliance suite until those suites
 exist and pass.

@@ -83,7 +83,8 @@ verification including `Sec-WebSocket-Accept`, server request validation, and
 buffered for the frame path, and the module never allocates or opens a socket.
 `src/root.zig` re-exports the facade, the error model, the UTF-8 validator, the
 fragment accumulator and collector, the connection layer, the split halves, the
-handshake primitives, and the server upgrade call order. The test suite lives
+native stream adapter, the handshake primitives, and the server upgrade call
+order. The test suite lives
 under `tests/` and is aggregated by `tests/main.zig`; category folders such as
 `tests/frame-test/`, `tests/connection-test/`, and `tests/native-stream-test/`
 mirror the protocol layers, and `tests/support.zig` holds shared fixtures.
