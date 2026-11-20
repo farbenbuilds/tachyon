@@ -453,10 +453,12 @@ pub const WebSocketWrite = struct {
 
     /// Sends an automatic reply and flushes it before returning.
     ///
-    /// The reply borrows read-half storage and must stay valid for the call.
+    /// The reply borrows read-half storage and must stay valid for the call; on
+    /// a failed drain it stays borrowed until `reset_tx` or transport discard.
     /// This matches the unsplit connection, which never leaves an obligation in
     /// a buffered writer. `send_control` may use the node reserved for automatic
-    /// replies; application control frames cannot consume it.
+    /// replies; application control frames other than close cannot consume it.
+    /// The payload must not alias the write buffers or `std.Io` buffers.
     pub fn send_obligation(self: *WebSocketWrite, outgoing: Frame) Error!void {
         return self.inner.send_control(outgoing);
     }

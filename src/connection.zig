@@ -162,7 +162,8 @@ pub const WebSocket = struct {
     write_buffer: []u8,
     close_buffer: []u8,
     mask_scratch: []u8,
-    /// Caller transmit-ring capacity, captured for the control reserve.
+    /// Caller transmit-ring capacity. Read-only after `init`; the control
+    /// reserve derives the application data capacity from it.
     tx_capacity: usize,
 
     /// Null only for a server, which never masks outbound frames.
@@ -373,8 +374,8 @@ pub const WebSocket = struct {
     /// discarded after a failure. It must not alias the read `frame_buffer`,
     /// the reader buffer, or the writer buffer, because a later read or drain
     /// can overwrite those regions. Data frames are admitted while the policy
-    /// is writable; application controls may use the data capacity, and
-    /// automatic replies use the reserved node.
+    /// is writable; application controls other than close stop at the data
+    /// capacity, and a close or automatic reply may use the reserved node.
     pub fn enqueue_frame(self: *WebSocket, outgoing: Frame) Error!void {
         try self.check_public_write(outgoing, true);
         return self.queue_frame(outgoing, false);
@@ -393,12 +394,16 @@ pub const WebSocket = struct {
     /// This is the sink path used by split reads. It bypasses the application
     /// control cap so a pong or close reply can use the node that
     /// `Options.backpressure` reserves. It still respects zslay's hard ring
-    /// capacity and close payload validation.
+    /// capacity and close payload validation. The payload may borrow the
+    /// connection's `frame_buffer` or `close_buffer`, but must not alias the
+    /// transmit nodes, composition buffers, or `std.Io` buffers. On a failed
+    /// drain it stays borrowed until `reset_tx` or transport discard.
     pub fn send_control(self: *WebSocket, outgoing: Frame) Error!void {
         if (self.write_failure) |failure| return failure;
         if (!frame.is_control(outgoing.opcode)) return error.InvalidOpcode;
         if (outgoing.opcode != .close and self.closed) return error.ConnectionClosed;
         if (outgoing.masking_key != null) return error.PayloadMasked;
+        if (self.payload_overlaps_obligation_scratch(outgoing.payload)) return error.InvalidLength;
 
         try self.queue_frame(outgoing, true);
 
@@ -785,6 +790,27 @@ pub const WebSocket = struct {
         return outgoing;
     }
 
+    fn payload_overlaps_obligation_scratch(self: *const WebSocket, payload: []const u8) bool {
+        const start = @intFromPtr(payload.ptr);
+        if (self.conn.tx_storage_overlaps(start, payload.len)) return true;
+
+        const regions = [_][]const u8{
+            self.write_buffer,
+            self.mask_scratch,
+            self.reader.buffer,
+            self.writer.buffer,
+        };
+        for (regions) |region| {
+            if (zslay.event.ranges_overlap(
+                start,
+                payload.len,
+                @intFromPtr(region.ptr),
+                region.len,
+            )) return true;
+        }
+        return false;
+    }
+
     /// True when the outbound payload overlaps caller read lifetime storage.
     ///
     /// Deferred enqueue keeps the payload borrowed until a later flush, so it
@@ -849,6 +875,7 @@ pub const WebSocket = struct {
         if (self.flow != null and frame.is_control(outgoing.opcode) and
             outgoing.opcode != .close and !allow_control_reserve)
         {
+            std.debug.assert(self.tx_capacity >= 2);
             const data_capacity = self.tx_capacity - 1;
             if (self.conn.tx_pending() >= data_capacity) return error.WouldBlock;
         }

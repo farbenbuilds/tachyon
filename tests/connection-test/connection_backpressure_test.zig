@@ -314,6 +314,53 @@ test "Connection: a peer close is delivered while the producer is paused" {
     try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
 }
 
+test "Connection: send_control rejects composition-buffer aliases" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 64, 8, 0, 64) = .{};
+    try server.init(&empty, .{ .role = .server });
+
+    server.write_buffer[0] = 'x';
+    try std.testing.expectError(
+        error.InvalidLength,
+        server.ws.send_control(Frame.ping(server.write_buffer[0..1])),
+    );
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+}
+
+test "Connection: QueueFull rolls back the watermark charge" {
+    var empty = std.Io.Reader.fixed("");
+    var server: ConnectionRig(16, 2, 64, 8, 0, 64) = .{};
+    try server.init(&empty, .{
+        .role = .server,
+        .options = .{
+            .backpressure = .{
+                .high_water_bytes = 8,
+                .high_water_frames = 1,
+            },
+        },
+    });
+
+    var first_storage: [2]u8 = undefined;
+    var second_storage: [2]u8 = undefined;
+    var third_storage: [2]u8 = undefined;
+    try server.ws.enqueue_frame(try Frame.close(1000, "", &first_storage));
+    try server.ws.enqueue_frame(try Frame.close(1000, "", &second_storage));
+    try std.testing.expectEqual(@as(usize, 2), server.ws.queued_frames());
+
+    try std.testing.expectError(
+        error.QueueFull,
+        server.ws.enqueue_frame(try Frame.close(1000, "", &third_storage)),
+    );
+    try std.testing.expectEqual(@as(usize, 2), server.ws.queued_frames());
+    try std.testing.expectEqual(@as(usize, 4), server.ws.queued_bytes());
+    try std.testing.expectEqual(@as(usize, 2), server.ws.tx_pending());
+    try std.testing.expect(server.ws.is_closed());
+
+    server.ws.reset_tx();
+    try std.testing.expectEqual(@as(usize, 0), server.ws.queued_frames());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+}
+
 test "Connection: application close may use the reserved node at data capacity" {
     var empty = std.Io.Reader.fixed("");
     var server: ConnectionRig(16, 3, 64, 8, 0, 64) = .{};
