@@ -145,6 +145,34 @@ test "Backpressure: a close waits for queued frames" {
     try std.testing.expectEqual(Phase.closed, flow.state.phase);
 }
 
+test "Backpressure: a close on an idle queue closes immediately" {
+    var flow = try Flow.init(.{
+        .high_water_bytes = 8,
+        .high_water_frames = 2,
+    });
+
+    try std.testing.expectEqual(Action.close_transport, try flow.close());
+    try std.testing.expectEqual(Phase.closed, flow.state.phase);
+
+    try std.testing.expectEqual(Action.none, try flow.enqueue_control(Charge.frame(1)));
+    try std.testing.expectEqual(@as(usize, 1), flow.state.queued_frames);
+    try std.testing.expectEqual(Action.none, try flow.flushed(.{ .bytes = 1, .frames = 1 }));
+    try std.testing.expectEqual(Phase.closed, flow.state.phase);
+}
+
+test "Backpressure: a zero-length data frame still charges a frame" {
+    var flow = try Flow.init(.{
+        .high_water_bytes = 8,
+        .high_water_frames = 2,
+    });
+
+    try std.testing.expectEqual(Action.write, try flow.enqueue_data(Charge.frame(0)));
+    try std.testing.expectEqual(@as(usize, 0), flow.state.queued_bytes);
+    try std.testing.expectEqual(@as(usize, 1), flow.state.queued_frames);
+    try std.testing.expectEqual(Action.none, try flow.flushed(.{ .frames = 1 }));
+    try std.testing.expectEqual(Phase.writable, flow.state.phase);
+}
+
 test "Backpressure: abort is terminal" {
     var flow = try Flow.init(.{
         .high_water_bytes = 8,
@@ -172,6 +200,16 @@ test "Backpressure: overflow and over-flush fail closed" {
     try std.testing.expectError(
         error.ByteCountOverflow,
         backpressure.transition(overflow_state, .{ .data = Charge.frame(1) }),
+    );
+
+    const frame_overflow_state = State{
+        .queued_bytes = 0,
+        .queued_frames = std.math.maxInt(usize),
+        .limits = limits,
+    };
+    try std.testing.expectError(
+        error.ByteCountOverflow,
+        backpressure.transition(frame_overflow_state, .{ .data = Charge.frame(1) }),
     );
 
     const full_state = State{
