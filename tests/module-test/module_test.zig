@@ -87,6 +87,31 @@ test "Backpressure: public module re-exports the policy" {
     try std.testing.expectEqual(@as(usize, 1), charge.frames);
 }
 
+test "Deflate: public module re-exports the codec" {
+    const std = @import("std");
+
+    try std.testing.expect(tachyon.Deflater == tachyon.deflate.Deflater);
+    try std.testing.expect(tachyon.Inflater == tachyon.deflate.Inflater);
+    try std.testing.expect(tachyon.DeflateConfig == tachyon.deflate.Config);
+    try std.testing.expect(tachyon.DeflateError == tachyon.deflate.Error);
+    try std.testing.expect(tachyon.DeflaterStorage == tachyon.deflate.DeflaterStorage);
+    try std.testing.expect(tachyon.InflaterStorage == tachyon.deflate.InflaterStorage);
+    try std.testing.expect(@hasField(tachyon.DeflaterStorage, "compressor"));
+    try std.testing.expect(@hasField(tachyon.InflaterStorage, "decompressor"));
+    try std.testing.expectEqualSlices(u8, &.{ 0x00, 0x00, 0xff, 0xff }, &tachyon.sync_tail);
+    try std.testing.expectEqual(@as(usize, 1), try tachyon.max_compressed_len(0));
+
+    var deflater_storage: tachyon.DeflaterStorage = undefined;
+    var deflater = try tachyon.Deflater.init(&deflater_storage, .{});
+    var wire: [2048]u8 = undefined;
+    const compressed = try deflater.compress("module", &wire);
+
+    var inflater_storage: tachyon.InflaterStorage = undefined;
+    var inflater = try tachyon.Inflater.init(&inflater_storage, .{});
+    var output: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("module", try inflater.decompress(compressed, &output));
+}
+
 test "Fragment: public module re-exports the fragment layer" {
     const std = @import("std");
 

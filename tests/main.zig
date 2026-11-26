@@ -29,6 +29,8 @@ test {
     _ = @import("split-test/split_backpressure_test.zig");
     _ = @import("split-test/split_collector_test.zig");
     _ = @import("native-stream-test/native_stream_test.zig");
+    _ = @import("deflate-test/deflate_test.zig");
+    _ = @import("deflate-test/inflate_test.zig");
     _ = @import("handshake-test/handshake_request_test.zig");
     _ = @import("handshake-test/handshake_head_test.zig");
     _ = @import("handshake-test/handshake_response_test.zig");

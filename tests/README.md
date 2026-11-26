@@ -50,6 +50,9 @@ tests/
 │   └── split_collector_test.zig          # FragmentCollectorRead over a split half.
 ├── native-stream-test/
 │   └── native_stream_test.zig            # std.Io.net.Stream transport, WebSocket, and Split.
+├── deflate-test/
+│   ├── deflate_test.zig                  # Sender roundtrips, context takeover, aliasing, limits, and configuration.
+│   └── inflate_test.zig                  # Receiver bounds, structurally invalid streams, BFINAL, adapter boundaries, and RFC vector.
 ├── handshake-test/
 │   ├── handshake_request_test.zig        # Server request construction and validation.
 │   ├── handshake_head_test.zig           # Bounded HTTP head parsing.
@@ -74,8 +77,16 @@ Category folders use the `<area>-test/` naming pattern, and test files use
 | `stream-test` | Chunked message reads, control interleaving, incremental UTF-8, close and error latches, writer ordering, masking, limits, and watermark retries. |
 | `split-test` | Split core, reads, outbound-pressure independence, and `FragmentCollectorRead`. |
 | `native-stream-test` | `std.Io.net.Stream` transport binding, native `WebSocket`, native `Split`, watermark delegation, and buffer-alias rejection. |
+| `deflate-test` | Codec payload roundtrips, context and no-context takeover, compression bounds, exact-full and decompression-bomb output, structurally invalid input, truncation behavior, aliasing, adapter boundaries, and RFC 7692 vector decoding. |
 | `handshake-test` | Request, head, response, and client handshake behavior. |
 | `upgrade-test` | Server upgrade call order, including validation and async behavior. |
+
+The deflate category covers the RFC 7692 message payload codec only. It does not
+claim wire activation, negotiated RSV1 support, or Autobahn compliance; those
+remain blocked on zslay and the handshake layer. Malformed input that leaves a
+non-clean block boundary fails closed, but DEFLATE has no integrity or checksum,
+so some truncated or corrupted streams can still decode to a shorter or wrong
+message. Decompressed output is untrusted.
 
 `tests/main.zig` imports every category test file in one `test` block. It is the
 root module for both the Debug and ReleaseSafe test steps. `tests/support.zig`

@@ -44,7 +44,7 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 | Agent | Area | Owned paths |
 | --- | --- | --- |
 | `framing` | Frame facade, close-code aliases, masking delegation, errors, incremental UTF-8 | `src/frame.zig`, `src/error.zig`, `src/utf8.zig` |
-| `connection` | Connection policy over `zslay.Conn`, control replies, limits, backpressure policy, and the native `std.Io.net.Stream` adapter | `src/connection.zig`, `src/backpressure.zig`, `src/native_stream.zig` |
+| `connection` | Connection policy over `zslay.Conn`, control replies, limits, backpressure policy, the native `std.Io.net.Stream` adapter, and the permessage-deflate payload codec | `src/connection.zig`, `src/backpressure.zig`, `src/native_stream.zig`, `src/deflate.zig` |
 | `fragments` | Chunked messages in `src/stream.zig`, message buffering and shared UTF-8 streaming in `src/fragment.zig`, and split read/write halves in `src/split.zig` | `src/stream.zig`, `src/fragment.zig`, `src/split.zig` |
 | `handshake` | Client handshake and server upgrade | `src/handshake.zig`, `src/upgrade.zig` |
 | `testing` | Unit and integration coverage, plus future Autobahn, fuzz, and loopback suites | `tests/**` |
@@ -57,8 +57,14 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 | `integrator` | Findings, final diff, verification | affected paths through owners |
 
 `src/connection.zig` is a current file owned by the `connection` agent.
-`src/native_stream.zig` and `src/backpressure.zig` have also landed under the
-`connection` owner.
+`src/native_stream.zig`, `src/backpressure.zig`, and `src/deflate.zig` have also
+landed under the `connection` owner. `src/deflate.zig` is the
+caller-owned-storage message payload codec; RSV1, wire activation, and
+negotiation remain outside its scope.
+`src/stream.zig`, `src/fragment.zig`, and `src/split.zig` are current files
+owned by the `fragments` agent; `src/stream.zig` provides chunked message reads
+and writes, while `src/fragment.zig` keeps the assembled-message accumulator and
+collector.
 `src/handshake.zig` and `src/upgrade.zig` are current files owned by the
 `handshake` agent. The upgrade module owns the RFC 6455 accept GUID,
 accept-token derivation, and server call order, while `src/handshake.zig`
@@ -68,20 +74,21 @@ response primitives. Tests live in `tests/` category folders aggregated by
 hands the test change to `testing` instead of editing the test tree in the same
 pass.
 
-## Planned Extension Ownership
+## Extension Ownership
 
-The remaining roadmap rows are `src/deflate.zig` and `src/pubsub.zig`; neither
-file exists yet. Existing agent definitions remain scoped to current files;
-expand the owner and matching definition before implementation. The landed
-modules are `src/utf8.zig` under `framing`; `src/connection.zig`,
-`src/backpressure.zig`, and `src/native_stream.zig` under `connection`;
+The remaining roadmap row is `src/pubsub.zig`; the file does not exist yet.
+Existing agent definitions remain scoped to current files; expand the owner and
+matching definition before implementation. The landed modules are
+`src/utf8.zig` under `framing`; `src/connection.zig`, `src/backpressure.zig`,
+`src/native_stream.zig`, and `src/deflate.zig` under `connection`;
 `src/stream.zig`, `src/fragment.zig`, and `src/split.zig` under `fragments`; and
 `src/handshake.zig` and `src/upgrade.zig` under `handshake`.
 
-| Module | Planned owner | Dependency |
+| Module | Owner | Status and dependency |
 | --- | --- | --- |
-| `src/deflate.zig` | `connection`; `handshake` owns negotiation | zslay negotiated RSV1, `std.compress.flate`, stream |
-| `src/pubsub.zig` | new `pubsub` specialist when the module starts | stream, backpressure |
+| `src/stream.zig` | `fragments` | Implemented: chunked `MessageReader`/`MessageWriter`, borrowed chunks, control interleaving, incremental UTF-8, and watermark-aware enqueue |
+| `src/deflate.zig` | `connection` codec; `handshake` owns negotiation | Codec implemented on `std.compress.flate`; wire activation and RFC 7692 negotiation blocked on zslay negotiated RSV1 |
+| `src/pubsub.zig` | new `pubsub` specialist when the module starts | Planned; stream, backpressure |
 
 A new `pubsub` definition must be added to `.agents/agents/`, `.opencode/agents/`,
 `.codex/agents/`, and `.claude/agents/`, plus the roster and `SKILL.md`, before
