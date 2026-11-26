@@ -49,7 +49,7 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 | `handshake` | Client handshake and server upgrade | `src/handshake.zig`, `src/upgrade.zig` |
 | `testing` | Unit and integration coverage, plus future Autobahn, fuzz, and loopback suites | `tests/**` |
 | `review` | Read-only review | any changed file |
-| `release` | Build, Nix, packaging, dependency generation, CI | `build.zig`, `build.zig.zon`, `flake.nix`, `flake.lock`, `scripts/update_zon_files.sh`, `.pre-commit-config.yaml`, `.github/workflows/` |
+| `release` | Build, Nix, packaging, dependency generation, CI | `build.zig`, `build.zig.zon`, `flake.nix`, `flake.lock`, `scripts/update_zon_files.sh`, `.pre-commit-config.yaml`, `.github/workflows/`, `.github/dependabot.yml` |
 | `docs` | Human and agent documentation | root `*.md`, `.github/*.md`, `.github/ISSUE_TEMPLATE/`, `.codex/TEAM_WORKFLOW.md` |
 | `architect` | Read-only planning and routing | affected paths |
 | `developer` | Implementation coordination | specialist-owned paths |
