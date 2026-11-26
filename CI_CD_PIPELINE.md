@@ -69,6 +69,32 @@ Documentation-only changes do not trigger either job. Workflow-only changes run
 the test workflow so CI configuration changes are exercised before merge and
 publish a `Testing` deployment.
 
+## Dependency Updates
+
+The GitHub Actions used by the workflows are kept current by Dependabot through
+`.github/dependabot.yml`. The configuration watches the `github-actions`
+ecosystem at the repository root once a week, on Monday at 06:00 UTC, and
+allows at most five open version-update pull requests. Minor and patch updates
+are grouped into one pull request; major updates stay separate so a breaking
+change gets its own review. Commits and pull request titles use the
+`ci(actions)` prefix. Dependabot's generated subject begins with `Bump`, which
+is the documented exception to the lowercase-subject rule.
+
+Dependabot edits the existing `uses:` lines. Both workflows pin each action to
+a commit SHA with a trailing version comment, so an update moves the SHA and
+raises the comment, and the immutable-revision rule for actions in the `release`
+agent scope still holds.
+Only the `github-actions` ecosystem is configured. Zig is not a Dependabot
+ecosystem, so `build.zig.zon` and `flake.lock` updates remain manual.
+
+Dependabot pull requests are ordinary pull requests and need the same review.
+Their workflow runs receive a read-only `GITHUB_TOKEN` and no repository or
+environment secrets. An Actions update changes only `.github/workflows/**`, so
+the `test` job runs through its path filter and the `lint` job does not. A
+change to `.github/dependabot.yml` matches neither filter; contributors validate
+it with the `check-yaml` pre-commit hook listed in `CONTRIBUTE.md` before
+opening a pull request.
+
 ## Release Pipeline
 
 Planned. Releases are tag-driven, not push-to-main-driven.

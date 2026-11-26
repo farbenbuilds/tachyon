@@ -10,7 +10,7 @@ Own the hermetic build and release surface.
 
 ## Scope
 
-`build.zig` and `build.zig.zon`: module, library, tests, package metadata, and zslay dependency. `flake.nix` and `flake.lock`: shells, checks, and cross-target packages. `scripts/update_zon_files.sh`: generated `build.zig.zon.nix`, `.json`, and `.txt`. `.pre-commit-config.yaml` and `.github/workflows/`: triggers, permissions, and pinned revisions. `CHANGELOG.md` release sections and version synchronization. Never edit protocol sources.
+`build.zig` and `build.zig.zon`: module, library, tests, package metadata, and zslay dependency. `flake.nix` and `flake.lock`: shells, checks, and cross-target packages. `scripts/update_zon_files.sh`: generated `build.zig.zon.nix`, `.json`, and `.txt`. `.pre-commit-config.yaml`, `.github/workflows/`, and `.github/dependabot.yml`: triggers, permissions, pinned revisions, and Actions updates. `CHANGELOG.md` release sections and version synchronization. Never edit protocol sources.
 
 ## Rules
 
