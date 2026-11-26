@@ -45,7 +45,7 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 | --- | --- | --- |
 | `framing` | Frame facade, close-code aliases, masking delegation, errors, incremental UTF-8 | `src/frame.zig`, `src/error.zig`, `src/utf8.zig` |
 | `connection` | Connection policy over `zslay.Conn`, control replies, limits, backpressure policy, and the native `std.Io.net.Stream` adapter | `src/connection.zig`, `src/backpressure.zig`, `src/native_stream.zig` |
-| `fragments` | Message buffering and shared UTF-8 streaming in `src/fragment.zig`; split read/write halves in `src/split.zig` | `src/fragment.zig`, `src/split.zig` |
+| `fragments` | Chunked messages in `src/stream.zig`, message buffering and shared UTF-8 streaming in `src/fragment.zig`, and split read/write halves in `src/split.zig` | `src/stream.zig`, `src/fragment.zig`, `src/split.zig` |
 | `handshake` | Client handshake and server upgrade | `src/handshake.zig`, `src/upgrade.zig` |
 | `testing` | Unit and integration coverage, plus future Autobahn, fuzz, and loopback suites | `tests/**` |
 | `review` | Read-only review | any changed file |
@@ -70,16 +70,16 @@ pass.
 
 ## Planned Extension Ownership
 
-These modules are roadmap items, not current files. Existing agent definitions
-remain scoped to current files; expand the owner and matching definition before
-implementation. `src/utf8.zig` has landed under the `framing` owner,
-`src/connection.zig`, `src/backpressure.zig`, and `src/native_stream.zig` under
-`connection`, and `src/fragment.zig` and `src/split.zig` under `fragments`, so
-those are current files rather than roadmap items.
+The remaining roadmap rows are `src/deflate.zig` and `src/pubsub.zig`; neither
+file exists yet. Existing agent definitions remain scoped to current files;
+expand the owner and matching definition before implementation. The landed
+modules are `src/utf8.zig` under `framing`; `src/connection.zig`,
+`src/backpressure.zig`, and `src/native_stream.zig` under `connection`;
+`src/stream.zig`, `src/fragment.zig`, and `src/split.zig` under `fragments`; and
+`src/handshake.zig` and `src/upgrade.zig` under `handshake`.
 
 | Module | Planned owner | Dependency |
 | --- | --- | --- |
-| `src/stream.zig` | `fragments` | connection, UTF-8, backpressure |
 | `src/deflate.zig` | `connection`; `handshake` owns negotiation | zslay negotiated RSV1, `std.compress.flate`, stream |
 | `src/pubsub.zig` | new `pubsub` specialist when the module starts | stream, backpressure |
 

@@ -9,13 +9,16 @@ writes, automatic close and pong handling, automatic mask application, maximum
 message limits, vectored writes, fragmentation collection, HTTP server upgrade,
 client handshake, split read/write halves, and the native `std.Io.net.Stream`
 adapter. The 0.10.0 surface is the parity baseline, not the ceiling:
-streaming messages, permessage-deflate (RFC 7692), and pub/sub are planned
-post-parity extensions documented in `CODEBASE.md`. Backpressure is now
-implemented in `src/backpressure.zig` as an opt-in byte/frame watermark policy
-over zslay's bounded transmit ring. Incremental UTF-8
-validation is implemented in `src/utf8.zig`: the fragment collector validates
-assembled messages across fragments and the raw connection read path validates
-clear FIN text frames.
+permessage-deflate (RFC 7692) and pub/sub remain planned post-parity extensions
+documented in `CODEBASE.md`. Backpressure is implemented in
+`src/backpressure.zig` as an opt-in byte/frame watermark policy over zslay's
+bounded transmit ring. Chunked streaming is implemented in `src/stream.zig`:
+`MessageReader` yields caller-borrowed payload chunks with an explicit FIN, and
+`MessageWriter` queues fragmented chunks through the connection's watermark-aware
+enqueue path. Incremental UTF-8 validation is implemented in `src/utf8.zig`: the
+fragment collector validates assembled messages across fragments, the stream
+reader validates chunked text across frames, and the raw connection read path
+validates clear FIN text frames.
 
 The framing engine is
 [farbenbuilds/zslay](https://github.com/farbenbuilds/zslay). It is declared in
@@ -37,9 +40,10 @@ documentation foundation:
   static library, the Debug and ReleaseSafe test steps over `tests/main.zig`,
   the `check` step, and the zslay dependency.
 - `src/root.zig` is the module entry point; it re-exports zslay, the frame
-  facade, the UTF-8 validator, the WebSocket error model, the fragment
-  accumulator and collector, the connection layer, the split read and write
-  halves, the native stream adapter, and the HTTP handshake primitives.
+  facade, the UTF-8 validator, the WebSocket error model, the chunked message
+  reader and writer, the fragment accumulator and collector, the connection
+  layer, the split read and write halves, the native stream adapter, and the
+  HTTP handshake primitives.
 - `src/frame.zig` implements the frame facade: `Frame`, `Payload`, the `OpCode`
   and `CloseCode` aliases with conversions, `unmask`/`unmask_at` delegations,
   the header-length bridge, `std.Io.Writer` vectored writes, and caller-buffer
@@ -109,6 +113,19 @@ documentation foundation:
   before mask-key or zslay queue side effects. The high frame mark must fit
   `tx_nodes` after reserving one node for automatic control replies. Read pacing
   stays with the caller because the raw connection has no inbound frame queue.
+- `src/stream.zig` implements the chunked message layer. `MessageReader` drives
+  `connection.read_frame` and yields one borrowed `Chunk` per data frame, with
+  `Chunk.fin` marking the message boundary; control frames surface as
+  `Event.control`, and a peer close aborts the message and is terminal at the
+  stream layer even when `auto_close` is off. `ReaderState` validates text
+  incrementally across frames, including split code points and a FIN inside a
+  code point, while binary bypasses UTF-8. `MessageWriter` queues one frame per
+  chunk through `enqueue_frame` and exposes `finish`/`flush`; `WriterState`
+  advances only after a queue succeeds, so `WouldBlock` and `QueueFull` chunks
+  can be retried after `flush`. Both wrappers borrow the caller's
+  `connection.WebSocket`; the module allocates nothing, copies no whole message,
+  and adds no function pointers. `ReaderState` and `WriterState` are public so a
+  later split wrapper can drive the same policy.
 - `src/native_stream.zig` implements the `std.Io.net.Stream` transport edge.
   `Transport` builds `std.Io.Reader` and `std.Io.Writer` interfaces with
   `stream.reader(io, read_buffer)` and `stream.writer(io, write_buffer)`, then
@@ -179,14 +196,16 @@ Category folders such as `tests/frame-test/`, `tests/connection-test/`, and
 `tests/native-stream-test/` mirror the protocol layers, and `tests/support.zig`
 holds shared fixtures and test-only readers and writers. The suite covers the
 dependency boundary, the error model, the frame facade, the incremental UTF-8
-validator, the fragment accumulator and collector, the connection policy, raw
-frame path, and write paths, the split reads and writes, the native stream
-transport over a loopback `std.Io.net.Stream` pair, the HTTP handshake, and
-the server upgrade call order, including validated-only `incoming`, split
-construction before the 101 write and flush, the forced server role, and the
-async future and its borrows; `tests/module-test/module_test.zig` adds fragment,
-connection, split, native-stream, and handshake re-export tests. Library sources
-contain no test blocks.
+validator, the chunked reader and writer, the fragment accumulator and
+collector, the connection policy, raw frame path, and write paths, the split
+reads and writes, the native stream transport over a loopback
+`std.Io.net.Stream` pair, the HTTP handshake, and the server upgrade call order,
+including validated-only `incoming`, split construction before the 101 write and
+flush, the forced server role, and the async future and its borrows;
+`tests/module-test/module_test.zig` adds fragment, connection, split,
+native-stream, and handshake re-export tests, and
+`tests/stream-test/state_test.zig` checks the chunked-message re-exports.
+Library sources contain no test blocks.
 
 ## Non-Negotiable Architecture
 
@@ -233,19 +252,20 @@ Current files:
 | --- | --- |
 | `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe test steps over `tests/main.zig`, `check` step, and the zslay dependency. |
 | `build.zig.zon.nix`, `.json`, `.txt` | Generated zon2nix views for offline Nix builds and dependency audits. |
-| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, the error model, the fragment accumulator and collector, the connection layer, the split read and write halves, the native stream adapter, the HTTP handshake primitives, and the server upgrade call order. |
+| `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, the error model, the chunked message reader and writer, the fragment accumulator and collector, the connection layer, the split read and write halves, the native stream adapter, the HTTP handshake primitives, and the server upgrade call order. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` and `CloseCode` aliases with conversions, `unmask`/`unmask_at`, the header-length bridge, and write paths. |
 | `src/error.zig` | `WebSocketError` set, zslay and `std.Io` mappings, descriptions, close-code policy, and classification helpers. |
 | `src/utf8.zig` | Incremental UTF-8 validation: `std.unicode` complete ranges, split code-point `State`, and a `std.Io.Reader` adapter. |
 | `src/fragment.zig` | `Fragments` accumulator and `FragmentCollector` over `zslay.Conn`: caller-owned `frame_buffer` that bounds one frame payload and `message_buffer` that bounds one collected message, streaming text validation, and control-frame pass-through. |
 | `src/connection.zig` | Role-aware `WebSocket` policy over `zslay.Conn`: caller-owned reader, writer, and storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, and vectored or copied writes. |
+| `src/stream.zig` | Chunked `MessageReader`/`MessageWriter` over `connection.WebSocket`: borrowed payload chunks, control interleaving, incremental UTF-8 across frames, terminal close handling, pure `ReaderState`/`WriterState`, and watermark-aware enqueue with `flush` retry. |
 | `src/split.zig` | Split `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned read and write storage, sink-forwarded obligations, and `FragmentCollectorRead`. |
 | `src/native_stream.zig` | Implemented `std.Io.net.Stream` transport binding: caller-owned reader and writer buffers, native `WebSocket` and `Split` wrappers, buffer-alias validation, caller-owned socket lifetime, and no allocation or task spawning. |
 | `src/handshake.zig` | RFC 6455 client handshake and shared server upgrade primitives: `std.Io` request/response heads, key generation and validation, accept-token re-exports from `src/upgrade.zig`, token-list validation, and the `101` response. |
 | `src/upgrade.zig` | RFC 6455 server upgrade call order: `incoming` validation without writing, split construction from caller storage before the 101 write and flush through `handshake.write_response`, forced server role, and `upgrade_async` over `std.Io.Future`. |
 | `tests/main.zig` | Test aggregator; imports every category test file so one module runs under Debug and ReleaseSafe. |
 | `tests/support.zig` | Shared fixtures and test-only readers and writers. |
-| `tests/<category>-test/` | Unit coverage grouped by protocol area: module, error, frame, UTF-8, fragment, connection, split, handshake, and upgrade. |
+| `tests/<category>-test/` | Unit coverage grouped by protocol area: module, error, frame, UTF-8, stream, fragment, connection, split, handshake, and upgrade. |
 | `tests/README.md` | Test tree, aggregator, category naming, and run instructions. |
 | `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
@@ -276,7 +296,7 @@ Target source layout, roughly in dependency order:
 | `src/backpressure.zig` | Implemented: byte/frame watermarks, data admission, control headroom, and close draining over zslay's bounded queue. |
 | `src/connection.zig` | Implemented: role-aware `WebSocket` policy over `zslay.Conn`, caller-owned storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, vectored or copied writes, and opt-in backpressure. |
 | `src/fragment.zig` | Implemented: `Fragments` accumulator and read-side `FragmentCollector` over `zslay.Conn`, caller-owned frame and message buffers, streaming UTF-8, and control-frame pass-through. |
-| `src/stream.zig` | Planned extension: chunked message reader/writer for large messages. |
+| `src/stream.zig` | Implemented: chunked `MessageReader`/`MessageWriter` for large messages, borrowed chunks, control interleaving, incremental UTF-8, pure `ReaderState`/`WriterState`, and watermark-aware enqueue with `flush` retry. |
 | `src/split.zig` | Implemented: `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned read and write storage, sink-forwarded automatic replies, and `FragmentCollectorRead`. |
 | `src/native_stream.zig` | Implemented: `std.Io.net.Stream` transport binding plus native `WebSocket` and `Split` wrappers over the connection layers, caller-owned buffers, and alias validation. |
 | `src/deflate.zig` | Planned extension: RFC 7692 permessage-deflate state and context takeover. |
@@ -285,7 +305,7 @@ Target source layout, roughly in dependency order:
 | `src/upgrade.zig` | Implemented: RFC 6455 server upgrade call order over the validated `handshake` request and response primitives, including the accept-token derivation, split construction from caller storage before the 101 write and flush, the forced server role, and `upgrade`, `incoming`, and `upgrade_async`. |
 | `tests/main.zig` | Aggregates the category test files for the Debug and ReleaseSafe test steps. |
 | `tests/support.zig` | Shared test fixtures and protocol helpers. |
-| `tests/<category>-test/*.zig` | Unit tests grouped by area: module, error, backpressure, frame, UTF-8, fragment, connection, split, native stream, handshake, and upgrade. |
+| `tests/<category>-test/*.zig` | Unit tests grouped by area: module, error, backpressure, frame, UTF-8, stream, fragment, connection, split, native stream, handshake, and upgrade. |
 | `tests/<integration>-test/` | Planned Autobahn, fuzz, and loopback integration suites; no adapter exists yet. |
 
 The handshake/upgrade pair deliberately forms a small re-export cycle:
@@ -300,11 +320,12 @@ one-line delegations from `src/frame.zig`. Do not create a second enum, range
 table, or XOR loop. See `CODEBASE.md#compatibility-notes` before adapting a
 zslay behavior.
 
-Planned extension rows are roadmap items; their files do not exist yet.
-`src/native_stream.zig`, `src/handshake.zig`, and `src/upgrade.zig` are
-implemented. Extend the planned owner in `AGENT_DIRECTORY.md` and the matching
-agent definitions before creating
-one of these modules.
+The remaining roadmap rows are `src/deflate.zig` and `src/pubsub.zig`; neither
+file exists yet. The landed modules are `src/utf8.zig`, `src/connection.zig`,
+`src/backpressure.zig`, `src/native_stream.zig`, `src/stream.zig`,
+`src/fragment.zig`, `src/split.zig`, `src/handshake.zig`, and
+`src/upgrade.zig`. Extend the planned owner in `AGENT_DIRECTORY.md` and the
+matching agent definitions before creating a remaining roadmap module.
 
 Keep one owner per file. Cross-scope work is handed to the owning agent or
 reviewer instead of edited in the same pass.

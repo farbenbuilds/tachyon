@@ -15,16 +15,19 @@ header coding, masking, the close predicate and payload validator, masking
 direction, fragment ordering, and frame/message limits. tachyon applies inbound
 close policy, owns the close echo, and covers the fastwebsockets API surface
 incrementally: automatic ping/pong and close handling, fragment buffering,
-split read/write halves, UTF-8 checks, the client handshake, the server
-upgrade call order, and the native `std.Io.net.Stream` adapter are implemented.
-The 0.10.0 surface is the parity baseline; streaming messages,
-permessage-deflate, and pub/sub are planned post-parity extensions.
+chunked streaming reads and writes, split read/write halves, UTF-8 checks, the
+client handshake, the server upgrade call order, and the native
+`std.Io.net.Stream` adapter are implemented. The 0.10.0 surface is the parity
+baseline; permessage-deflate and pub/sub remain planned post-parity extensions.
 Backpressure is implemented in `src/backpressure.zig` as a bounded byte/frame
 watermark policy over zslay's transmit ring, with an opt-in per-connection
 admission gate and a `flush`-driven wait point through `std.Io`. Incremental
 UTF-8 validation is implemented in `src/utf8.zig`: the fragment collector
-validates assembled messages across fragments and the raw connection read path
-validates clear FIN text frames.
+validates assembled messages across fragments, the stream reader validates
+chunked text across frames, and the raw connection read path validates clear FIN
+text frames. `src/stream.zig` adds the large-message path: `MessageReader`
+yields borrowed chunks with an explicit FIN, and `MessageWriter` queues
+fragmented chunks through the connection's watermark-aware enqueue path.
 Deliberate hardening and compatibility exceptions are recorded in
 [CODEBASE.md](CODEBASE.md#compatibility-notes); the extension order and
 constraints are in
@@ -75,6 +78,14 @@ admission returns `WouldBlock` at a high mark, automatic control replies keep a
 reserved node, and the caller's read pacing is never blocked by outbound
 pressure. `flush` remains the `std.Io` wait point, so the policy never spins or
 adds an event loop.
+`src/stream.zig` adds the chunked message layer over the connection:
+`MessageReader` returns one borrowed `Chunk` per data frame with an explicit FIN,
+surfaces delivered pings and pongs as control events, validates text
+incrementally across frames, and treats a peer close as terminal. `MessageWriter`
+queues one frame per chunk through `enqueue_frame`, preserves fragmentation
+order, and advances its state only after a queue succeeds, so a `WouldBlock` or
+`QueueFull` chunk can be retried after `flush`. Nothing in the module allocates,
+copies a whole message, or writes automatic replies.
 `src/native_stream.zig` binds a caller-owned `std.Io.net.Stream` to that
 connection and split surface. A `Transport` wraps the stream's
 `std.Io.Reader`/`std.Io.Writer` directions, and the native `WebSocket` and
@@ -92,12 +103,13 @@ verification including `Sec-WebSocket-Accept`, server request validation, and
 `101 Switching Protocols` response construction. Bytes after the header stay
 buffered for the frame path, and the module never allocates or opens a socket.
 `src/root.zig` re-exports the facade, the error model, the UTF-8 validator, the
-backpressure policy, the fragment accumulator and collector, the connection
-layer, the split halves, the native stream adapter, the handshake primitives,
-and the server upgrade call order. The test suite lives
-under `tests/` and is aggregated by `tests/main.zig`; category folders such as
-`tests/frame-test/`, `tests/connection-test/`, and `tests/native-stream-test/`
-mirror the protocol layers, and `tests/support.zig` holds shared fixtures.
+backpressure policy, the chunked message reader and writer, the fragment
+accumulator and collector, the connection layer, the split halves, the native
+stream adapter, the handshake primitives, and the server upgrade call order.
+The test suite lives under `tests/` and is aggregated by `tests/main.zig`;
+category folders such as `tests/frame-test/`, `tests/connection-test/`,
+`tests/stream-test/`, and `tests/native-stream-test/` mirror the protocol
+layers, and `tests/support.zig` holds shared fixtures.
 Library sources contain no test blocks, and `zig build test` runs the aggregate
 under Debug and ReleaseSafe.
 
@@ -119,10 +131,11 @@ both request validation and split-storage validation succeed, coalesced frame
 bytes stay buffered, and every storage region is caller-owned and zero
 allocation.
 The fragment collector is deliberately read-only, while the connection and split
-read paths own automatic replies. No separate close or masking module is
-planned; zslay owns the close predicate, payload validator, and mask routine.
-The remaining extension roadmap adds streaming messages,
-permessage-deflate, and pub/sub after the parity baseline lands.
+read paths own automatic replies; the stream reader and writer delegate all
+automatic replies and wire state to the same connection. No separate close or
+masking module is planned; zslay owns the close predicate, payload validator,
+and mask routine. The remaining extension roadmap adds permessage-deflate and
+pub/sub after the parity baseline lands.
 
 ## Targets
 
@@ -137,8 +150,8 @@ permessage-deflate, and pub/sub after the parity baseline lands.
 | Client handshake and server upgrade | Implemented `handshake` primitives plus the `upgrade` call order in `src/upgrade.zig`: validated-only `incoming`, split construction from caller storage before the 101 write and flush, forced server role, and an async future whose resolved `Upgrade` also borrows caller storage |
 | Split read/write halves | Implemented `Split`, `WebSocketRead`, `WebSocketWrite`, and `FragmentCollectorRead` over independent `connection.WebSocket`/`zslay.Conn` values with caller-owned storage and sink-forwarded obligations |
 | Backpressure and bounded write watermarks | Implemented in `src/backpressure.zig`: byte/frame high and low watermarks over zslay's bounded ring, opt-in `ConnectionOptions.backpressure`, `enqueue_frame` batching, `WouldBlock` admission, control-frame headroom, and `flush` as the `std.Io` wait point |
-| Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig`: the fragment collector validates assembled messages and the raw connection read path validates clear FIN text frames |
-| Streaming message reader/writer | Planned extension |
+| Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig`: the fragment collector validates assembled messages, the stream reader validates chunked text across frames, and the raw connection read path validates clear FIN text frames |
+| Streaming message reader/writer | Implemented in `src/stream.zig`: borrowed chunks, explicit FIN, control interleaving, incremental UTF-8, terminal close, pure reader/writer state, and watermark-aware enqueue with `flush` retry |
 | Native `std.Io.Reader`/`Writer` transport adapter | Implemented in `src/native_stream.zig`: caller-owned `std.Io.net.Stream` transport plus native `WebSocket` and `Split` wrappers over the connection layers |
 | permessage-deflate (RFC 7692) | Planned extension beyond 0.10.0 parity |
 | Pub/Sub topic hub and fanout | Planned application layer |
@@ -171,6 +184,10 @@ permessage-deflate, and pub/sub after the parity baseline lands.
   frames keep a reserved reply path, and `flush` is the `std.Io` wait point.
   UTF-8 validation is incremental, and decompression is capped by the message
   limit before delivery.
+- `src/stream.zig` keeps the large-message path allocation-free and zero-copy:
+  chunks borrow the connection frame buffer, the pure `ReaderState`/`WriterState`
+  values carry only per-message policy, and writer state commits after a
+  successful enqueue so a retry never duplicates a frame.
 - permessage-deflate negotiates only after zslay gains negotiated RSV1 support;
   Zig's `std.compress.flate` supplies the raw deflate codec.
 - Pub/Sub is an application layer over frames and streams, not a wire-format

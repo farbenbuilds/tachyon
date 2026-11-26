@@ -20,6 +20,10 @@ test {
     _ = @import("connection-test/connection_read_test.zig");
     _ = @import("connection-test/connection_write_test.zig");
     _ = @import("connection-test/connection_backpressure_test.zig");
+    _ = @import("stream-test/reader_chunks_test.zig");
+    _ = @import("stream-test/reader_control_test.zig");
+    _ = @import("stream-test/writer_test.zig");
+    _ = @import("stream-test/state_test.zig");
     _ = @import("split-test/split_core_test.zig");
     _ = @import("split-test/split_read_test.zig");
     _ = @import("split-test/split_backpressure_test.zig");

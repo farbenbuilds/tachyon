@@ -116,6 +116,20 @@ This project follows semantic versioning.
   remains the `std.Io` wait point, so the policy adds no spin loop, allocation,
   or event loop. Exported from `src/root.zig` with focused policy, connection,
   split, and native-stream tests.
+- `src/stream.zig` with the chunked large-message path over
+  `connection.WebSocket`. `MessageReader` yields one borrowed `Chunk` per data
+  frame, marks the message boundary with `Chunk.fin`, validates text
+  incrementally across frames and chunks through `src/utf8.zig`, surfaces
+  delivered pings and pongs as control events, and treats a peer close as
+  terminal even when `auto_close` is off. `MessageWriter` queues one frame per
+  chunk through `enqueue_frame`, preserves text/binary then continuation order,
+  and exposes `finish` and `flush`; writer state advances only after a successful
+  queue, so a `WouldBlock` or `QueueFull` chunk can be retried after `flush`.
+  The pure `ReaderState`, `WriterState`, and `FrameSpec` values contain no I/O,
+  allocator, or function pointer, and the module copies no whole message and
+  never writes automatic replies. Exported from `src/root.zig` with Debug and
+  ReleaseSafe reader, control, UTF-8, close, writer, backpressure, and pure-state
+  tests.
 - `src/native_stream.zig` with the native `std.Io.net.Stream` transport edge.
   `Transport` builds the `std.Io.Reader` and `std.Io.Writer` interfaces with
   `stream.reader(io, read_buffer)` and `stream.writer(io, write_buffer)`, and
