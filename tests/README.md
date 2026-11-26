@@ -38,6 +38,11 @@ tests/
 │   ├── connection_read_test.zig          # Raw read path and failure latches.
 │   ├── connection_write_test.zig         # Copied and vectored write paths.
 │   └── connection_backpressure_test.zig  # Watermark batching, control reserve, and close paths.
+├── stream-test/
+│   ├── reader_chunks_test.zig            # Chunk order, FIN, borrow, and length boundaries.
+│   ├── reader_control_test.zig           # Control interleaving, UTF-8, close, and latches.
+│   ├── writer_test.zig                   # Writer ordering, masking, limits, and backpressure.
+│   └── state_test.zig                    # Pure reader and writer state transitions.
 ├── split-test/
 │   ├── split_core_test.zig               # Split construction and frame exchange.
 │   ├── split_read_test.zig               # Read-half obligations and gating.
@@ -66,6 +71,7 @@ Category folders use the `<area>-test/` naming pattern, and test files use
 | `utf8-test` | Incremental UTF-8 validation and reader adaptation. |
 | `fragment-test` | Fragment accumulator, collector reads, and collector policy. |
 | `connection-test` | Connection core, control replies, close handling, limits, reads, writes, and watermark batching. |
+| `stream-test` | Chunked message reads, control interleaving, incremental UTF-8, close and error latches, writer ordering, masking, limits, and watermark retries. |
 | `split-test` | Split core, reads, outbound-pressure independence, and `FragmentCollectorRead`. |
 | `native-stream-test` | `std.Io.net.Stream` transport binding, native `WebSocket`, native `Split`, watermark delegation, and buffer-alias rejection. |
 | `handshake-test` | Request, head, response, and client handshake behavior. |

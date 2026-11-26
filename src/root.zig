@@ -1,10 +1,11 @@
 //! tachyon public module.
 //!
 //! Re-exports the pinned zslay codec, the frame facade, the incremental UTF-8
-//! validator, the WebSocket error model, the backpressure policy, the fragment
-//! collector, the role-aware connection layer, the split read and write halves,
-//! the native `std.Io` stream adapter, the HTTP client handshake and shared
-//! server upgrade primitives, and the server upgrade call order.
+//! validator, the WebSocket error model, the backpressure policy, the chunked
+//! message reader and writer, the fragment collector, the role-aware connection
+//! layer, the split read and write halves, the native `std.Io` stream adapter,
+//! the HTTP client handshake and shared server upgrade primitives, and the
+//! server upgrade call order.
 
 pub const zslay = @import("zslay");
 
@@ -73,6 +74,13 @@ pub const BackpressureState = backpressure.State;
 pub const BackpressurePhase = backpressure.Phase;
 pub const BackpressureCharge = backpressure.Charge;
 pub const BackpressureAction = backpressure.Action;
+
+pub const stream = @import("stream.zig");
+pub const MessageReader = stream.MessageReader;
+pub const MessageWriter = stream.MessageWriter;
+pub const MessageKind = stream.MessageKind;
+pub const MessageChunk = stream.Chunk;
+pub const MessageEvent = stream.Event;
 
 pub const handshake = @import("handshake.zig");
 pub const HandshakeError = handshake.Error;
