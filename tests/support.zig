@@ -9,6 +9,15 @@ const split = tachyon.split;
 pub const Frame = frame.Frame;
 pub const MaskingKey = frame.MaskingKey;
 
+/// Fills `bytes` with a deterministic pseudo-random sequence from `seed`.
+pub fn fill_deterministic(bytes: []u8, seed: u64) void {
+    var state = seed;
+    for (bytes) |*byte| {
+        state = state *% 6364136223846793005 +% 1442695040888963407;
+        byte.* = @truncate(state >> 33);
+    }
+}
+
 /// Test-only stream that always fails a read.
 pub fn read_failed_stream(
     reader: *std.Io.Reader,

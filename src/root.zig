@@ -2,10 +2,10 @@
 //!
 //! Re-exports the pinned zslay codec, the frame facade, the incremental UTF-8
 //! validator, the WebSocket error model, the backpressure policy, the chunked
-//! message reader and writer, the fragment collector, the role-aware connection
-//! layer, the split read and write halves, the native `std.Io` stream adapter,
-//! the HTTP client handshake and shared server upgrade primitives, and the
-//! server upgrade call order.
+//! message reader and writer, the RFC 7692 permessage-deflate payload codec,
+//! the fragment collector, the role-aware connection layer, the split read and
+//! write halves, the native `std.Io` stream adapter, the HTTP client handshake
+//! and shared server upgrade primitives, and the server upgrade call order.
 
 pub const zslay = @import("zslay");
 
@@ -81,6 +81,16 @@ pub const MessageWriter = stream.MessageWriter;
 pub const MessageKind = stream.MessageKind;
 pub const MessageChunk = stream.Chunk;
 pub const MessageEvent = stream.Event;
+
+pub const deflate = @import("deflate.zig");
+pub const Deflater = deflate.Deflater;
+pub const Inflater = deflate.Inflater;
+pub const DeflateConfig = deflate.Config;
+pub const DeflateError = deflate.Error;
+pub const DeflaterStorage = deflate.DeflaterStorage;
+pub const InflaterStorage = deflate.InflaterStorage;
+pub const sync_tail = deflate.sync_tail;
+pub const max_compressed_len = deflate.max_compressed_len;
 
 pub const handshake = @import("handshake.zig");
 pub const HandshakeError = handshake.Error;

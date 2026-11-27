@@ -130,6 +130,52 @@ This project follows semantic versioning.
   never writes automatic replies. Exported from `src/root.zig` with Debug and
   ReleaseSafe reader, control, UTF-8, close, writer, backpressure, and pure-state
   tests.
+- `src/deflate.zig` with the zero-allocation RFC 7692 permessage-deflate message
+  payload codec over caller-owned storage, built on Zig 0.17.1
+  `std.compress.flate` with the raw container and no allocator, C dependency,
+  libdeflate, or zlib. The public surface is `sync_tail`, `Config`, `Error`,
+  `DeflaterStorage`/`Deflater`, `InflaterStorage`/`Inflater`, and
+  `max_compressed_len`; `Deflater` exposes `init`, `compress`, and `reset`, and
+  `Inflater` exposes `init`, `decompress`, and `reset`. The sender accepts only
+  `window_bits == 15`, preflights `max_compressed_len`, sync-flushes each
+  message, and appends one `0x00` byte; empty input is the canonical one-byte
+  `0x00` payload, and the codec never strips four trailing octets. The receiver
+  accepts `window_bits` 8 through 15 but does not enforce the negotiated
+  distance limit: `std.compress.flate.max_window_len` is a 64 KiB std
+  history-buffer requirement, not the DEFLATE wire LZ77 window. Future
+  negotiation must reject values below 15 for sending or enforce the limit
+  before advertising a smaller receive window, and outbound stays at 15. The
+  receiver serves the compressed payload followed by `00 00 ff ff`, drains the
+  decoder's indirect output, and requires a clean block boundary with
+  `state == .block_header`, zero consumed bits, and no unconsumed input; a
+  zero-length received payload is accepted as empty. A BFINAL block is rejected
+  with `InvalidCompressedData` as RFC 7692 requires; when the overflowing block
+  is BFINAL, `InvalidCompressedData` takes precedence over `MessageTooLarge`,
+  and both errors are terminal for the session. Context takeover is the default;
+  `no_context_takeover` reinitializes the sender before each nonempty message
+  and the receiver per message. Output is capped by the caller slice. Malformed
+  input that leaves a non-clean boundary latches `InvalidCompressedData`, but
+  DEFLATE has no integrity check, so some truncated or corrupted streams can
+  still decode to a shorter or wrong message, including a truncated compressed
+  stream completed by the RFC 7692 tail, and callers must treat decompressed
+  output as untrusted. `OutputTooShort` is safely retryable; `MessageTooLarge`,
+  `InvalidCompressedData`, and `CompressionFailed` latch until `reset`, but they
+  occur after consumed input, so close the connection or renegotiate
+  `no_context_takeover`; `reset` discards history and is not recovery for a
+  context-dependent session.
+  `compress` and `decompress` reject input or output that overlaps the other
+  slice or any byte of the handle or its storage with `AliasedBuffer`. Storage
+  is large, about 295 KiB for a deflater and 69 KiB for an inflater, caller-owned, must be
+  initialized at its final address, must not be copied after init, and must
+  outlive the handles. The codec is exposed from
+  `src/root.zig` as the `deflate` module plus `Deflater`, `Inflater`,
+  `DeflateConfig`, `DeflateError`, `DeflaterStorage`, `InflaterStorage`,
+  `sync_tail`, and `max_compressed_len`, with tests in `tests/deflate-test/`
+  aggregated by `tests/main.zig` and module re-export coverage in
+  `tests/module-test/module_test.zig`. Wire activation and RFC 7692 negotiation
+  remain blocked: the pinned zslay rejects RSV1, the handshake and upgrade layers
+  do not parse offers or responses, and the connection, fragment, and split
+  layers do not invoke the codec.
 - `src/native_stream.zig` with the native `std.Io.net.Stream` transport edge.
   `Transport` builds the `std.Io.Reader` and `std.Io.Writer` interfaces with
   `stream.reader(io, read_buffer)` and `stream.writer(io, write_buffer)`, and
