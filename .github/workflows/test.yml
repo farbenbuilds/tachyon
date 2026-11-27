@@ -46,3 +46,34 @@ jobs:
 
       - name: Type-check library and tests
         run: zig build check
+
+  # Compile-only cross-target gate: foreign binaries cannot run on the runner.
+  cross-check:
+    name: Cross-check ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    environment: Testing
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux-gnu
+          - x86_64-linux-musl
+          - aarch64-linux-gnu
+          - aarch64-linux-musl
+          - x86-linux-musl
+          - x86_64-macos
+          - aarch64-macos
+          - x86_64-windows
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.17.1
+
+      - name: Type-check library and tests (compile-only)
+        run: zig build check -Dtarget=${{ matrix.target }}

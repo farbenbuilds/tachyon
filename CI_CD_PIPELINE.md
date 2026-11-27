@@ -9,7 +9,7 @@ the release workflow is specified here and remains planned.
 | Workflow | Trigger | Status and purpose |
 | --- | --- | --- |
 | `.github/workflows/lint.yml` | Pull request into `main` changing `.zig`, `.zon`, or `build.zig` files | Implemented. `zig fmt --check .` with Zig 0.17.1. |
-| `.github/workflows/test.yml` | Pull request into `main` and push to `main` changing Zig or Zon files or workflows | Implemented. `zig build test --summary all` and `zig build check` with Zig 0.17.1. |
+| `.github/workflows/test.yml` | Pull request into `main` and push to `main` changing Zig or Zon files, `build.zig`, or workflows | Implemented. Native `zig build test --summary all` and `zig build check` plus an eight-target compile-only `cross-check` matrix with Zig 0.17.1. |
 | `.github/workflows/publish.yml` | Push of a `v*` tag | Planned. Verify version and changelog, build cross-target packages, publish release assets. |
 
 ## Lint Pipeline
@@ -31,9 +31,14 @@ waiting for a full flake evaluation.
 Implemented in `.github/workflows/test.yml`. Runs on pull requests into `main`
 and pushes to `main` that change a `.zig` or `.zon` file, `build.zig`, or a
 workflow file. The workflow requests `contents: read`, cancels superseded runs
-for the same ref, and defines one job, `test`, named `Run Zig Tests`, on
-`ubuntu-latest` in the `Testing` environment. Every test run therefore records
-a `Testing` deployment, alongside the `Linting` deployment from the lint job.
+for the same ref, and defines two jobs on `ubuntu-latest` in the `Testing`
+environment. Each job therefore records a `Testing` deployment, alongside the
+`Linting` deployment from the lint job.
+
+### Native runtime job
+
+The `test` job, named `Run Zig Tests`, is the runtime gate and has a
+15-minute timeout. It runs the tests, not just a compile:
 
 1. Check out the repository with `actions/checkout` v7.
 2. Install Zig 0.17.1 with `mlugg/setup-zig` v2.
@@ -54,6 +59,36 @@ plus `packages.default`:
 `zig build test` runs the suite in Debug and ReleaseSafe. The Nix check
 derivations seed Zig's package cache from the generated `build.zig.zon.nix`
 because the build sandbox has no network access.
+
+### Cross-target compile check
+
+The `cross-check` job, named `Cross-check <target>`, is a compile-only matrix
+with a 20-minute timeout and `fail-fast: false` so every target reports. It
+uses the same checkout and Zig 0.17.1 setup, then runs:
+
+```sh
+zig build check -Dtarget=<target>
+```
+
+The matrix covers eight targets:
+
+- `x86_64-linux-gnu`
+- `x86_64-linux-musl`
+- `aarch64-linux-gnu`
+- `aarch64-linux-musl`
+- `x86-linux-musl`
+- `x86_64-macos`
+- `aarch64-macos`
+- `x86_64-windows`
+
+The cross-check is deliberately compile-only: a foreign-architecture or
+foreign-OS binary cannot run on the Linux runner, so these jobs are not runtime
+evidence. The native `test` job remains the runtime gate. Compilation covers the
+library and both test roots, so target-specific type, layout, and 32-bit
+portability failures surface before merge; the test-only fix in
+`tests/connection-test/connection_limits_test.zig` is what keeps
+`x86-linux-musl` compiling. No runtime coverage is claimed for macOS, Windows,
+or non-x86_64 Linux targets in CI.
 
 ## Path Filters
 
