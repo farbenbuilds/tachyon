@@ -19,9 +19,9 @@ skills.
 
 ## Agent Definitions
 
-The same twelve plain role names are defined for every client: `architect`,
+The same thirteen plain role names are defined for every client: `architect`,
 `developer`, `reviewer`, `integrator`, `framing`, `connection`, `fragments`,
-`handshake`, `testing`, `review`, `release`, and `docs`.
+`handshake`, `pubsub`, `testing`, `review`, `release`, and `docs`.
 
 - `.agents/agents/<name>.md` is the agy definition.
 - `.opencode/agents/<name>.md` is the OpenCode specialist definition, with team
@@ -33,8 +33,9 @@ The same twelve plain role names are defined for every client: `architect`,
   uses `model: inherit` and preloads the project `graphify` skill.
 
 No role carries a project prefix. `AGENT_DIRECTORY.md` owns the roster,
-ownership boundaries, and skill coverage. A future `pubsub` role is planned
-with that module and is not defined yet.
+ownership boundaries, and skill coverage. The `pubsub` specialist owns the
+implemented `src/pubsub.zig` topic hub and fanout module; its
+`tests/pubsub-test/` coverage belongs to `testing`.
 
 ## Zig and Systems Skills
 

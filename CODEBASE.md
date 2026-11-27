@@ -17,8 +17,9 @@ implemented in `src/backpressure.zig` as an opt-in byte/frame watermark policy;
 chunked streaming is implemented in `src/stream.zig`; the RFC 7692
 permessage-deflate message payload codec is implemented in `src/deflate.zig`,
 with wire activation and negotiation still blocked on zslay negotiated RSV1;
-pub/sub remains a planned extension module at the edge, and the native
-`std.Io.net.Stream` adapter is implemented in `src/native_stream.zig`.
+the bounded pub/sub hub is implemented in `src/pubsub.zig` as an application
+layer; and the native `std.Io.net.Stream` adapter is implemented in
+`src/native_stream.zig`.
 Incremental UTF-8 validation is implemented in `src/utf8.zig`: the raw
 connection read path validates clear FIN text frames, the fragment collector
 validates assembled messages across fragments, and the stream reader validates
@@ -35,9 +36,9 @@ documentation foundation:
   `tests/main.zig`, the `check` step, and the pinned zslay dependency.
 - `src/root.zig` is the module entry point; it re-exports zslay, the frame
   facade, the UTF-8 validator, the WebSocket error model, the chunked message
-  reader and writer, the deflate codec, the fragment accumulator and collector,
-  the connection layer, the split read and write halves, the native stream
-  adapter, and the HTTP handshake primitives.
+  reader and writer, the deflate codec, the bounded pub/sub hub, the fragment
+  accumulator and collector, the connection layer, the split read and write
+  halves, the native stream adapter, and the HTTP handshake primitives.
 - `src/frame.zig` implements the frame facade: `Frame`, `Payload`, the `OpCode`
   and `CloseCode` aliases with conversions, `unmask`/`unmask_at` delegations,
   the header-length bridge, `std.Io.Writer` vectored writes, and caller-buffer
@@ -124,6 +125,31 @@ documentation foundation:
   allocates nothing, copies no whole message, and adds no function pointers;
   `ReaderState`, `WriterState`, and `FrameSpec` are public so a later split
   wrapper can reuse the same policy.
+- `src/pubsub.zig` implements the bounded zero-allocation pub/sub hub. It owns
+  no queue and no I/O: `Storage` holds topic rows, subscription rows, a
+  fixed-stride name arena, and one open-addressed topic index with tombstones,
+  and every name is copied into that arena and compared by exact bytes,
+  case-sensitively. Subscribe is idempotent and returns `added = false` for an
+  existing connection/topic pair; unknown topics return `TopicNotFound` and a
+  missing subscription returns `NotSubscribed`. The last unsubscribe removes the
+  topic and makes its stable id reusable. Publish walks one intrusive
+  subscriber list in O(k) for k subscribers, resolves the topic with expected
+  O(1) open-addressed lookup, and gives each eligible subscriber a fresh
+  `stream.MessageWriter.write(payload, true)` that queues one FIN frame through
+  `connection.WebSocket.enqueue_frame`. The hub never flushes and never builds a
+  per-subscriber queue. `PublishResult` reports `matched`, `delivered`,
+  `skipped`, `backpressured`, `closed`, and `first_error`; `publish_from`
+  excludes only the exact sender pointer. Payloads are borrowed `[]u8` slices
+  and must stay alive until every delivered connection flushes. Registry
+  mutation or a nested publish during fanout returns `PublishInProgress`.
+  `required_name_bytes` and `required_index_capacity` expose the checked sizing,
+  with the index capacity the smallest power of two at least twice the topic
+  capacity. The hub is unsynchronized, so the caller serializes access. It
+  targets the unified `*connection.WebSocket`: native callers can pass a
+  wrapper's public `inner` pointer, while split callers must own close
+  coordination because the hub bypasses the split read half. Outbound text is
+  not UTF-8 validated on fanout, matching connection and stream writes, and the
+  module changes no zslay, frame, or wire behavior.
 - `src/native_stream.zig` implements the `std.Io.net.Stream` transport edge.
   `Transport` binds the stream's `std.Io.Reader` and `std.Io.Writer` directions
   to caller-owned buffers, and the native `WebSocket` and `Split` wrappers
@@ -227,18 +253,22 @@ The client handshake and shared server upgrade primitives are implemented in
 `src/handshake.zig`, and `src/upgrade.zig` implements the server call order over
 them. The split halves are implemented in `src/split.zig`. The test suite covers
 the dependency boundary, the error model, the frame facade, the incremental
-UTF-8 validator, the chunked reader and writer, the deflate codec, the
-fragment accumulator and collector, the connection policy, raw frame path, and
-write paths, split reads and writes, the HTTP handshake, and the server upgrade
-call order, including key canonicality, token lists, duplicate headers, status
-and accept failures, bounded head reads, coalesced frame bytes, validated-only
-`incoming`, split construction before the 101 write and flush, the forced server
-role, and the async future and its borrows. The suite lives under `tests/` and
-is aggregated by `tests/main.zig`; category folders mirror the protocol layers,
-`tests/support.zig` holds shared fixtures, `tests/module-test/module_test.zig`
-adds deflate, fragment, connection, split, native-stream, and handshake
-re-export tests, and `tests/stream-test/state_test.zig` checks the
-chunked-message re-exports. Library sources contain no test blocks.
+UTF-8 validator, the chunked reader and writer, the deflate codec, the pub/sub
+hub, the fragment accumulator and collector, the connection policy, raw frame
+path, and write paths, split reads and writes, the HTTP handshake, and the server
+upgrade call order, including key canonicality, token lists, duplicate headers,
+status and accept failures, bounded head reads, coalesced frame bytes,
+validated-only `incoming`, split construction before the 101 write and flush,
+the forced server role, and the async future and its borrows. The suite lives
+under `tests/` and is aggregated by `tests/main.zig`; category folders mirror the
+protocol layers, `tests/support.zig` holds shared fixtures,
+`tests/module-test/module_test.zig` adds deflate, pub/sub, fragment, connection,
+split, native-stream, and handshake re-export tests, and
+`tests/stream-test/state_test.zig` checks the chunked-message re-exports.
+`tests/pubsub-test/` holds 41 focused hub tests across core, publish,
+backpressure, reentrancy, and name concerns. The aggregate runs 416 test blocks
+in each of Debug and ReleaseSafe, 832 runs in total. Library sources contain no
+test blocks.
 
 ## Target Runtime Flow
 
@@ -571,12 +601,12 @@ policy, and the transmit queue still belong to zslay.
 | `src/split.zig` | Implemented: `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned `ReadStorage`/`WriteStorage`, sink-forwarded obligations, and `FragmentCollectorRead`. |
 | `src/native_stream.zig` | Implemented: `std.Io.net.Stream` transport binding plus native `WebSocket` and `Split` wrappers over the connection layers. |
 | `src/deflate.zig` | Implemented codec: zero-allocation RFC 7692 permessage-deflate message payload transform over caller-owned storage, with `Deflater`, `Inflater`, `sync_tail`, `max_compressed_len`, and context takeover; no RSV1, frame, fragmentation, or handshake state. Wire activation remains blocked on zslay negotiated RSV1. |
-| `src/pubsub.zig` | Planned extension: bounded topic hub and fanout over the frame/stream API. |
+| `src/pubsub.zig` | Implemented: bounded zero-allocation `Hub` over caller-owned topic rows, subscription rows, a fixed-stride name arena, and an open-addressed topic index with tombstones; intrusive subscriber lists, idempotent subscribe, reusable topic ids, O(k) fanout with expected O(1) lookup, `PublishResult` skip accounting, borrowed payloads, and a `PublishInProgress` reentrancy guard; no zslay or wire change. |
 | `src/handshake.zig` | Implemented: RFC 6455 client handshake and shared server upgrade primitives over `std.Io.Reader`/`Writer`, key generation, accept-token re-exports from `src/upgrade.zig`, bounded head parsing, request validation, and response construction. |
 | `src/upgrade.zig` | Implemented: RFC 6455 server upgrade call order over the validated `handshake` request and response primitives, including the accept GUID and accept-token derivation, `incoming` validation without writing, split construction from caller storage before the 101 write and flush, the forced server role, and `upgrade_async` over `std.Io.Future`. |
 | `tests/main.zig` | Aggregates every category test file for the Debug and ReleaseSafe test steps. |
 | `tests/support.zig` | Shared fixtures and test-only protocol readers and writers. |
-| `tests/<category>-test/` | Unit coverage grouped by area: module, error, backpressure, frame, UTF-8, stream, fragment, connection, split, native stream, deflate, handshake, and upgrade. |
+| `tests/<category>-test/` | Unit coverage grouped by area: module, error, backpressure, frame, UTF-8, stream, pub/sub, fragment, connection, split, native stream, deflate, handshake, and upgrade. |
 | `tests/<integration>-test/` | Planned Autobahn, fuzz, and loopback integration suites; no adapter exists yet. |
 | `src/bench.zig` | Frame, connection, streaming, and extension microbenchmarks. |
 
@@ -600,12 +630,12 @@ validation live in zslay; inbound close policy and the echo stay in tachyon. If
 an API-parity helper needs a home, put aliases and one-line delegations in
 `src/frame.zig`; do not create a second policy module.
 
-The only remaining planned extension row is `src/pubsub.zig`; its file does not
-exist yet. `src/stream.zig` and `src/deflate.zig` are implemented; deflate is not
-wired, so its row records codec status rather than extension activation. The
-current agent definitions own only current files. Extend the planned owner in
-`AGENT_DIRECTORY.md` and the matching agent definitions before starting a
-remaining roadmap module.
+All roadmap modules are implemented. `src/stream.zig`, `src/pubsub.zig`, and
+`src/deflate.zig` are implemented; deflate wire activation remains blocked on
+zslay negotiated RSV1, so its row records codec status rather than extension
+activation. The current agent definitions own only current files. Extend the
+owner map in `AGENT_DIRECTORY.md` and the matching agent definitions before
+adding a new module.
 
 ## fastwebsockets to tachyon Mapping
 
@@ -740,12 +770,12 @@ library. The frame layer stays pure and zslay remains the only wire codec.
 
 Implementation order: finish the parity core first, then backpressure,
 streaming messages, then deflate, then pub/sub. Backpressure, streaming, native
-stream, UTF-8, and the deflate payload codec have landed; the fragment collector
-and the raw connection read path use UTF-8, the stream reader validates chunked
-text, the connection and split layers consume the backpressure policy, and the
-deflate codec transforms payloads without touching the wire. The remaining row
-is pub/sub, and deflate wire activation remains blocked until zslay negotiates
-RSV1.
+stream, UTF-8, the deflate payload codec, and pub/sub have landed; the fragment
+collector and the raw connection read path use UTF-8, the stream reader
+validates chunked text, the connection and split layers consume the backpressure
+policy, the deflate codec transforms payloads without touching the wire, and the
+pub/sub hub fans out through the stream writer. Deflate wire activation remains
+blocked until zslay negotiates RSV1.
 
 | Module | Capability | Depends on | Exit criteria |
 | --- | --- | --- | --- |
@@ -754,7 +784,7 @@ RSV1.
 | `src/native_stream.zig` | Native `std.Io.net.Stream` transport binding plus `WebSocket` and `Split` wrappers | Zig 0.17.1 `std.Io` | Implemented: caller owns socket and buffers; readiness comes from `std.Io`; no libxev; zero allocation |
 | `src/stream.zig` | Chunked message reader/writer for large messages | connection, `utf8`, `backpressure` | Implemented: borrowed chunks, control interleaving, incremental UTF-8, terminal close, writer order, `WouldBlock`/`QueueFull` retry, no whole-message buffering |
 | `src/deflate.zig` | RFC 7692 permessage-deflate message payload codec | `std.compress.flate` raw container, caller-owned storage, zslay negotiated RSV1 for activation | Implemented: sender and receiver codec, context takeover, bounded output, and fail-closed non-clean-boundary input. Decompressed output is untrusted because DEFLATE has no integrity check. Wire activation and negotiation remain blocked on zslay negotiated RSV1, handshake/upgrade offer parsing, and connection, fragment, or split integration |
-| `src/pubsub.zig` | Bounded topic hub and fanout | `stream`, `backpressure` | Application layer only; no wire-format change; per-subscriber backpressure or disconnect policy |
+| `src/pubsub.zig` | Bounded zero-allocation topic hub and fanout | `stream`, `backpressure` | Implemented: caller-owned topic, subscription, name, and index storage; intrusive subscriber lists; idempotent subscribe; reusable ids; O(k) fanout with expected O(1) lookup; per-subscriber queueing through `MessageWriter`; skip accounting for backpressure and closed subscribers; borrowed payloads; reentrancy guard. No wire-format change |
 
 ### Backpressure
 
@@ -1026,15 +1056,119 @@ Activation remains blocked:
 
 ### Pub/Sub
 
-`src/pubsub.zig` is an application layer, not a WebSocket wire extension:
+`src/pubsub.zig` is an application layer over the connection and stream APIs,
+not a WebSocket wire extension. It changes no zslay, frame, or RFC 6455
+behavior. `src/root.zig` re-exports the `pubsub` module plus `PubSubHub`,
+`PubSubStorage`, `PubSubOptions`, `PubSubTopicId`, `PubSubSubscribeResult`,
+`PubSubTopicInfo`, `PubSubPublishResult`, `PubSubError`, `PubSubInitError`,
+`PubSubSubscribeError`, `PubSubPublishError`, `required_name_bytes`, and
+`required_index_capacity`.
 
-- publish, subscribe, and unsubscribe over caller-defined message envelopes,
-- bounded topic and subscriber tables with caller-owned storage,
-- fanout through `src/stream.zig` and `src/backpressure.zig`,
-- a slow subscriber is backpressured or disconnected by policy; it must not
-  grow an unbounded per-subscriber queue,
-- authorization and envelope formats stay outside the protocol core,
-- no change to zslay or the RFC 6455 framing path.
+Storage and registry:
+
+- `Hub.init` takes caller-owned `Storage` and `Options.max_topic_len`. `Storage`
+  holds `topics` (`TopicSlot` rows), `subscriptions` (`SubscriptionSlot` rows),
+  a fixed-stride `names` arena of exactly `topics.len * max_topic_len` bytes,
+  and one `topic_index` of open-addressed rows with tombstones.
+- Init rejects zero topic or subscription capacity, a zero name length, a name
+  arena that is not exactly the required byte count, an index that is not a
+  power of two or smaller than twice the topic capacity, overlapping storage
+  regions, and checked-size overflow. `required_name_bytes` and
+  `required_index_capacity` expose the same checked sizing; the index helper
+  returns the smallest power of two at least `2 * topic_capacity`.
+- Topic ids are stable `TopicId` values, and a removed topic's slot may be
+  reused by a later topic. Mutation APIs address topics by name, not id, so a
+  stale id is never a handle.
+- Topic names are opaque bytes copied into the name arena and compared by exact
+  bytes, case-sensitively. `topic_info` returns a name borrowed from hub storage
+  until that topic is removed.
+- Each topic owns an intrusive doubly linked subscriber list, so a publish walks
+  only that topic's subscribers. The open-addressed index gives expected O(1)
+  name lookup; publication is O(k) in the number of subscribers to the topic.
+- `subscribe` is idempotent: an existing connection/topic pair returns
+  `added = false` before any capacity check. A new topic checks subscription
+  capacity before allocating either row, so a full subscription table never
+  leaves an orphan topic. A new name that overlaps hub storage returns
+  `AliasedTopicName`.
+- `unsubscribe` distinguishes `TopicNotFound` from `NotSubscribed`. The last
+  unsubscribe removes the topic, tombstones its index row, and releases both
+  slots and the id for reuse. `unsubscribe_all` removes only one connection's
+  subscriptions.
+
+Publish and lifetimes:
+
+- `publish` fans out to every subscriber. `publish_from` additionally excludes
+  the sender by exact `*connection.WebSocket` pointer identity; it is not a
+  name, id, or address-range comparison.
+- The hub builds a fresh `stream.MessageWriter` per eligible subscriber and
+  calls `write(payload, true)`, which queues one FIN text or binary frame
+  through `connection.WebSocket.enqueue_frame`. It never flushes and never
+  creates a per-subscriber queue, so outbound pressure stays in the connection's
+  bounded transmit ring and backpressure policy.
+- A payload overlapping any hub storage region returns `AliasedPayload` before
+  fanout. Overlap with one subscriber's connection storage is reported only for
+  that subscriber as a skipped `InvalidLength` delivery.
+- `PublishResult` reports `matched` (eligible subscribers after sender
+  exclusion), `delivered` (successful enqueues), `skipped`
+  (`matched - delivered`), `backpressured` (`WouldBlock` or `QueueFull`),
+  `closed` (`ConnectionClosed`), and `first_error` in list order.
+  `is_complete` is true only when nothing was skipped. A skipped subscriber
+  stays subscribed; the registry is not mutated by fanout.
+- The payload is a borrowed `[]u8`. A successful delivery queues a frame that
+  borrows it, so the caller must keep it alive and unchanged until every
+  delivered connection flushes. The hub never copies the payload.
+- Subscribed `*connection.WebSocket` values and every `Storage` backing array
+  must keep a stable address and outlive their subscriptions. The caller must
+  call `Hub.unsubscribe_all` before destroying a connection or moving storage.
+- A mutation or nested publish while fanout is active returns
+  `PublishInProgress`; the guard clears when the publish returns, even though
+  delivered frames may still be queued. Read-only queries such as
+  `is_subscribed`, `topic_info`, `topic_count`, and `subscription_count` remain
+  available.
+- The hub is unsynchronized. The caller serializes access, including publish
+  and registry mutation.
+
+Limits:
+
+- The v1 sink is the unified `*connection.WebSocket`. There is no separate
+  split-half or native-wrapper pub/sub API. Native stream callers can pass a
+  `native_stream.WebSocket`'s public `inner` connection pointer. Split callers
+  can publish to a write half's connection, but must own close coordination
+  because the hub bypasses the split read half and its obligation forwarding.
+- Outbound text is not UTF-8 validated on fanout, matching the connection and
+  stream write paths. Callers that require valid text must validate before
+  publishing.
+- Topic-info views and payload lifetimes are borrowed as described above;
+  there is no background task, allocator, or event loop.
+
+### Platform Support
+
+Runtime and compile coverage are separate gates.
+
+| Target | Runtime coverage | Compile check |
+| --- | --- | --- |
+| x86_64-linux-gnu | Debug and ReleaseSafe in CI; native `nix flake check` on the host | `zig build check -Dtarget=x86_64-linux-gnu` |
+| x86_64-linux-musl | `nix flake check` `test-musl` on the host architecture in the musl shell; x86_64-linux-musl only on an x86_64 Linux host | `zig build check -Dtarget=x86_64-linux-musl` |
+| aarch64-linux-gnu | None | `zig build check -Dtarget=aarch64-linux-gnu` |
+| aarch64-linux-musl | None | `zig build check -Dtarget=aarch64-linux-musl` |
+| x86-linux-musl | None | `zig build check -Dtarget=x86-linux-musl` |
+| x86_64-macos | None | `zig build check -Dtarget=x86_64-macos` |
+| aarch64-macos | None | `zig build check -Dtarget=aarch64-macos` |
+| x86_64-windows | None | `zig build check -Dtarget=x86_64-windows` |
+
+The CI `test` job runs `zig build test --summary all` and `zig build check` on
+x86_64-linux-gnu and is the runtime gate. The `cross-check` matrix compiles the
+library and both test roots for the eight targets above with `zig build check
+-Dtarget=...`; foreign binaries cannot run on the runner, so those jobs are
+compile-only and are not runtime evidence. The test-only 32-bit fix in
+`tests/connection-test/connection_limits_test.zig` is what keeps x86-linux-musl
+compiling. No runtime coverage is claimed for macOS, Windows, or non-x86_64
+Linux targets in CI.
+
+`nix flake check` also runs `test-default` natively on the host system and
+`test-musl` in the musl shell on Linux using the host architecture. `test-musl`
+therefore provides x86_64-linux-musl runtime coverage only on an x86_64 Linux
+host; it remains a hermetic local gate, not a substitute for the CI runtime job.
 
 ## Dependency Rules
 
@@ -1048,6 +1182,10 @@ Do not copy zslay internals into tachyon. Do not edit `zig-pkg/` or the Nix
 store. The zslay boundary is public API only. `src/stream.zig` consumes that
 boundary only through `connection.zig` and `utf8.zig`; it adds no zslay calls,
 no header parsing, and no second fragment-order or message-limit check.
+`src/pubsub.zig` consumes `connection.zig` and `stream.zig` only. It observes
+backpressure through `stream.MessageWriter.write` and
+`connection.WebSocket.enqueue_frame`, adds no zslay call, and changes no frame
+or wire state.
 
 When bumping zslay, re-read `src/root.zig`, `src/types.zig`, `src/frame.zig`,
 and `src/event.zig`, then update the inventory and compatibility table before
@@ -1088,8 +1226,8 @@ Build files:
   run commands.
 - `SECURITY.md` covers reporting and supported versions.
 - `CHANGELOG.md` records landed changes.
-- `THIRD_PARTY_NOTICES.md` records fastwebsockets, zslay, and uWebZockets
-  attribution.
+- `THIRD_PARTY_NOTICES.md` records fastwebsockets, zslay, uWebZockets, and
+  uNetworking/uWebSockets attribution.
 - `SKILL.md` summarizes the vendored skill pack and graphify setup.
 - `.agents/skills/` and `skills-lock.json` hold the shared skill pack.
 - `.agents/agents/`, `.opencode/agents/`, `.codex/agents/`, and `.claude/agents/`

@@ -31,8 +31,8 @@ Matching definitions exist for every role:
 | `SKILL.md` | Human-readable skill summary. |
 
 The names are the same in every client: `architect`, `developer`, `reviewer`,
-`integrator`, `framing`, `connection`, `fragments`, `handshake`, `testing`,
-`review`, `release`, and `docs`. They never carry a project prefix.
+`integrator`, `framing`, `connection`, `fragments`, `handshake`, `pubsub`,
+`testing`, `review`, `release`, and `docs`. They never carry a project prefix.
 
 Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 `review`, and `reviewer` roles restrict `tools` to `Read`, `Grep`, `Glob`, and
@@ -47,6 +47,7 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 | `connection` | Connection policy over `zslay.Conn`, control replies, limits, backpressure policy, the native `std.Io.net.Stream` adapter, and the permessage-deflate payload codec | `src/connection.zig`, `src/backpressure.zig`, `src/native_stream.zig`, `src/deflate.zig` |
 | `fragments` | Chunked messages in `src/stream.zig`, message buffering and shared UTF-8 streaming in `src/fragment.zig`, and split read/write halves in `src/split.zig` | `src/stream.zig`, `src/fragment.zig`, `src/split.zig` |
 | `handshake` | Client handshake and server upgrade | `src/handshake.zig`, `src/upgrade.zig` |
+| `pubsub` | Bounded zero-allocation topic hub and fanout over stream writes and backpressure watermarks | `src/pubsub.zig` |
 | `testing` | Unit and integration coverage, plus future Autobahn, fuzz, and loopback suites | `tests/**` |
 | `review` | Read-only review | any changed file |
 | `release` | Build, Nix, packaging, dependency generation, CI | `build.zig`, `build.zig.zon`, `flake.nix`, `flake.lock`, `scripts/update_zon_files.sh`, `.pre-commit-config.yaml`, `.github/workflows/`, `.github/dependabot.yml` |
@@ -76,23 +77,23 @@ pass.
 
 ## Extension Ownership
 
-The remaining roadmap row is `src/pubsub.zig`; the file does not exist yet.
-Existing agent definitions remain scoped to current files; expand the owner and
-matching definition before implementation. The landed modules are
-`src/utf8.zig` under `framing`; `src/connection.zig`, `src/backpressure.zig`,
-`src/native_stream.zig`, and `src/deflate.zig` under `connection`;
-`src/stream.zig`, `src/fragment.zig`, and `src/split.zig` under `fragments`; and
-`src/handshake.zig` and `src/upgrade.zig` under `handshake`.
+`src/pubsub.zig` is implemented and owned by the `pubsub` specialist. Its
+definition, roster entry, and skill coverage are already in place. The landed
+modules are `src/utf8.zig` under `framing`; `src/connection.zig`,
+`src/backpressure.zig`, `src/native_stream.zig`, and `src/deflate.zig` under
+`connection`; `src/stream.zig`, `src/fragment.zig`, and `src/split.zig` under
+`fragments`; `src/handshake.zig` and `src/upgrade.zig` under `handshake`; and
+`src/pubsub.zig` under `pubsub`.
 
 | Module | Owner | Status and dependency |
 | --- | --- | --- |
 | `src/stream.zig` | `fragments` | Implemented: chunked `MessageReader`/`MessageWriter`, borrowed chunks, control interleaving, incremental UTF-8, and watermark-aware enqueue |
 | `src/deflate.zig` | `connection` codec; `handshake` owns negotiation | Codec implemented on `std.compress.flate`; wire activation and RFC 7692 negotiation blocked on zslay negotiated RSV1 |
-| `src/pubsub.zig` | new `pubsub` specialist when the module starts | Planned; stream, backpressure |
+| `src/pubsub.zig` | `pubsub` | Implemented: bounded zero-allocation topic hub and fanout over `src/stream.zig` and `src/backpressure.zig`, with borrowed payloads, skip accounting, and a publish reentrancy guard |
 
-A new `pubsub` definition must be added to `.agents/agents/`, `.opencode/agents/`,
-`.codex/agents/`, and `.claude/agents/`, plus the roster and `SKILL.md`, before
-`src/pubsub.zig` is created.
+The `pubsub` definitions in `.agents/agents/`, `.opencode/agents/`,
+`.codex/agents/`, and `.claude/agents/` share one scope. The implementation and
+its `tests/pubsub-test/` coverage are landed; tests remain owned by `testing`.
 
 ## Agent Tooling Change Ownership
 
@@ -147,13 +148,13 @@ zig build test --summary all
 
 | Skill | Loaded by |
 | --- | --- |
-| `zig-0-17` | framing, connection, fragments, handshake, testing, release, review, architect, developer, reviewer, integrator |
-| `zig-best-practices` | framing, connection, fragments, handshake, testing, review |
-| `zig-testing` | framing, connection, fragments, handshake, testing |
-| `zig-tiger-style` | framing, connection, fragments, handshake, testing, review, architect, reviewer, integrator |
-| `pragmatic-functional-programming` | framing, connection, review, architect, reviewer |
-| `dod` | framing, connection, fragments, testing |
-| `codebase-design` | connection, fragments, handshake, review, architect, developer, reviewer, integrator |
+| `zig-0-17` | framing, connection, fragments, handshake, pubsub, testing, release, review, architect, developer, reviewer, integrator |
+| `zig-best-practices` | framing, connection, fragments, handshake, pubsub, testing, review |
+| `zig-testing` | framing, connection, fragments, handshake, pubsub, testing |
+| `zig-tiger-style` | framing, connection, fragments, handshake, pubsub, testing, review, architect, reviewer, integrator |
+| `pragmatic-functional-programming` | framing, connection, pubsub, review, architect, reviewer |
+| `dod` | framing, connection, fragments, pubsub, testing |
+| `codebase-design` | connection, fragments, handshake, pubsub, review, architect, developer, reviewer, integrator |
 | `improve-codebase-architecture` | architect |
 | `grilling`, `grill-me` | architect |
 | `domain-modeling` | docs, architect |
