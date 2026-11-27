@@ -3,9 +3,10 @@
 //! Re-exports the pinned zslay codec, the frame facade, the incremental UTF-8
 //! validator, the WebSocket error model, the backpressure policy, the chunked
 //! message reader and writer, the RFC 7692 permessage-deflate payload codec,
-//! the fragment collector, the role-aware connection layer, the split read and
-//! write halves, the native `std.Io` stream adapter, the HTTP client handshake
-//! and shared server upgrade primitives, and the server upgrade call order.
+//! the bounded pub/sub topic hub, the fragment collector, the role-aware
+//! connection layer, the split read and write halves, the native `std.Io`
+//! stream adapter, the HTTP client handshake and shared server upgrade
+//! primitives, and the server upgrade call order.
 
 pub const zslay = @import("zslay");
 
@@ -142,3 +143,18 @@ pub const NativeTransport = native_stream.Transport;
 pub const NativeTransportStorage = native_stream.TransportStorage;
 pub const NativeWebSocket = native_stream.WebSocket;
 pub const NativeSplit = native_stream.Split;
+
+pub const pubsub = @import("pubsub.zig");
+pub const PubSubHub = pubsub.Hub;
+pub const PubSubStorage = pubsub.Storage;
+pub const PubSubOptions = pubsub.Options;
+pub const PubSubTopicId = pubsub.TopicId;
+pub const PubSubSubscribeResult = pubsub.SubscribeResult;
+pub const PubSubTopicInfo = pubsub.TopicInfo;
+pub const PubSubPublishResult = pubsub.PublishResult;
+pub const PubSubError = pubsub.Error;
+pub const PubSubInitError = pubsub.InitError;
+pub const PubSubSubscribeError = pubsub.SubscribeError;
+pub const PubSubPublishError = pubsub.PublishError;
+pub const required_name_bytes = pubsub.required_name_bytes;
+pub const required_index_capacity = pubsub.required_index_capacity;
