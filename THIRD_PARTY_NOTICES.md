@@ -33,9 +33,18 @@ the Apache-2.0 notice and be recorded here.
 
 - Repository: https://github.com/farbenbuilds/uWebZockets
 - License: MIT
-- Use: architecture, build, Nix, and agent-workflow reference.
+- Use: architecture, build, Nix, agent-workflow, and pub/sub design reference.
 
-No uWebZockets source is vendored or linked.
+No source from uWebZockets is vendored or linked.
+
+## uNetworking/uWebSockets
+
+- Repository: https://github.com/uNetworking/uWebSockets
+- License: Apache-2.0
+- Use: design-only reference for `TopicTree` topic-registry semantics.
+
+The pub/sub topic-registry design references uWebSockets `TopicTree` semantics.
+No source from uWebSockets is vendored or linked.
 
 ## Zig
 

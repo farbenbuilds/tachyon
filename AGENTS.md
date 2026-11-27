@@ -8,8 +8,9 @@ behavioral target is the fastwebsockets 0.10.0 surface: raw frame reads and
 writes, automatic close and pong handling, automatic mask application, maximum
 message limits, vectored writes, fragmentation collection, HTTP server upgrade,
 client handshake, split read/write halves, and the native `std.Io.net.Stream`
-adapter. The 0.10.0 surface is the parity baseline, not the ceiling: pub/sub
-remains a planned post-parity extension documented in `CODEBASE.md`. Chunked
+adapter. The 0.10.0 surface is the parity baseline, not the ceiling: the
+bounded zero-allocation pub/sub hub is implemented in `src/pubsub.zig` as a
+post-parity application layer documented in `CODEBASE.md`. Chunked
 streaming is implemented in `src/stream.zig`: `MessageReader` yields
 caller-borrowed payload chunks with an explicit FIN, and `MessageWriter` queues
 fragmented chunks through the connection's watermark-aware enqueue path. The
@@ -43,9 +44,9 @@ documentation foundation:
   the `check` step, and the zslay dependency.
 - `src/root.zig` is the module entry point; it re-exports zslay, the frame
   facade, the UTF-8 validator, the WebSocket error model, the chunked message
-  reader and writer, the deflate codec, the fragment accumulator and collector,
-  the connection layer, the split read and write halves, the native stream
-  adapter, and the HTTP handshake primitives.
+  reader and writer, the deflate codec, the pub/sub hub, the fragment
+  accumulator and collector, the connection layer, the split read and write
+  halves, the native stream adapter, and the HTTP handshake primitives.
 - `src/frame.zig` implements the frame facade: `Frame`, `Payload`, the `OpCode`
   and `CloseCode` aliases with conversions, `unmask`/`unmask_at` delegations,
   the header-length bridge, `std.Io.Writer` vectored writes, and caller-buffer
@@ -128,6 +129,27 @@ documentation foundation:
   `connection.WebSocket`; the module allocates nothing, copies no whole message,
   and adds no function pointers. `ReaderState` and `WriterState` are public so a
   later split wrapper can drive the same policy.
+- `src/pubsub.zig` implements the bounded zero-allocation pub/sub hub over
+  caller-owned `Storage`: topic rows, subscription rows, a fixed-stride name
+  arena, and one open-addressed topic index with tombstones. Topic names are
+  copied into hub storage and compared by exact bytes, case-sensitively;
+  subscriptions are intrusive per-topic lists, and `subscribe` is idempotent
+  with `added = false` for an existing pair. Unknown topics fail with
+  `TopicNotFound`, non-subscribers with `NotSubscribed`, and the last
+  unsubscribe removes the topic and makes its id reusable. Fanout walks one
+  topic's list in O(k) for k subscribers, uses a fresh
+  `stream.MessageWriter.write(payload, true)` per eligible subscriber, and never
+  flushes or builds a per-subscriber queue. `PublishResult` reports `matched`,
+  `delivered`, `skipped`, `backpressured`, `closed`, and `first_error`;
+  `publish_from` excludes only the exact sender pointer. Payloads are borrowed
+  `[]u8` slices that must stay alive until every delivered connection flushes.
+  Registry mutation or a nested publish during fanout returns
+  `PublishInProgress`. `required_name_bytes` and `required_index_capacity`
+  expose the checked storage sizing. The hub is unsynchronized, so the caller
+  serializes access. It targets the unified `*connection.WebSocket`; native
+  callers can pass a wrapper's public `inner` pointer, while split callers must
+  own close coordination because the hub bypasses the split read half. Outbound
+  text is not UTF-8 validated on fanout, matching connection and stream writes.
 - `src/deflate.zig` implements the zero-allocation RFC 7692 permessage-deflate
   message payload codec over caller-owned storage. It uses Zig 0.17.1
   `std.compress.flate` with the raw container and adds no allocator, C
@@ -233,19 +255,21 @@ documentation foundation:
 
 The test suite lives under `tests/` and is aggregated by `tests/main.zig`.
 Category folders such as `tests/frame-test/`, `tests/connection-test/`,
-`tests/native-stream-test/`, `tests/stream-test/`, and `tests/deflate-test/`
-mirror the protocol layers, and `tests/support.zig` holds shared fixtures and
-test-only readers and writers. The suite covers the dependency boundary, the
-error model, the frame facade, the incremental UTF-8 validator, the chunked
-reader and writer, the deflate codec, the fragment accumulator and collector,
-the connection policy, raw frame path, and write paths, the split reads and
-writes, the native stream transport over a loopback `std.Io.net.Stream` pair,
-the HTTP handshake, and the server upgrade call order, including validated-only
-`incoming`, split construction before the 101 write and flush, the forced server
-role, and the async future and its borrows; `tests/module-test/module_test.zig`
-adds deflate, fragment, connection, split, native-stream, and handshake
-re-export tests, and `tests/stream-test/state_test.zig` checks the
-chunked-message re-exports. Library sources contain no test blocks.
+`tests/native-stream-test/`, `tests/stream-test/`, `tests/pubsub-test/`, and
+`tests/deflate-test/` mirror the protocol layers, and `tests/support.zig` holds
+shared fixtures and test-only readers and writers. The suite covers the
+dependency boundary, the error model, the frame facade, the incremental UTF-8
+validator, the chunked reader and writer, the deflate codec, the pub/sub hub,
+the fragment accumulator and collector, the connection policy, raw frame path,
+and write paths, the split reads and writes, the native stream transport over a
+loopback `std.Io.net.Stream` pair, the HTTP handshake, and the server upgrade
+call order, including validated-only `incoming`, split construction before the
+101 write and flush, the forced server role, and the async future and its
+borrows; `tests/module-test/module_test.zig` adds deflate, pub/sub, fragment,
+connection, split, native-stream, and handshake re-export tests, and
+`tests/stream-test/state_test.zig` checks the chunked-message re-exports. The
+aggregate runs 416 test blocks in each of Debug and ReleaseSafe, 832 runs in
+total. Library sources contain no test blocks.
 
 ## Non-Negotiable Architecture
 
@@ -301,6 +325,7 @@ Current files:
 | `src/fragment.zig` | `Fragments` accumulator and `FragmentCollector` over `zslay.Conn`: caller-owned `frame_buffer` that bounds one frame payload and `message_buffer` that bounds one collected message, streaming text validation, and control-frame pass-through. |
 | `src/connection.zig` | Role-aware `WebSocket` policy over `zslay.Conn`: caller-owned reader, writer, and storage, automatic pong and close replies, seeded mask source, exclusive limits, closed gating, failure latches, and vectored or copied writes. |
 | `src/stream.zig` | Chunked `MessageReader`/`MessageWriter` over `connection.WebSocket`: borrowed payload chunks, control interleaving, incremental UTF-8 across frames, terminal close handling, pure `ReaderState`/`WriterState`, and watermark-aware enqueue with `flush` retry. |
+| `src/pubsub.zig` | Bounded zero-allocation `Hub` over caller-owned storage: topic and subscription rows, a fixed-stride name arena, an open-addressed topic index with tombstones, intrusive subscriber lists, idempotent subscribe, reusable topic ids, `PublishResult` skip accounting, borrowed payloads, and a `PublishInProgress` reentrancy guard. |
 | `src/split.zig` | Split `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned read and write storage, sink-forwarded obligations, and `FragmentCollectorRead`. |
 | `src/native_stream.zig` | Implemented `std.Io.net.Stream` transport binding: caller-owned reader and writer buffers, native `WebSocket` and `Split` wrappers, buffer-alias validation, caller-owned socket lifetime, and no allocation or task spawning. |
 | `src/deflate.zig` | Implemented RFC 7692 permessage-deflate message payload codec over caller-owned storage: `Deflater`, `Inflater`, context takeover, `sync_tail`, and `max_compressed_len`; no RSV1, frame, fragmentation, or handshake state. Wire activation remains blocked on zslay negotiated RSV1. |
@@ -308,13 +333,13 @@ Current files:
 | `src/upgrade.zig` | RFC 6455 server upgrade call order: `incoming` validation without writing, split construction from caller storage before the 101 write and flush through `handshake.write_response`, forced server role, and `upgrade_async` over `std.Io.Future`. |
 | `tests/main.zig` | Test aggregator; imports every category test file so one module runs under Debug and ReleaseSafe. |
 | `tests/support.zig` | Shared fixtures and test-only readers and writers. |
-| `tests/<category>-test/` | Unit coverage grouped by protocol area: module, error, frame, UTF-8, stream, fragment, connection, split, native stream, deflate, handshake, and upgrade. |
+| `tests/<category>-test/` | Unit coverage grouped by protocol area: module, error, frame, UTF-8, stream, pub/sub, fragment, connection, split, native stream, deflate, handshake, and upgrade. |
 | `tests/README.md` | Test tree, aggregator, category naming, and run instructions. |
 | `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
 | `.github/workflows/lint.yml` | Pull-request Zig formatting lint with Zig 0.17.1. |
-| `.github/workflows/test.yml` | Pull-request and main-push Zig test and check jobs for Zig, Zon, `build.zig`, and workflow changes, recorded in the `Testing` deployment environment. |
+| `.github/workflows/test.yml` | Pull-request and main-push Zig test and check jobs plus an eight-target compile-only cross-check matrix for Zig, Zon, `build.zig`, and workflow changes, recorded in the `Testing` deployment environment. |
 | `scripts/update_zon_files.sh` | Regenerates `build.zig.zon.nix`, `.json`, and `.txt` with zon2nix. |
 | `.agents/skills/`, `skills-lock.json` | Shared skill pack, lock file, and the Antigravity graphify skill copy. |
 | `.agents/agents/`, `.opencode/agents/`, `.codex/agents/`, `.claude/agents/` | Matching agent definitions for agy, OpenCode, Codex, and Claude Code. |
@@ -343,12 +368,12 @@ Target source layout, roughly in dependency order:
 | `src/split.zig` | Implemented: `WebSocketRead`, `WebSocketWrite`, and `Split` over independent `connection.WebSocket`/`zslay.Conn` values, caller-owned read and write storage, sink-forwarded automatic replies, and `FragmentCollectorRead`. |
 | `src/native_stream.zig` | Implemented: `std.Io.net.Stream` transport binding plus native `WebSocket` and `Split` wrappers over the connection layers, caller-owned buffers, and alias validation. |
 | `src/deflate.zig` | Implemented codec: zero-allocation RFC 7692 permessage-deflate message payload transform over caller-owned storage, using `std.compress.flate` with the raw container; wire activation and negotiation remain blocked on zslay negotiated RSV1. |
-| `src/pubsub.zig` | Planned extension: bounded topic hub and fanout over the frame/stream API. |
+| `src/pubsub.zig` | Implemented: bounded zero-allocation `Hub` over caller-owned topic rows, subscription rows, a fixed-stride name arena, and an open-addressed topic index with tombstones; intrusive subscriber lists, idempotent subscribe, reusable topic ids, O(k) fanout with expected O(1) lookup, `PublishResult` skip accounting, borrowed payloads, and a `PublishInProgress` reentrancy guard. |
 | `src/handshake.zig` | Implemented: RFC 6455 client handshake and shared server upgrade primitives over `std.Io.Reader`/`Writer`, including key generation, accept-token re-exports from `src/upgrade.zig`, head parsing, and response construction. |
 | `src/upgrade.zig` | Implemented: RFC 6455 server upgrade call order over the validated `handshake` request and response primitives, including the accept-token derivation, split construction from caller storage before the 101 write and flush, the forced server role, and `upgrade`, `incoming`, and `upgrade_async`. |
 | `tests/main.zig` | Aggregates the category test files for the Debug and ReleaseSafe test steps. |
 | `tests/support.zig` | Shared test fixtures and protocol helpers. |
-| `tests/<category>-test/*.zig` | Unit tests grouped by area: module, error, backpressure, frame, UTF-8, stream, fragment, connection, split, native stream, deflate, handshake, and upgrade. |
+| `tests/<category>-test/*.zig` | Unit tests grouped by area: module, error, backpressure, frame, UTF-8, stream, pub/sub, fragment, connection, split, native stream, deflate, handshake, and upgrade. |
 | `tests/<integration>-test/` | Planned Autobahn, fuzz, and loopback integration suites; no adapter exists yet. |
 
 The handshake/upgrade pair deliberately forms a small re-export cycle:
@@ -363,14 +388,14 @@ one-line delegations from `src/frame.zig`. Do not create a second enum, range
 table, or XOR loop. See `CODEBASE.md#compatibility-notes` before adapting a
 zslay behavior.
 
-The remaining roadmap row is `src/pubsub.zig`; the file does not exist yet.
-`src/stream.zig` and `src/deflate.zig` are implemented, with deflate wire
-activation still waiting for zslay negotiated RSV1. The landed modules are
-`src/utf8.zig`, `src/connection.zig`, `src/backpressure.zig`,
-`src/native_stream.zig`, `src/stream.zig`, `src/deflate.zig`,
-`src/fragment.zig`, `src/split.zig`, `src/handshake.zig`, and
-`src/upgrade.zig`. Extend the planned owner in `AGENT_DIRECTORY.md` and the
-matching agent definitions before creating a remaining roadmap module.
+All roadmap modules are implemented. `src/stream.zig`, `src/pubsub.zig`, and
+`src/deflate.zig` are implemented, with deflate wire activation still waiting
+for zslay negotiated RSV1. The landed modules are `src/utf8.zig`,
+`src/connection.zig`, `src/backpressure.zig`, `src/native_stream.zig`,
+`src/stream.zig`, `src/pubsub.zig`, `src/deflate.zig`, `src/fragment.zig`,
+`src/split.zig`, `src/handshake.zig`, and `src/upgrade.zig`. Extend the owner
+map in `AGENT_DIRECTORY.md` and the matching agent definitions before adding a
+new module.
 
 Keep one owner per file. Cross-scope work is handed to the owning agent or
 reviewer instead of edited in the same pass.
@@ -411,6 +436,19 @@ zig build test              # Debug and ReleaseSafe suites over tests/main.zig
 zig build check             # type-check library and tests
 zig fmt --check .           # formatting gate
 ```
+
+Cross-target compile checks reuse the `check` step with a target override:
+
+```sh
+zig build check -Dtarget=x86_64-linux-musl
+```
+
+CI compile-checks x86_64-linux-gnu, x86_64-linux-musl, aarch64-linux-gnu,
+aarch64-linux-musl, x86-linux-musl, x86_64-macos, aarch64-macos, and
+x86_64-windows. These are compile-only checks. Runtime coverage is the native
+Debug and ReleaseSafe suite on x86_64-linux-gnu plus the host and musl tests in
+`nix flake check`; no CI runtime claim is made for macOS or Windows. See
+`CODEBASE.md#platform-support`.
 
 Use `zig fmt .` to apply formatting. Do not install project tools globally with
 `apt`, `brew`, or `npm`.

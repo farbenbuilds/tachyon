@@ -233,6 +233,39 @@ This project follows semantic versioning.
   `upgrade_websocket`, `upgrade_websocket_async`, `read_incoming_upgrade`,
   `is_upgrade_request`, `accept_guid`, `accept_token_len`, `AcceptTokenBuffer`,
   and `compute_accept_token` are exported from `src/root.zig`.
+- `src/pubsub.zig` with the bounded zero-allocation pub/sub hub over
+  caller-owned `Storage`: topic and subscription rows, a fixed-stride name
+  arena, and one open-addressed topic index with tombstones. The hub uses
+  intrusive per-topic subscriber lists, copies exact-byte case-sensitive names
+  into its arena, makes duplicate subscribe idempotent with `added = false`,
+  distinguishes `TopicNotFound` from `NotSubscribed`, removes a topic on its last
+  unsubscribe, and reuses released ids. `publish` is O(k) in a topic's
+  subscribers with expected O(1) lookup; each eligible subscriber gets a fresh
+  `stream.MessageWriter.write(payload, true)` that queues one FIN frame through
+  `enqueue_frame`, with no flush and no per-subscriber queue.
+  `PublishResult` reports `matched`, `delivered`, `skipped`, `backpressured`,
+  `closed`, and `first_error`; `publish_from` excludes only the exact sender
+  pointer. Payloads are borrowed until every delivered connection flushes, and
+  registry mutation or a nested publish during fanout returns
+  `PublishInProgress`. `required_name_bytes` and `required_index_capacity`
+  expose checked sizing. The hub is unsynchronized, targets the unified
+  `connection.WebSocket`, and does not validate outbound text UTF-8. Exported
+  from `src/root.zig` as the `pubsub` module plus `PubSubHub`, `PubSubStorage`,
+  `PubSubOptions`, `PubSubTopicId`, `PubSubSubscribeResult`, `PubSubTopicInfo`,
+  `PubSubPublishResult`, `PubSubError`, `PubSubInitError`,
+  `PubSubSubscribeError`, `PubSubPublishError`, `required_name_bytes`, and
+  `required_index_capacity`.
+- `tests/pubsub-test/` with 41 focused tests across hub core, publish,
+  backpressure, reentrancy, and name concerns, plus pub/sub re-export coverage
+  in `tests/module-test/module_test.zig`. The aggregate now runs 416 test blocks
+  in each of Debug and ReleaseSafe, 832 runs in total. A test-only 32-bit
+  portability fix in `tests/connection-test/connection_limits_test.zig` keeps
+  the `x86-linux-musl` cross-check compiling.
+- `.github/workflows/test.yml` with an eight-target `cross-check` matrix that
+  compile-checks x86_64-linux-gnu, x86_64-linux-musl, aarch64-linux-gnu,
+  aarch64-linux-musl, x86-linux-musl, x86_64-macos, aarch64-macos, and
+  x86_64-windows through `zig build check -Dtarget=...`. The native `test` job
+  remains the runtime gate; the cross-target jobs are compile-only.
 - zslay dependency pinned in `build.zig.zon` and exposed from `src/root.zig`,
   plus the generated `build.zig.zon.nix`, `.json`, and `.txt` views.
 - Nix flake and lock file for the Zig 0.17.1 development shell, Nix formatting
@@ -249,7 +282,7 @@ This project follows semantic versioning.
   Antigravity, including platform skills, the OpenCode plugin, Codex and Claude
   Code hooks, Antigravity rules and workflow, and reproducible install and
   check scripts.
-- Claude Code agent definitions for the full twelve-role roster under
+- Claude Code agent definitions for the full thirteen-role roster under
   `.claude/agents/`, with read-only tool sets for `architect`, `review`, and
   `reviewer`, inherited models, and the `graphify` skill preloaded for every
   role.

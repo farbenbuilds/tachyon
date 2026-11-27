@@ -16,12 +16,12 @@ direction, fragment ordering, and frame/message limits. tachyon applies inbound
 close policy, owns the close echo, and covers the fastwebsockets API surface
 incrementally: automatic ping/pong and close handling, fragment buffering,
 chunked streaming reads and writes, split read/write halves, UTF-8 checks, the
-client handshake, the server upgrade call order, and the native
-`std.Io.net.Stream` adapter are implemented. The 0.10.0 surface is the parity
-baseline; pub/sub remains a planned post-parity extension. The RFC 7692
-permessage-deflate message payload codec is implemented in `src/deflate.zig`,
-but wire activation and negotiation remain blocked on zslay negotiated RSV1
-support.
+client handshake, the server upgrade call order, the native
+`std.Io.net.Stream` adapter, and the bounded pub/sub hub are implemented. The
+0.10.0 surface is the parity baseline; the pub/sub hub is a post-parity
+application layer. The RFC 7692 permessage-deflate message payload codec is
+implemented in `src/deflate.zig`, but wire activation and negotiation remain
+blocked on zslay negotiated RSV1 support.
 Backpressure is implemented in `src/backpressure.zig` as a bounded byte/frame
 watermark policy over zslay's transmit ring, with an opt-in per-connection
 admission gate and a `flush`-driven wait point through `std.Io`. Incremental
@@ -89,6 +89,22 @@ queues one frame per chunk through `enqueue_frame`, preserves fragmentation
 order, and advances its state only after a queue succeeds, so a `WouldBlock` or
 `QueueFull` chunk can be retried after `flush`. Nothing in the module allocates,
 copies a whole message, or writes automatic replies.
+`src/pubsub.zig` adds the bounded application-layer hub: caller-owned topic,
+subscription, fixed-stride name, and open-addressed index storage; exact-byte,
+case-sensitive names copied into hub storage; intrusive per-topic subscriber
+lists; idempotent subscribe; reusable topic ids; and last-unsubscribe topic
+removal. Publish walks one topic's subscribers, creates a fresh
+`stream.MessageWriter` per eligible subscriber, and queues one FIN frame through
+`enqueue_frame` without flushing or building a per-subscriber queue. The
+`PublishResult` reports matched, delivered, skipped, backpressured, closed, and
+the first error; `publish_from` excludes only the exact sender pointer.
+Payloads are borrowed until every delivered connection flushes, and registry
+mutation or a nested publish during fanout returns `PublishInProgress`. The hub
+is unsynchronized, so the caller serializes access. It targets the unified
+`connection.WebSocket`: native callers can pass a wrapper's public `inner`
+pointer, while split callers must own close coordination because the hub
+bypasses the split read half. Outbound text is not UTF-8 validated on fanout,
+matching connection and stream writes.
 `src/native_stream.zig` binds a caller-owned `std.Io.net.Stream` to that
 connection and split surface. A `Transport` wraps the stream's
 `std.Io.Reader`/`std.Io.Writer` directions, and the native `WebSocket` and
@@ -138,14 +154,15 @@ verification including `Sec-WebSocket-Accept`, server request validation, and
 buffered for the frame path, and the module never allocates or opens a socket.
 `src/root.zig` re-exports the facade, the error model, the UTF-8 validator, the
 backpressure policy, the chunked message reader and writer, the deflate codec,
-the fragment accumulator and collector, the connection layer, the split halves,
-the native stream adapter, the handshake primitives, and the server upgrade call
-order. The test suite lives under `tests/` and is aggregated by `tests/main.zig`;
-category folders such as `tests/frame-test/`, `tests/connection-test/`,
-`tests/stream-test/`, `tests/native-stream-test/`, and `tests/deflate-test/`
-mirror the protocol layers, and `tests/support.zig` holds shared fixtures.
-Library sources contain no test blocks, and `zig build test` runs the aggregate
-under Debug and ReleaseSafe.
+the pub/sub hub, the fragment accumulator and collector, the connection layer,
+the split halves, the native stream adapter, the handshake primitives, and the
+server upgrade call order. The test suite lives under `tests/` and is aggregated
+by `tests/main.zig`; category folders such as `tests/frame-test/`,
+`tests/connection-test/`, `tests/stream-test/`, `tests/pubsub-test/`,
+`tests/native-stream-test/`, and `tests/deflate-test/` mirror the protocol
+layers, and `tests/support.zig` holds shared fixtures. Library sources contain
+no test blocks, and `zig build test` runs the aggregate under Debug and
+ReleaseSafe.
 
 `src/upgrade.zig` implements the server call order over those primitives:
 `incoming` reads and strictly validates a request without writing,
@@ -168,9 +185,9 @@ The fragment collector is deliberately read-only, while the connection and split
 read paths own automatic replies; the stream reader and writer delegate all
 automatic replies and wire state to the same connection. No separate close or
 masking module is planned; zslay owns the close predicate, payload validator,
-and mask routine. The remaining extension roadmap adds pub/sub after the parity
-baseline lands; the streaming and deflate codecs have landed, but deflate wire
-activation waits for zslay negotiated RSV1.
+and mask routine. All extension roadmap modules have landed: the streaming,
+deflate, and pub/sub modules are implemented, but deflate wire activation still
+waits for zslay negotiated RSV1.
 
 ## Targets
 
@@ -189,7 +206,7 @@ activation waits for zslay negotiated RSV1.
 | Streaming message reader/writer | Implemented in `src/stream.zig`: borrowed chunks, explicit FIN, control interleaving, incremental UTF-8, terminal close, pure reader/writer state, and watermark-aware enqueue with `flush` retry |
 | Native `std.Io.Reader`/`Writer` transport adapter | Implemented in `src/native_stream.zig`: caller-owned `std.Io.net.Stream` transport plus native `WebSocket` and `Split` wrappers over the connection layers |
 | permessage-deflate (RFC 7692) | Implemented codec beyond 0.10.0 parity: `src/deflate.zig` transforms complete message payloads over caller-owned storage; wire activation and negotiation remain blocked on zslay negotiated RSV1 |
-| Pub/Sub topic hub and fanout | Planned application layer |
+| Pub/Sub topic hub and fanout | Implemented in `src/pubsub.zig`: bounded zero-allocation `Hub` over caller-owned storage, exact-byte names copied into a fixed-stride arena, intrusive subscriber lists, idempotent subscribe, reusable ids, O(k) fanout with expected O(1) lookup, per-subscriber `MessageWriter` enqueue, skip accounting, borrowed payloads, and a publish reentrancy guard; no wire change |
 
 ## Design
 
@@ -228,10 +245,53 @@ activation waits for zslay negotiated RSV1.
   permessage-deflate payloads. Compression is fail-closed and control frames are
   never compressed. Wire activation and negotiation wait for zslay negotiated
   RSV1 support.
-- Pub/Sub is an application layer over frames and streams, not a wire-format
-  change.
+- Pub/Sub is an application layer over the connection and stream APIs, not a
+  wire-format change. The bounded `Hub` stores topic and subscription rows, a
+  fixed-stride name arena, and one open-addressed topic index in caller-owned
+  storage. Publish is O(k) in a topic's subscribers with expected O(1) name
+  lookup, queues one FIN frame per eligible subscriber through
+  `stream.MessageWriter` and `enqueue_frame`, never flushes or builds a
+  per-subscriber queue, and reports backpressured and closed subscribers in
+  `PublishResult`. Payloads stay borrowed until every delivered connection
+  flushes, and mutation or nested publish during fanout returns
+  `PublishInProgress`. Subscribed `*connection.WebSocket` values and every
+  `Storage` backing array must keep a stable address and outlive their
+  subscriptions. The caller must call `Hub.unsubscribe_all` before destroying a
+  connection or moving storage. The hub is unsynchronized and targets the
+  unified `connection.WebSocket`; native callers can pass the wrapper's public
+  `inner` pointer, while split callers must own close coordination because the
+  hub bypasses the split read half. Outbound text is not UTF-8 validated on
+  fanout, matching connection and stream writes.
 - Zig 0.17.1 is pinned through the Nix flake.
 - Invalid wire input returns a typed error instead of a fallback.
+
+## Platform Support
+
+Runtime-tested and compile-checked coverage are separate. GitHub Actions runs
+the full Debug and ReleaseSafe suites natively on x86_64-linux-gnu, and
+`nix flake check` runs the native suite on the host plus `test-musl` in the
+musl shell on Linux. Because `test-musl` builds for the host architecture, it
+covers x86_64-linux-musl only on an x86_64 Linux host. CI compile-checks all
+eight targets with `zig build check -Dtarget=<target>`:
+
+| Target | Coverage |
+| --- | --- |
+| x86_64-linux-gnu | Runtime: Debug and ReleaseSafe in CI; native `nix flake check` on the host |
+| x86_64-linux-musl | Compile-only in CI; `nix flake check` `test-musl` runs on the host architecture in the musl shell, so it is x86_64-linux-musl only on an x86_64 Linux host |
+| aarch64-linux-gnu | Compile-only |
+| aarch64-linux-musl | Compile-only |
+| x86-linux-musl | Compile-only; the test-only 32-bit fix keeps it compiling |
+| x86_64-macos | Compile-only |
+| aarch64-macos | Compile-only |
+| x86_64-windows | Compile-only |
+
+Foreign binaries cannot run on the runner, so the cross-target matrix is not
+runtime evidence. No runtime coverage is claimed for macOS, Windows, or
+non-x86_64 Linux targets in CI.
+
+```sh
+zig build check -Dtarget=x86_64-linux-musl
+```
 
 ## Environment
 
