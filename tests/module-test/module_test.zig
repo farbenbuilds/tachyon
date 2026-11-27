@@ -136,3 +136,29 @@ test "Fragment: public module re-exports the fragment layer" {
 
     try std.testing.expect(collector.is_at_frame_boundary());
 }
+
+test "PubSub: public module re-exports the hub and capacity helpers" {
+    const std = @import("std");
+
+    try std.testing.expect(tachyon.PubSubHub == tachyon.pubsub.Hub);
+    try std.testing.expect(tachyon.PubSubStorage == tachyon.pubsub.Storage);
+    try std.testing.expect(tachyon.PubSubOptions == tachyon.pubsub.Options);
+    try std.testing.expect(tachyon.PubSubTopicId == tachyon.pubsub.TopicId);
+    try std.testing.expect(tachyon.PubSubSubscribeResult == tachyon.pubsub.SubscribeResult);
+    try std.testing.expect(tachyon.PubSubTopicInfo == tachyon.pubsub.TopicInfo);
+    try std.testing.expect(tachyon.PubSubPublishResult == tachyon.pubsub.PublishResult);
+    try std.testing.expect(tachyon.PubSubError == tachyon.pubsub.Error);
+    try std.testing.expect(tachyon.PubSubInitError == tachyon.pubsub.InitError);
+    try std.testing.expect(tachyon.PubSubSubscribeError == tachyon.pubsub.SubscribeError);
+    try std.testing.expect(tachyon.PubSubPublishError == tachyon.pubsub.PublishError);
+
+    try std.testing.expect(@hasField(tachyon.PubSubHub, "topics"));
+    try std.testing.expect(@hasField(tachyon.PubSubHub, "subscriptions"));
+    try std.testing.expect(@hasField(tachyon.PubSubHub, "names"));
+    try std.testing.expect(@hasField(tachyon.PubSubHub, "topic_index"));
+    try std.testing.expect(@hasField(tachyon.PubSubPublishResult, "delivered"));
+    try std.testing.expect(@hasField(tachyon.PubSubPublishResult, "backpressured"));
+    try std.testing.expectEqual(@as(u32, std.math.maxInt(u32)), @backingInt(tachyon.PubSubTopicId.none));
+    try std.testing.expectEqual(@as(usize, 6), try tachyon.required_name_bytes(2, 3));
+    try std.testing.expectEqual(@as(usize, 8), try tachyon.required_index_capacity(3));
+}

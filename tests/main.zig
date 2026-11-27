@@ -24,6 +24,11 @@ test {
     _ = @import("stream-test/reader_control_test.zig");
     _ = @import("stream-test/writer_test.zig");
     _ = @import("stream-test/state_test.zig");
+    _ = @import("pubsub-test/hub_core_test.zig");
+    _ = @import("pubsub-test/publish_test.zig");
+    _ = @import("pubsub-test/backpressure_test.zig");
+    _ = @import("pubsub-test/reentrancy_test.zig");
+    _ = @import("pubsub-test/names_test.zig");
     _ = @import("split-test/split_core_test.zig");
     _ = @import("split-test/split_read_test.zig");
     _ = @import("split-test/split_backpressure_test.zig");

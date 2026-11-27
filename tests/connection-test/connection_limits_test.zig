@@ -503,7 +503,8 @@ test "WebSocket: set_max_message_size clamps above zslay MaxPayloadLen" {
 
     client.ws.set_max_message_size(std.math.maxInt(usize));
 
-    const clamped = @min(std.math.maxInt(usize), @as(usize, zslay.MaxPayloadLen));
+    const clamped_payload_len = std.math.cast(usize, zslay.MaxPayloadLen) orelse std.math.maxInt(usize);
+    const clamped = @min(std.math.maxInt(usize), clamped_payload_len);
     try std.testing.expectEqual(clamped, client.ws.max_message_size());
 
     const received = try client.ws.read_frame();

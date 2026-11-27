@@ -251,6 +251,82 @@ pub fn ConnectionRig(
     };
 }
 
+/// Caller-owned pub/sub hub storage sized for fixed capacities.
+///
+/// `index_capacity` must be a power of two and at least
+/// `required_index_capacity(topic_capacity)` for `init` to succeed.
+pub fn PubSubRig(
+    comptime topic_capacity: usize,
+    comptime subscription_capacity: usize,
+    comptime max_topic_len: usize,
+    comptime index_capacity: usize,
+) type {
+    return struct {
+        topics: [topic_capacity]tachyon.pubsub.TopicSlot = undefined,
+        subscriptions: [subscription_capacity]tachyon.pubsub.SubscriptionSlot = undefined,
+        names: [topic_capacity * max_topic_len]u8 = undefined,
+        topic_index: [index_capacity]tachyon.pubsub.TopicIndexSlot = undefined,
+        hub: tachyon.pubsub.Hub = undefined,
+
+        const Self = @This();
+
+        pub fn storage(self: *Self) tachyon.pubsub.Storage {
+            return .{
+                .topics = &self.topics,
+                .subscriptions = &self.subscriptions,
+                .names = &self.names,
+                .topic_index = &self.topic_index,
+            };
+        }
+
+        pub fn init(self: *Self) tachyon.pubsub.InitError!void {
+            self.hub = try tachyon.pubsub.Hub.init(self.storage(), .{
+                .max_topic_len = @intCast(max_topic_len),
+            });
+        }
+    };
+}
+
+/// Fixed array of write-only test connections with independent storage.
+///
+/// The connections share no writer or transmit ring, so each one can be
+/// inspected for queued frames after a hub fanout.
+pub fn PubSubFleet(
+    comptime count: usize,
+    comptime frame_capacity: usize,
+    comptime node_count: usize,
+    comptime write_capacity: usize,
+    comptime close_capacity: usize,
+    comptime scratch_capacity: usize,
+    comptime out_capacity: usize,
+) type {
+    return struct {
+        readers: [count]std.Io.Reader = undefined,
+        rigs: [count]ConnectionRig(
+            frame_capacity,
+            node_count,
+            write_capacity,
+            close_capacity,
+            scratch_capacity,
+            out_capacity,
+        ) = undefined,
+
+        const Self = @This();
+
+        pub fn init(self: *Self, config: connection.Config) !void {
+            for (&self.rigs, 0..) |*rig, index| {
+                self.readers[index] = std.Io.Reader.fixed("");
+                try rig.init(&self.readers[index], config);
+            }
+        }
+
+        pub fn ws(self: *Self, index: usize) *connection.WebSocket {
+            std.debug.assert(index < count);
+            return &self.rigs[index].ws;
+        }
+    };
+}
+
 /// Masks `f` with `key` and appends the wire bytes to an `EncodedStream`.
 pub fn append_masked(stream: anytype, f: Frame, key: MaskingKey) !void {
     var masked = f;
