@@ -93,12 +93,12 @@ applies no mask.
 `.github/workflows/autobahn.yml` builds the fixture and runs
 `farbenbuilds/autobahn-action`, pinned to commit
 `1c4d57b3ca48e1ddf742e5ae1ab4ce5b51625b36` (`v1`), over the configured case set
-`1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.* 11.* 12.* 13.*`. Group 8 is absent from
-the pinned testsuite, and the action's default list omits it; the gate covers
-every case the suite ships (1-7, 9-13). Compression groups 11-13 are enabled
-through the fixture's negotiated permessage-deflate composition. A green run is
-evidence only for the configured case set, not a full Autobahn or compression
-compliance claim.
+`1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.* 12.* 13.*`. Groups 8 and 11 have no
+cases in the pinned testsuite, and the action's default list omits them; the gate
+covers every case the suite ships (1-7, 9-10, 12-13). Compression groups 12-13
+are enabled through the fixture's negotiated permessage-deflate composition. A
+green run is evidence only for the configured case set, not a full Autobahn or
+compression compliance claim.
 
 ## Adding Coverage
 

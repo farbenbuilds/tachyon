@@ -24,7 +24,7 @@ implemented in `src/deflate.zig`, `src/frame.zig`, `src/connection.zig`,
 `src/upgrade.zig`. The default no-extension path remains strict; compression
 composition stays at the application edge rather than inside the stream layer,
 and the Autobahn fixture now negotiates permessage-deflate and enables cases
-11-13 through that edge composition.
+12-13 through that edge composition.
 The bounded pub/sub hub is implemented in `src/pubsub.zig` as an application
 layer; and the native `std.Io.net.Stream` adapter is implemented in
 `src/native_stream.zig`.
@@ -65,14 +65,14 @@ Library sources contain no test blocks. `tests/autobahn-test/server.zig` is a
 repository-only fixture built by the `autobahn-server` step and run by
 `.github/workflows/autobahn.yml`; it is not part of the aggregate.
 
-The Autobahn gate covers every case the pinned suite ships: 1-7 and 9-13.
-Group 8 is absent from the pinned testsuite, and the action's default list omits
-it. Compression groups 11-13 are enabled through the fixture's negotiated
-permessage-deflate composition. The current full gate run reports 517 cases:
-511 passed, 0 failed, 3 non-strict (6.4.2-6.4.4), and 3 informational; all 216
-cases in groups 11-13 passed. A green run remains evidence only for that case
-set, not a full Autobahn or compression compliance claim. Fuzz and full loopback
-echo suites remain planned integration work.
+The Autobahn gate covers every case the pinned suite ships: 1-7, 9-10, and
+12-13. Groups 8 and 11 have no cases in the pinned testsuite, and the action's
+default list omits them. Compression groups 12-13 are enabled through the
+fixture's negotiated permessage-deflate composition. The current full gate run
+reports 517 cases: 511 passed, 0 failed, 3 non-strict (6.4.2-6.4.4), and 3
+informational; all 216 cases in groups 12-13 passed. A green run remains
+evidence only for that case set, not a full Autobahn or compression compliance
+claim. Fuzz and full loopback echo suites remain planned integration work.
 
 See [Target Source Layout](#target-source-layout) for the module list and
 `tests/README.md` for the test categories.
@@ -444,11 +444,11 @@ The Autobahn integration fixture and gate are implemented:
 `tests/autobahn-test/server.zig` is built by the `autobahn-server` step with
 `-Doptimize=ReleaseSafe` (a full checkout is required because the package
 excludes `tests/`), and `.github/workflows/autobahn.yml` runs the configured case
-set `1-7, 9-13`. Group 8 is absent from the pinned testsuite, and the action's
-default list omits it, so the gate covers every case the suite ships.
-Compression groups 11-13 are enabled through the fixture's negotiated
-permessage-deflate composition. Fuzz and full loopback echo suites remain
-planned integration work. A green workflow run is evidence only for the
+set `1-7, 9-10, and 12-13`. Groups 8 and 11 have no cases in the pinned
+testsuite, and the action's default list omits them, so the gate covers every
+case the suite ships. Compression groups 12-13 are enabled through the fixture's
+negotiated permessage-deflate composition. Fuzz and full loopback echo suites
+remain planned integration work. A green workflow run is evidence only for the
 configured case set, not a full Autobahn or compression compliance claim.
 Library sources contain no test blocks.
 
@@ -462,7 +462,7 @@ All roadmap modules are implemented. `src/stream.zig`, `src/pubsub.zig`, and
 `src/deflate.zig` are implemented; zslay negotiated RSV1, the handshake
 permessage-deflate negotiation, and the stream/fragment RSV1 plumbing are
 landed. The codec remains edge-composed rather than automatic, and the Autobahn
-fixture now negotiates it and enables compression cases 11-13. The current agent
+fixture now negotiates it and enables compression cases 12-13. The current agent
 definitions own only current files. Extend the owner map in
 `AGENT_DIRECTORY.md` and the matching agent definitions before adding a new
 module.
@@ -490,7 +490,7 @@ module.
 | `set_auto_close` / `set_auto_pong` | same setters | Implemented |
 | `set_auto_apply_mask` | same setter | Implemented |
 | `set_max_message_size` | same setter | Implemented |
-| permessage-deflate (not in 0.10.0) | frame/connection/stream RSV1 plumbing, handshake negotiation, `src/deflate.zig` message payload codec, and Autobahn fixture composition | Implemented beyond parity: strict default path, opt-in RSV1, offer/selection/verification, edge-composed codec, and configured Autobahn cases 11-13 |
+| permessage-deflate (not in 0.10.0) | frame/connection/stream RSV1 plumbing, handshake negotiation, `src/deflate.zig` message payload codec, and Autobahn fixture composition | Implemented beyond parity: strict default path, opt-in RSV1, offer/selection/verification, edge-composed codec, and configured Autobahn cases 12-13 |
 
 ## zslay Ownership Boundary
 
@@ -611,7 +611,7 @@ split layers consume the backpressure policy, the deflate codec transforms
 payloads without touching the wire, and the pub/sub hub fans out through the
 strict stream writer. Compression remains edge-composed: the library exposes
 RSV1 and negotiation but does not compress automatically, while the Autobahn
-fixture enables the configured compression cases 11-13 through that composition.
+fixture enables the configured compression cases 12-13 through that composition.
 
 | Module | Capability | Depends on | Exit criteria |
 | --- | --- | --- | --- |

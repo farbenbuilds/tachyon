@@ -109,11 +109,11 @@ automatic replies. permessage-deflate is not automatic in the stream layer:
 callers inflate, validate, deflate, and write RSV1 frames at the edge, bound
 decompressed output, and treat decompressed bytes as untrusted.
 
-The Autobahn gate covers cases 1-7 and 9-13. Compression cases 11-13 are enabled
-through the fixture's negotiated permessage-deflate composition. Group 8 is
-absent from the pinned suite and the action's default list omits it, so the gate
-covers every case the suite ships. A green run is evidence only for that case
-set, not full Autobahn or compression compliance.
+The Autobahn gate covers cases 1-7, 9-10, and 12-13. Compression cases 12-13
+are enabled through the fixture's negotiated permessage-deflate composition.
+Groups 8 and 11 have no cases in the pinned suite and the action's default list
+omits them, so the gate covers every case the suite ships. A green run is
+evidence only for that case set, not full Autobahn or compression compliance.
 
 Runtime-tested on x86_64-linux-gnu under Debug and ReleaseSafe, plus host and
 host-architecture musl tests through `nix flake check`. CI compile-checks x86_64

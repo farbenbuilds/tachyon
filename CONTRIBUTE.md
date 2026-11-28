@@ -65,11 +65,11 @@ and naming.
 Changed behavior needs a focused test, including malformed input and length
 boundaries, and both Debug and ReleaseSafe must pass. See
 [AGENTS.md#testing-guidelines](AGENTS.md#testing-guidelines) for the full rule
-set. The Autobahn gate covers cases 1-7 and 9-13; group 8 is absent from the
-pinned testsuite and the action's default list omits it, so every shipped case
-is covered. Compression cases 11-13 are enabled through the fixture. Fuzz and
-full loopback suites remain planned. A green run is evidence only for the
-configured case set, not full compliance.
+set. The Autobahn gate covers cases 1-7, 9-10, and 12-13; groups 8 and 11 have
+no cases in the pinned testsuite and the action's default list omits them, so
+every shipped case is covered. Compression cases 12-13 are enabled through the
+fixture. Fuzz and full loopback suites remain planned. A green run is evidence
+only for the configured case set, not full compliance.
 
 ## Pre-commit Hooks
 

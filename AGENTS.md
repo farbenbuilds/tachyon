@@ -55,10 +55,11 @@ edge-composed and is never automatic in the stream layer.
 
 Tests are aggregated by `tests/main.zig` and run in Debug and ReleaseSafe.
 Library sources contain no test blocks. The Autobahn fixture is
-`tests/autobahn-test/server.zig`; the workflow covers the case set `1-7, 9-13`.
-Group 8 is absent from the pinned testsuite, and the action's default list omits
-it, so the gate covers every case the suite ships. Compression cases 11-13 are
-enabled through the fixture's negotiated permessage-deflate composition.
+`tests/autobahn-test/server.zig`; the workflow covers the case set
+`1-7, 9-10, and 12-13`. Groups 8 and 11 have no cases in the pinned testsuite,
+and the action's default list omits them, so the gate covers every case the
+suite ships. Compression cases 12-13 are enabled through the fixture's
+negotiated permessage-deflate composition.
 
 See [CODEBASE.md#target-source-layout](CODEBASE.md#target-source-layout) for the
 full file map and [tests/README.md](tests/README.md) for the test categories.
@@ -219,12 +220,12 @@ contain no test blocks; do not add tests back to `src/`.
 - Run both Debug and ReleaseSafe before review.
 - The Autobahn integration fixture at `tests/autobahn-test/server.zig` is
   implemented and gated by `.github/workflows/autobahn.yml` over the configured
-  case set `1-7, 9-13`. Group 8 is absent from the pinned testsuite, and the
-  action's default list omits it, so the gate covers every case the suite ships.
-  Compression groups 11-13 are enabled through negotiated permessage-deflate
-  fixture composition. Fuzzing and a full loopback echo suite remain future
-  work. A green run is evidence only for the configured case set, not a full
-  Autobahn or compression compliance claim.
+  case set `1-7, 9-10, and 12-13`. Groups 8 and 11 have no cases in the pinned
+  testsuite, and the action's default list omits them, so the gate covers every
+  case the suite ships. Compression groups 12-13 are enabled through negotiated
+  permessage-deflate fixture composition. Fuzzing and a full loopback echo suite
+  remain future work. A green run is evidence only for the configured case set,
+  not a full Autobahn or compression compliance claim.
 
 ## Security and Protocol Rules
 

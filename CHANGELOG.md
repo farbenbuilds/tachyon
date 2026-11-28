@@ -21,10 +21,11 @@ This project follows semantic versioning.
   request offers, enables negotiated RSV1, inflates compressed messages before
   text validation, and deflates echoes with the selected sender window and
   context-takeover policy. `.github/workflows/autobahn.yml` enables Autobahn
-  cases 11-13. Group 8 is absent from the pinned testsuite, and the action's
-  default list omits it, so the gate covers every case the suite ships (1-7,
-  9-13). The full pinned gate is green, including all 216 cases in groups 11-13.
-  A green run is evidence only for the configured case set.
+  cases 12-13. Groups 8 and 11 have no cases in the pinned testsuite, and the
+  action's default list omits them, so the gate covers every case the suite
+  ships (1-7, 9-10, 12-13). The full pinned gate is green, including all 216
+  cases in groups 12-13. A green run is evidence only for the configured case
+  set.
 - RFC 7692 capability plumbing: `Frame.rsv1` with strict `init` and explicit
   `init_rsv1`, connection `allow_rsv1`, compressed-message state and RSV1 writer
   options in `src/stream.zig`, RSV1-aware fragment accumulation, zero-allocation
@@ -201,7 +202,7 @@ This project follows semantic versioning.
   aggregated by `tests/main.zig` and module re-export coverage in
   `tests/module-test/module_test.zig`. Negotiated RSV1 and RFC 7692 negotiation
   are implemented; compression remains edge-composed, and the Autobahn fixture
-  enables the configured compression cases 11-13.
+  enables the configured compression cases 12-13.
 - `src/native_stream.zig` with the native `std.Io.net.Stream` transport edge.
   `Transport` builds the `std.Io.Reader` and `std.Io.Writer` interfaces with
   `stream.reader(io, read_buffer)` and `stream.writer(io, write_buffer)`, and
@@ -330,11 +331,12 @@ This project follows semantic versioning.
   `1c4d57b3ca48e1ddf742e5ae1ab4ce5b51625b36` (`v1`). The fixture reuses the
   existing upgrade, connection, stream, and error-mapping layers; no wire logic
   is duplicated and `src/` stays zero-allocation.
-- Group 8 is absent from the pinned testsuite, and the action's default list
-  omits it, so the gate covers every case the suite ships (1-7, 9-13).
-  Compression groups 11-13 are enabled through the fixture's negotiated
-  permessage-deflate composition. A green run is evidence only for the
-  configured case set, not a full Autobahn or compression compliance claim.
+- Groups 8 and 11 have no cases in the pinned testsuite, and the action's
+  default list omits them, so the gate covers every case the suite ships
+  (1-7, 9-10, 12-13). Compression groups 12-13 are enabled through the
+  fixture's negotiated permessage-deflate composition. A green run is evidence
+  only for the configured case set, not a full Autobahn or compression
+  compliance claim.
 
 ### Changed
 
