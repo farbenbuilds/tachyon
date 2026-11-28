@@ -1,0 +1,8 @@
+{
+  "name": "tachyon-benches",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "uWebSockets.js": "https://github.com/uNetworking/uWebSockets.js/archive/refs/tags/v20.72.0.tar.gz"
+  }
+}

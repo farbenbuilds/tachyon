@@ -20,6 +20,11 @@ result-*
 # generated knowledge graph (graphify)
 graphify-out/
 
+# benchmarks
+benches/node_modules/
+benches/results.*
+benches/servers/**/target/
+
 # os / editors
 .DS_Store
 .vscode/

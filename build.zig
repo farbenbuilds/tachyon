@@ -67,6 +67,15 @@ pub fn build(b: *std.Build) void {
     const autobahn_step = b.step("autobahn-server", "Build and install the Autobahn echo server");
     autobahn_step.dependOn(&install_autobahn.step);
 
+    const examples_step = b.step("examples", "Build and install the WebSocket examples");
+    addExample(b, examples_step, "tachyon-echo-server", "examples/echo_server.zig", mod, target, optimize);
+    addExample(b, examples_step, "tachyon-echo-server-split", "examples/echo_server_split.zig", mod, target, optimize);
+    addExample(b, examples_step, "tachyon-echo-client", "examples/echo_client.zig", mod, target, optimize);
+
+    const benches_step = b.step("benches", "Build and install the benchmark tools");
+    addExample(b, benches_step, "tachyon-load-test", "benches/load_test.zig", mod, target, optimize);
+    addExample(b, benches_step, "tachyon-unmask", "benches/unmask.zig", mod, target, optimize);
+
     const test_debug = b.addTest(.{
         .root_module = testRootModule(b, target, .debug, zslay),
     });
@@ -85,4 +94,28 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&lib.step);
     check_step.dependOn(&test_debug.step);
     check_step.dependOn(&test_safe.step);
+}
+
+fn addExample(
+    b: *std.Build,
+    step: *std.Build.Step,
+    name: []const u8,
+    root_source_file: []const u8,
+    tachyon: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+) void {
+    const exe = b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(root_source_file),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tachyon", .module = tachyon },
+            },
+        }),
+    });
+    const install = b.addInstallArtifact(exe, .{});
+    step.dependOn(&install.step);
 }
