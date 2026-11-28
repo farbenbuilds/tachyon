@@ -12,12 +12,18 @@
 //!
 //! After a failure close, the fixture half-closes the send direction and drains
 //! kernel receive bytes with a 64 MiB bound and a single absolute two-second
-//! deadline before dropping the stream. A 16 MiB + 1 message fits the one-byte
-//! frame-buffer headroom above the 16 MiB message buffer, so the whole message
-//! is consumed before the fixture sends 1009. Larger frames are rejected at the
-//! header; the bounded drain keeps their failure close observable up to the
-//! budget and deadline, while larger inputs or peers that never close may still
-//! end in a transport reset.
+//! deadline before dropping the stream. The frame buffer covers the full 32 MiB
+//! connection limit while the application message buffer remains 16 MiB; an
+//! oversized message is consumed before the fixture sends 1009. Larger frames
+//! are rejected at the header; the bounded drain keeps their failure close
+//! observable up to the budget and deadline, while larger inputs or peers that
+//! never close may still end in a transport reset.
+//!
+//! When the client offers permessage-deflate, the fixture selects the first
+//! supported offer, enables negotiated RSV1, inflates compressed messages into
+//! the message buffer before text validation, and deflates every echo into the
+//! compressed buffer with the negotiated sender window. Uncompressed clients
+//! keep the strict one-frame echo path.
 
 const std = @import("std");
 const tachyon = @import("tachyon");
@@ -25,14 +31,16 @@ const tachyon = @import("tachyon");
 const bind_host = "127.0.0.1";
 const bind_port: u16 = 9001;
 
-// Exclusive fastwebsockets-style limit. 16 MiB + 2 accepts exactly 16 MiB + 1,
-// one byte above the message buffer, so the fixture can consume the whole
-// oversized frame before sending 1009. Larger inputs are rejected from the
-// frame header and handled by the bounded failure drain below.
-const max_message_size: usize = 16 * 1024 * 1024 + 2;
+// Inbound limit is higher than the application message buffer so a compressed
+// echo up to max_compressed_len(16 MiB) is admitted and oversized messages can
+// be consumed before 1009. Autobahn 9's 16 MiB frames still fit.
+const max_message_size: usize = 32 * 1024 * 1024;
 
-const frame_buffer_len: usize = 16 * 1024 * 1024 + 1;
+const frame_buffer_len: usize = max_message_size;
 const message_buffer_len: usize = 16 * 1024 * 1024;
+const compressed_buffer_len: usize = blk: {
+    break :blk tachyon.max_compressed_len(message_buffer_len) catch unreachable;
+};
 const transport_read_len: usize = 64 * 1024;
 const transport_write_len: usize = 64 * 1024;
 const connection_write_len: usize = 64 * 1024;
@@ -51,20 +59,24 @@ const failure_drain_budget_len: usize = 64 * 1024 * 1024;
 const failure_drain_chunk_len: usize = 16 * 1024;
 
 comptime {
-    std.debug.assert(frame_buffer_len == message_buffer_len + 1);
-    std.debug.assert(max_message_size == frame_buffer_len + 1);
+    std.debug.assert(frame_buffer_len >= max_message_size - 1);
+    std.debug.assert(max_message_size > message_buffer_len);
+    std.debug.assert(compressed_buffer_len > message_buffer_len);
 }
 
 /// Process-lifetime storage owned by the fixture.
 const Buffers = struct {
     frame_buffer: []u8,
     message_buffer: []u8,
+    compressed_buffer: []u8,
     transport_read: []u8,
     transport_write: []u8,
     connection_write: []u8,
     head: []u8,
     connection_close_buffer: []u8,
     failure_close_buffer: []u8,
+    deflater_storage: tachyon.DeflaterStorage = undefined,
+    inflater_storage: tachyon.InflaterStorage = undefined,
     tx_nodes: [tx_node_count]tachyon.zslay.FrameNode = undefined,
 
     fn init(allocator: std.mem.Allocator, buffers: *Buffers) !void {
@@ -72,6 +84,8 @@ const Buffers = struct {
         errdefer allocator.free(frame_buffer);
         const message_buffer = try allocator.alloc(u8, message_buffer_len);
         errdefer allocator.free(message_buffer);
+        const compressed_buffer = try allocator.alloc(u8, compressed_buffer_len);
+        errdefer allocator.free(compressed_buffer);
         const transport_read = try allocator.alloc(u8, transport_read_len);
         errdefer allocator.free(transport_read);
         const transport_write = try allocator.alloc(u8, transport_write_len);
@@ -88,6 +102,7 @@ const Buffers = struct {
         buffers.* = .{
             .frame_buffer = frame_buffer,
             .message_buffer = message_buffer,
+            .compressed_buffer = compressed_buffer,
             .transport_read = transport_read,
             .transport_write = transport_write,
             .connection_write = connection_write,
@@ -100,6 +115,7 @@ const Buffers = struct {
     fn deinit(self: *Buffers, allocator: std.mem.Allocator) void {
         allocator.free(self.frame_buffer);
         allocator.free(self.message_buffer);
+        allocator.free(self.compressed_buffer);
         allocator.free(self.transport_read);
         allocator.free(self.transport_write);
         allocator.free(self.connection_write);
@@ -125,23 +141,50 @@ const Buffers = struct {
     /// cannot see together.
     fn validate_disjoint(self: *Buffers) error{InvalidLength}!void {
         const storage = self.connection_storage();
+        const deflater_bytes = std.mem.asBytes(&self.deflater_storage);
+        const inflater_bytes = std.mem.asBytes(&self.inflater_storage);
+
         if (storage.overlaps(self.message_buffer)) return error.InvalidLength;
+        if (storage.overlaps(self.compressed_buffer)) return error.InvalidLength;
         if (storage.overlaps(self.failure_close_buffer)) return error.InvalidLength;
         if (storage.overlaps(self.head)) return error.InvalidLength;
+        if (storage.overlaps(deflater_bytes)) return error.InvalidLength;
+        if (storage.overlaps(inflater_bytes)) return error.InvalidLength;
 
         if (regions_overlap(self.message_buffer, self.frame_buffer)) return error.InvalidLength;
+        if (regions_overlap(self.message_buffer, self.compressed_buffer)) return error.InvalidLength;
         if (regions_overlap(self.message_buffer, self.transport_read)) return error.InvalidLength;
         if (regions_overlap(self.message_buffer, self.transport_write)) return error.InvalidLength;
         if (regions_overlap(self.message_buffer, self.head)) return error.InvalidLength;
         if (regions_overlap(self.message_buffer, self.failure_close_buffer)) return error.InvalidLength;
+        if (regions_overlap(self.message_buffer, deflater_bytes)) return error.InvalidLength;
+        if (regions_overlap(self.message_buffer, inflater_bytes)) return error.InvalidLength;
+
+        if (regions_overlap(self.compressed_buffer, self.frame_buffer)) return error.InvalidLength;
+        if (regions_overlap(self.compressed_buffer, self.transport_read)) return error.InvalidLength;
+        if (regions_overlap(self.compressed_buffer, self.transport_write)) return error.InvalidLength;
+        if (regions_overlap(self.compressed_buffer, self.head)) return error.InvalidLength;
+        if (regions_overlap(self.compressed_buffer, self.failure_close_buffer)) return error.InvalidLength;
+        if (regions_overlap(self.compressed_buffer, deflater_bytes)) return error.InvalidLength;
+        if (regions_overlap(self.compressed_buffer, inflater_bytes)) return error.InvalidLength;
 
         if (regions_overlap(self.failure_close_buffer, self.transport_read)) return error.InvalidLength;
         if (regions_overlap(self.failure_close_buffer, self.transport_write)) return error.InvalidLength;
         if (regions_overlap(self.failure_close_buffer, self.frame_buffer)) return error.InvalidLength;
         if (regions_overlap(self.failure_close_buffer, self.head)) return error.InvalidLength;
+        if (regions_overlap(self.failure_close_buffer, deflater_bytes)) return error.InvalidLength;
+        if (regions_overlap(self.failure_close_buffer, inflater_bytes)) return error.InvalidLength;
 
         if (regions_overlap(self.head, self.transport_read)) return error.InvalidLength;
         if (regions_overlap(self.head, self.transport_write)) return error.InvalidLength;
+        if (regions_overlap(self.head, deflater_bytes)) return error.InvalidLength;
+        if (regions_overlap(self.head, inflater_bytes)) return error.InvalidLength;
+
+        if (regions_overlap(self.transport_read, deflater_bytes)) return error.InvalidLength;
+        if (regions_overlap(self.transport_read, inflater_bytes)) return error.InvalidLength;
+        if (regions_overlap(self.transport_write, deflater_bytes)) return error.InvalidLength;
+        if (regions_overlap(self.transport_write, inflater_bytes)) return error.InvalidLength;
+        if (regions_overlap(deflater_bytes, inflater_bytes)) return error.InvalidLength;
     }
 };
 
@@ -155,6 +198,25 @@ fn regions_overlap(left: []const u8, right: []const u8) bool {
         @intFromPtr(right.ptr),
         right.len,
     );
+}
+
+/// Sender and receiver codecs for one negotiated connection.
+const Codec = struct {
+    deflater: tachyon.Deflater,
+    inflater: tachyon.Inflater,
+};
+
+/// Maps a codec failure to the connection close-code policy.
+fn deflate_close_error(err: tachyon.DeflateError) tachyon.WebSocketError {
+    return switch (err) {
+        error.MessageTooLarge, error.OutputTooShort => error.FrameTooLarge,
+        error.InvalidCompressedData,
+        error.CompressionFailed,
+        error.AliasedBuffer,
+        error.UnsupportedWindowBits,
+        error.SizeOverflow,
+        => error.ProtocolError,
+    };
 }
 
 /// Best-effort application close after a wire failure.
@@ -215,24 +277,31 @@ fn drain_after_failure(io: std.Io, stream: std.Io.net.Stream) void {
 ///
 /// A `WouldBlock` or `QueueFull` leaves the writer state unchanged, so the same
 /// payload is retried once after `flush`.
-fn write_message(writer: *tachyon.MessageWriter, payload: []u8) tachyon.WebSocketError!void {
-    writer.write(payload, true) catch |err| switch (err) {
+fn write_message(
+    writer: *tachyon.MessageWriter,
+    payload: []u8,
+    options: tachyon.MessageWriteOptions,
+) tachyon.WebSocketError!void {
+    writer.write_with_options(payload, true, options) catch |err| switch (err) {
         error.WouldBlock, error.QueueFull => {
             try writer.flush();
-            try writer.write(payload, true);
+            try writer.write_with_options(payload, true, options);
         },
         else => return err,
     };
     try writer.flush();
 }
 
-/// Assembles one message, then echoes it as one FIN frame with its kind.
+/// Assembles or inflates one message, then echoes it as one FIN frame.
 ///
 /// Returns true when a failure close was flushed and the caller must drain the
 /// rejected inbound bytes before closing the stream.
-fn echo(ws: *tachyon.WebSocket, buffers: *Buffers) bool {
+fn echo(ws: *tachyon.WebSocket, buffers: *Buffers, codec: ?*Codec) bool {
     var reader = tachyon.MessageReader.init(ws);
+    var message_started = false;
+    var message_compressed = false;
     var message_len: usize = 0;
+    var compressed_len: usize = 0;
 
     // Each iteration consumes one frame; a delivered close or a read error is
     // terminal, so the loop is bounded by the peer.
@@ -247,19 +316,63 @@ fn echo(ws: *tachyon.WebSocket, buffers: *Buffers) bool {
             // A validated close is already echoed and flushed by the connection.
             .close => return false,
             .chunk => |chunk| {
-                std.debug.assert(message_len <= buffers.message_buffer.len);
-                if (chunk.payload.len > buffers.message_buffer.len - message_len) {
+                // `MessageReader` resets its compressed state on FIN, so keep
+                // the message flag local. RSV1 on a continuation is already
+                // rejected by the frame and stream layers.
+                if (!message_started) {
+                    message_started = true;
+                    message_compressed = chunk.rsv1;
+                }
+
+                const target = if (message_compressed) buffers.compressed_buffer else buffers.message_buffer;
+                const current_len = if (message_compressed) compressed_len else message_len;
+                std.debug.assert(current_len <= target.len);
+                if (chunk.payload.len > target.len - current_len) {
                     return send_failure_close(ws, buffers.failure_close_buffer, error.FrameTooLarge);
                 }
-                @memcpy(buffers.message_buffer[message_len..][0..chunk.payload.len], chunk.payload);
-                message_len += chunk.payload.len;
+                @memcpy(target[current_len..][0..chunk.payload.len], chunk.payload);
+                if (message_compressed) {
+                    compressed_len = current_len + chunk.payload.len;
+                } else {
+                    message_len = current_len + chunk.payload.len;
+                }
                 if (!chunk.fin) continue;
 
-                var writer = tachyon.MessageWriter.init(ws, chunk.kind);
-                write_message(&writer, buffers.message_buffer[0..message_len]) catch |err| {
-                    return send_failure_close(ws, buffers.failure_close_buffer, err);
-                };
+                const kind = chunk.kind;
+                const payload: []const u8 = if (message_compressed) blk: {
+                    const active = codec orelse
+                        return send_failure_close(ws, buffers.failure_close_buffer, error.ProtocolError);
+                    const plain = active.inflater.decompress(
+                        buffers.compressed_buffer[0..compressed_len],
+                        buffers.message_buffer,
+                    ) catch |err| {
+                        return send_failure_close(ws, buffers.failure_close_buffer, deflate_close_error(err));
+                    };
+                    if (kind == .text) {
+                        tachyon.validate_utf8(plain) catch {
+                            return send_failure_close(ws, buffers.failure_close_buffer, error.InvalidUTF8);
+                        };
+                    }
+                    break :blk plain;
+                } else buffers.message_buffer[0..message_len];
+
+                var writer = tachyon.MessageWriter.init(ws, kind);
+                if (codec) |active| {
+                    const compressed = active.deflater.compress(payload, buffers.compressed_buffer) catch |err| {
+                        return send_failure_close(ws, buffers.failure_close_buffer, deflate_close_error(err));
+                    };
+                    write_message(&writer, @constCast(compressed), .{ .rsv1 = true }) catch |err| {
+                        return send_failure_close(ws, buffers.failure_close_buffer, err);
+                    };
+                } else {
+                    write_message(&writer, @constCast(payload), .{}) catch |err| {
+                        return send_failure_close(ws, buffers.failure_close_buffer, err);
+                    };
+                }
+                message_started = false;
+                message_compressed = false;
                 message_len = 0;
+                compressed_len = 0;
             },
         }
     }
@@ -273,6 +386,11 @@ fn handle(io: std.Io, stream: std.Io.net.Stream, buffers: *Buffers) tachyon.WebS
     });
 
     const incoming = try tachyon.upgrade.incoming(transport.reader(), buffers.head);
+    const selected = try tachyon.handshake.select_permessage_deflate_offers(
+        incoming.request.offers,
+        .{},
+    );
+    const compression = selected.permessage_deflate;
 
     // Construct the connection before the 101 so storage and alias validation
     // still happen before any response byte, mirroring the split upgrade order.
@@ -286,13 +404,34 @@ fn handle(io: std.Io, stream: std.Io.net.Stream, buffers: *Buffers) tachyon.WebS
             .writev_threshold = 1024,
             .max_message_size = max_message_size,
             .backpressure = null,
+            .allow_rsv1 = compression != null,
         },
     });
 
-    try tachyon.handshake.write_response(transport.writer(), incoming.request.key);
+    var codec_storage: Codec = undefined;
+    var codec: ?*Codec = null;
+    if (compression) |pmd| {
+        codec_storage = .{
+            .deflater = tachyon.Deflater.init(&buffers.deflater_storage, .{
+                .window_bits = pmd.effective_server_window_bits(),
+                .no_context_takeover = pmd.server_no_context_takeover,
+            }) catch return error.SendError,
+            .inflater = tachyon.Inflater.init(&buffers.inflater_storage, .{
+                .window_bits = pmd.effective_client_window_bits(),
+                .no_context_takeover = pmd.client_no_context_takeover,
+            }) catch return error.SendError,
+        };
+        codec = &codec_storage;
+    }
+
+    try tachyon.handshake.write_response_with_extensions(
+        transport.writer(),
+        incoming.request.key,
+        selected,
+    );
     transport.writer().flush() catch |err| return tachyon.from_writer(err);
 
-    const failure_close_sent = echo(&ws.inner, buffers);
+    const failure_close_sent = echo(&ws.inner, buffers, codec);
     if (failure_close_sent) drain_after_failure(io, stream);
 }
 
@@ -304,14 +443,13 @@ fn is_normal_disconnect(err: tachyon.WebSocketError) bool {
     };
 }
 
-pub fn main() !void {
-    var threaded: std.Io.Threaded = .init(std.heap.smp_allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
 
     var buffers: Buffers = undefined;
-    try Buffers.init(std.heap.smp_allocator, &buffers);
-    defer buffers.deinit(std.heap.smp_allocator);
+    try Buffers.init(allocator, &buffers);
+    defer buffers.deinit(allocator);
 
     try buffers.validate_disjoint();
 
