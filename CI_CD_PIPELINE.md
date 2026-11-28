@@ -157,7 +157,8 @@ account.
 
 1. Confirm the intended tag, `build.zig.zon` `.version`, `flake.nix` package
    version, and the matching changelog section agree.
-2. Confirm `Unreleased` is empty and the dated release section exists.
+2. Confirm the dated release section exists and no empty `Unreleased`
+   placeholder remains.
 3. Run the full checks.
 4. The maintainer creates and pushes an annotated `v*` tag.
 5. The maintainer creates the GitHub release from the changelog notes.

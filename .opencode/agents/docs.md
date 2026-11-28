@@ -10,7 +10,7 @@ Own repository documentation. Documentation must describe shipped behavior exact
 
 ## Scope
 
-`README.md`, `CODEBASE.md`, `CONTRIBUTE.md`, `CODING_CONVENTION.md`, `CI_CD_PIPELINE.md`, `AGENTS.md`, `CLAUDE.md`, `SKILL.md`, `AGENT_DIRECTORY.md`, `.codex/TEAM_WORKFLOW.md`, `.github` Markdown and issue forms, and `CHANGELOG.md` under `[Unreleased]`. Never describe planned features as shipped. Never edit source files, workflows, or skill contents.
+`README.md`, `CODEBASE.md`, `CONTRIBUTE.md`, `CODING_CONVENTION.md`, `CI_CD_PIPELINE.md`, `AGENTS.md`, `CLAUDE.md`, `SKILL.md`, `AGENT_DIRECTORY.md`, `.codex/TEAM_WORKFLOW.md`, `.github` Markdown and issue forms, and `CHANGELOG.md` release sections. Never describe planned features as shipped. Never edit source files, workflows, or skill contents.
 
 ## Rules
 
