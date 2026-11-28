@@ -3,20 +3,22 @@
 //! This module transforms complete message payloads with the raw DEFLATE
 //! container. It knows nothing about opcodes, frames, RSV1, fragmentation,
 //! control frames, or handshake negotiation; the caller supplies whole payloads
-//! and decides when compression applies. Wire activation remains blocked on
-//! negotiated RSV1 support in zslay: zslay rejects reserved bits and the
-//! connection, fragment, split, handshake, and upgrade layers do not invoke
-//! this codec.
+//! and decides when compression applies. `src/handshake.zig` negotiates the
+//! extension, `src/stream.zig` exposes the RSV1/compressed-message plumbing,
+//! and the application composes this codec at the edge. The stream layer does
+//! not inflate or compress automatically.
 //!
 //! The sender flushes the compressed block stream to a byte boundary and
-//! appends one `0x00` octet. The receiver serves the peer payload followed by
-//! `00 00 ff ff` from a private reader adapter, completing an empty non-final
-//! stored block. An empty message is the canonical one-byte `0x00` payload.
-//! Sync-flush senders are supported as long as the message reaches a clean
-//! block boundary with no unconsumed input. RFC 7692 prohibits a BFINAL block
-//! because the end-of-message signal travels out of band, so rejecting one is
-//! conformance rather than a tolerated deviation. When the overflowing block is
-//! BFINAL, the codec reports `InvalidCompressedData` ahead of
+//! appends one `0x00` octet. Sender windows 8..14 emit non-final stored blocks,
+//! which have no LZ77 distances and are valid for every negotiated window;
+//! window 15 keeps the std raw compressor. The receiver serves the peer payload
+//! followed by `00 00 ff ff` from a private reader adapter, completing an empty
+//! non-final stored block. An empty message is the canonical one-byte `0x00`
+//! payload. Sync-flush senders are supported as long as the message reaches a
+//! clean block boundary with no unconsumed input. RFC 7692 prohibits a BFINAL
+//! block because the end-of-message signal travels out of band, so rejecting
+//! one is conformance rather than a tolerated deviation. When the overflowing
+//! block is BFINAL, the codec reports `InvalidCompressedData` ahead of
 //! `MessageTooLarge`; both errors are terminal.
 //!
 //! Both directions are zero-allocation and use only `std.compress.flate`.
@@ -74,13 +76,12 @@ comptime {
 pub const Config = struct {
     /// Drop history after each message in this direction.
     no_context_takeover: bool = false,
-    /// RFC 7692 window size. A deflater requires 15 because Zig's compressor
-    /// always uses the full window; keep outbound at 15. An inflater accepts
-    /// 8..15 but does not enforce the negotiated LZ77 distance limit.
+    /// RFC 7692 window size. The deflater accepts 8..15: 15 uses the std
+    /// compressor, while 8..14 emit valid stored blocks that need no LZ77
+    /// distance history. An inflater accepts 8..15 but does not enforce a
+    /// smaller negotiated LZ77 distance limit.
     /// `std.compress.flate.max_window_len` is a 64 KiB std history-buffer
-    /// requirement, not the 32 KiB DEFLATE wire window. Future negotiation must
-    /// reject values below 15 for sending or enforce the limit before
-    /// advertising a smaller receive window.
+    /// requirement, not the 32 KiB DEFLATE wire window.
     window_bits: u4 = 15,
 };
 
@@ -185,9 +186,13 @@ pub const Deflater = struct {
     failure: ?Error = null,
 
     /// Initializes the compressor in `storage`. The storage address must stay
-    /// stable for the lifetime of the handle.
+    /// stable for the lifetime of the handle. Windows 8..14 use the stored-block
+    /// fallback and do not initialize the std compressor.
     pub fn init(storage: *DeflaterStorage, config: Config) Error!Deflater {
-        if (config.window_bits != 15) return error.UnsupportedWindowBits;
+        switch (config.window_bits) {
+            8...15 => {},
+            else => return error.UnsupportedWindowBits,
+        }
         var deflater: Deflater = .{ .storage = storage, .config = config };
         try deflater.reinitialize();
         return deflater;
@@ -229,6 +234,10 @@ pub const Deflater = struct {
             return output[0..1];
         }
 
+        // Windows 8..14 use stored blocks: no LZ77 distances, so the stream is
+        // valid for every negotiated window and has no history to drop.
+        if (self.config.window_bits < 15) return compressStored(input, output);
+
         // With context takeover off the compressor must not see the previous
         // message's history. An empty message is skipped above, but the next
         // nonempty message still starts from a fresh compressor.
@@ -263,6 +272,11 @@ pub const Deflater = struct {
     }
 
     fn reinitialize(self: *Deflater) Error!void {
+        if (self.config.window_bits < 15) {
+            self.failure = null;
+            return;
+        }
+
         self.storage.output = .fixed(&self.storage.output_scratch);
         self.storage.compressor = flate.Compress.init(
             &self.storage.output,
@@ -447,6 +461,37 @@ pub const Inflater = struct {
         return err;
     }
 };
+
+/// Emits non-final DEFLATE stored blocks followed by the RFC 7692 truncated
+/// empty-final-block octet.
+///
+/// Stored blocks carry no LZ77 distances, so the payload is valid for every
+/// negotiated window 8..15. The receiver appends `00 00 ff ff` to complete the
+/// final empty stored block.
+fn compressStored(input: []const u8, output: []u8) Error![]const u8 {
+    var offset: usize = 0;
+    var written: usize = 0;
+
+    while (offset < input.len) {
+        const chunk_len: usize = @min(input.len - offset, @as(usize, 65_535));
+        const block_len: usize = 5 + chunk_len;
+        if (block_len > output.len - written) return error.OutputTooShort;
+
+        output[written] = 0x00; // BFINAL=0, BTYPE=00 stored, byte-aligned.
+        written += 1;
+        std.mem.writeInt(u16, output[written..][0..2], @intCast(chunk_len), .little);
+        written += 2;
+        std.mem.writeInt(u16, output[written..][0..2], ~@as(u16, @intCast(chunk_len)), .little);
+        written += 2;
+        @memcpy(output[written..][0..chunk_len], input[offset..][0..chunk_len]);
+        written += chunk_len;
+        offset += chunk_len;
+    }
+
+    if (written >= output.len) return error.OutputTooShort;
+    output[written] = 0x00;
+    return output[0 .. written + 1];
+}
 
 /// Safe upper bound for one compressed message, including the appended octet.
 ///

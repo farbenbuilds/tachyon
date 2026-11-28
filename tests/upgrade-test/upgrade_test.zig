@@ -332,6 +332,80 @@ test "Upgrade: is_upgrade_request agrees with the handshake token probe" {
     try std.testing.expect(!handshake.is_request(no_connection));
 }
 
+test "Upgrade: writes negotiated extension response after split construction" {
+    var stream: EncodedStream(16) = .{};
+    var client_payload = [_]u8{0xff};
+    try append_masked(&stream, Frame.init_rsv1(true, .text, true, null, &client_payload), .{ 0x21, 0x22, 0x23, 0x24 });
+
+    const extended_request =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n" ++
+        "Sec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=10\r\n\r\n";
+    var wire: [512]u8 = undefined;
+    @memcpy(wire[0..extended_request.len], extended_request);
+    @memcpy(wire[extended_request.len..][0..stream.len], stream.bytes[0..stream.len]);
+
+    var reader = std.Io.Reader.fixed(wire[0 .. extended_request.len + stream.len]);
+    var rig: UpgradeRig = .{};
+    var out: [256]u8 = undefined;
+    var flush_buffer: [256]u8 = undefined;
+    var writer = FlushFailWriter.init(&out, &flush_buffer);
+    writer.fail_flush = false;
+
+    const selected = handshake.Extensions{ .permessage_deflate = .{ .server_max_window_bits = 10 } };
+    var result = try upgrade.upgrade_with_extensions(
+        &reader,
+        &writer.writer,
+        &rig.head_storage,
+        rig.storage(),
+        .{ .role = .server },
+        selected,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), writer.flush_calls);
+    try std.testing.expect(
+        std.mem.indexOf(u8, out[0..writer.written], "Sec-WebSocket-Extensions: permessage-deflate") != null,
+    );
+    try std.testing.expect(result.websocket.read.inner.options.allow_rsv1);
+
+    const received = try result.websocket.read_frame();
+    try std.testing.expect(received.rsv1);
+    try std.testing.expectEqualSlices(u8, &.{0xff}, received.payload);
+}
+
+test "Upgrade: extension storage validation precedes the 101" {
+    var stream: EncodedStream(16) = .{};
+    var client_payload = [_]u8{'x'};
+    try append_masked(&stream, Frame.text(&client_payload), .{ 0x31, 0x32, 0x33, 0x34 });
+    var wire: [512]u8 = undefined;
+    const wire_bytes = build_upgrade_wire(&wire, stream.bytes[0..stream.len]);
+
+    var reader = std.Io.Reader.fixed(wire_bytes);
+    var rig: UpgradeRig = .{};
+    var short_write_buffer: [1]u8 = undefined;
+    var short_storage = rig.storage();
+    short_storage.write.write_buffer = &short_write_buffer;
+    var out: [256]u8 = undefined;
+    var flush_buffer: [256]u8 = undefined;
+    var writer = FlushFailWriter.init(&out, &flush_buffer);
+    writer.fail_flush = false;
+
+    try std.testing.expectError(error.InvalidLength, upgrade.upgrade_with_extensions(
+        &reader,
+        &writer.writer,
+        &rig.head_storage,
+        short_storage,
+        .{ .role = .server },
+        .{ .permessage_deflate = .{} },
+    ));
+    try std.testing.expectEqual(@as(usize, 0), writer.written);
+    try std.testing.expectEqual(@as(usize, 0), writer.flush_calls);
+}
+
 test "Upgrade: invalid split storage fails before the 101" {
     var rig: UpgradeRig = .{};
     var out: [256]u8 = undefined;

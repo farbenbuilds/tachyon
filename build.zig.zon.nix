@@ -39,10 +39,10 @@ let
 
   # Every package, by the hash Zig knows it by, as Nix fetches it.
   packages = {
-    "zslay-0.5.0-OB-IfNPdAwBop3keTCGtEZgxns_R4LkP1mbtUMzFvxHD" = fetchzip {
+    "zslay-0.6.0-OB-IfP4mBAB_l82D5YPdIT-5yMMFbKz4JlCYXFyFLzL5" = fetchzip {
       name = "zslay";
-      url = "https://github.com/farbenbuilds/zslay/archive/refs/tags/v0.5.0.tar.gz";
-      hash = "sha256-+aCm2O+6Js2yupwK8+KRQLHVybxXlqWdKjsDfE5dFNY=";
+      url = "https://github.com/farbenbuilds/zslay/archive/refs/tags/v0.6.0.tar.gz";
+      hash = "sha256-WfMPdWjscdPhC33CpQ9fiQSBy3Wj2jOIbGMErQk8zCQ=";
     };
   };
 

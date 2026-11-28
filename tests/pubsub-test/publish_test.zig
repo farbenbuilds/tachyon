@@ -13,6 +13,7 @@ fn expect_single_frame(rig: anytype, expected_opcode: tachyon.OpCode, expected: 
     var index: usize = 0;
     const wire = try next_wire_frame(rig.bytes(), &index);
     try std.testing.expect(wire.header.header.fin);
+    try std.testing.expect(!wire.header.header.rsv1);
     try std.testing.expectEqual(expected_opcode, tachyon.OpCode.from_wire(wire.header.header.opcode).?);
     try std.testing.expectEqualSlices(u8, expected, wire.payload);
     try std.testing.expectEqual(rig.writer.written, index);

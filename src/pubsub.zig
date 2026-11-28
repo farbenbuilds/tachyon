@@ -5,7 +5,9 @@
 //! It never allocates, opens I/O, or owns a queue. Publishing walks one topic's
 //! intrusive subscriber list and gives each eligible subscriber a fresh
 //! `stream.MessageWriter`, which queues one frame into that connection's bounded
-//! transmit ring through `connection.WebSocket.enqueue_frame`.
+//! transmit ring through `connection.WebSocket.enqueue_frame`. Fanout uses the
+//! strict `MessageWriter.write` path, so pub/sub payloads are never RSV1 or
+//! automatically compressed.
 //!
 //! The hub never flushes. A delivery is a successful enqueue, not a wire
 //! acknowledgement, and the payload stays borrowed by every queued frame until

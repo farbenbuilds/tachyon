@@ -9,6 +9,17 @@ This project follows semantic versioning.
 
 ### Added
 
+- RFC 7692 capability plumbing: `Frame.rsv1` with strict `init` and explicit
+  `init_rsv1`, connection `allow_rsv1`, compressed-message state and RSV1 writer
+  options in `src/stream.zig`, RSV1-aware fragment accumulation, zero-allocation
+  permessage-deflate offer/selection/verification in `src/handshake.zig`, and
+  `upgrade_with_extensions` in `src/upgrade.zig`. Default no-extension behavior
+  remains strict, and compression stays edge-composed.
+- `Deflater` sender windows 8 through 14 now use valid stored-block output;
+  window 15 keeps the std raw compressor. Existing context takeover, empty
+  message, alias, and output-cap behavior is preserved.
+- Focused RSV1, compressed UTF-8 deferral, handshake negotiation, upgrade-order,
+  stored-fallback, and RSV1-free obligation tests.
 - Zig 0.17.1 package scaffold with a public `tachyon` module, static library,
   Debug and ReleaseSafe test steps, and a `check` step.
 - `src/error.zig` with the fastwebsockets 0.10.0 error taxonomy, zslay boundary

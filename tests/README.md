@@ -25,13 +25,15 @@ tests/
 ├── backpressure-test/
 │   └── backpressure_test.zig             # Watermarks, admission, producer pause/resume, close, reset.
 ├── frame-test/
-│   └── frame_test.zig                    # Frame facade, close codes, masking, and write paths.
+│   ├── frame_test.zig                    # Frame facade, close codes, masking, and write paths.
+│   └── rsv1_test.zig                     # Strict and negotiated RSV1 frame construction/write paths.
 ├── utf8-test/
 │   └── utf8_test.zig                     # Incremental UTF-8 validation and reader adaptation.
 ├── fragment-test/
 │   ├── fragments_test.zig                # Fragment accumulator.
 │   ├── collector_read_test.zig           # Collector reads and continuation assembly.
-│   └── collector_policy_test.zig         # Collector limits and failure latching.
+│   ├── collector_policy_test.zig         # Collector limits and failure latching.
+│   └── compressed_test.zig               # Compressed fragment UTF-8 deferral and RSV1 continuation rejection.
 ├── connection-test/
 │   ├── connection_core_test.zig          # Construction, storage, and role policy.
 │   ├── connection_control_test.zig       # Automatic ping and pong behavior.
@@ -39,12 +41,14 @@ tests/
 │   ├── connection_limits_test.zig        # Message-size limits and bounds.
 │   ├── connection_read_test.zig          # Raw read path and failure latches.
 │   ├── connection_write_test.zig         # Copied and vectored write paths.
-│   └── connection_backpressure_test.zig  # Watermark batching, control reserve, and close paths.
+│   ├── connection_backpressure_test.zig  # Watermark batching, control reserve, and close paths.
+│   └── connection_rsv1_test.zig          # Strict/negotiated RSV1 and compressed text deferral.
 ├── stream-test/
 │   ├── reader_chunks_test.zig            # Chunk order, FIN, borrow, and length boundaries.
 │   ├── reader_control_test.zig           # Control interleaving, UTF-8, close, and latches.
 │   ├── writer_test.zig                   # Writer ordering, masking, limits, and backpressure.
-│   └── state_test.zig                    # Pure reader and writer state transitions.
+│   ├── state_test.zig                    # Pure reader and writer state transitions.
+│   └── rsv1_test.zig                     # Compressed chunk state and RSV1 writer options.
 ├── pubsub-test/
 │   ├── hub_core_test.zig                 # Init validation, capacity, duplicates, unsubscribe, and index churn.
 │   ├── publish_test.zig                  # Fanout, sender exclusion, borrowing, aliasing, and payload boundaries.
@@ -59,13 +63,15 @@ tests/
 ├── native-stream-test/
 │   └── native_stream_test.zig            # std.Io.net.Stream transport, WebSocket, and Split.
 ├── deflate-test/
-│   ├── deflate_test.zig                  # Sender roundtrips, context takeover, aliasing, limits, and configuration.
-│   └── inflate_test.zig                  # Receiver bounds, structurally invalid streams, BFINAL, adapter boundaries, and RFC vector.
+│   ├── deflate_test.zig                  # Sender roundtrips, context takeover, stored fallback, aliasing, limits, and configuration.
+│   ├── inflate_test.zig                  # Receiver bounds, structurally invalid streams, BFINAL, adapter boundaries, and RFC vector.
+│   └── compression_test.zig              # Compressed fragmented roundtrip and codec-to-1009 mapping.
 ├── handshake-test/
 │   ├── handshake_request_test.zig        # Server request construction and validation.
 │   ├── handshake_head_test.zig           # Bounded HTTP head parsing.
 │   ├── handshake_response_test.zig       # Response verification and token checks.
-│   └── handshake_client_test.zig         # Client handshake flow.
+│   ├── handshake_client_test.zig         # Client handshake flow.
+│   └── extensions_test.zig               # Per-message-deflate offers, selection, response subsets, and strict rejection.
 └── upgrade-test/
     └── upgrade_test.zig                  # Server upgrade call order and async borrowing.
 ```
@@ -86,16 +92,17 @@ Category folders use the `<area>-test/` naming pattern, and test files use
 | `pubsub-test` | Hub construction and capacity, duplicate and unknown topics, unsubscribe and id reuse, index churn, fanout ordering, sender exclusion, payload borrowing and aliases, backpressure skips, reentrancy guards, and name lifetime. |
 | `split-test` | Split core, reads, outbound-pressure independence, and `FragmentCollectorRead`. |
 | `native-stream-test` | `std.Io.net.Stream` transport binding, native `WebSocket`, native `Split`, watermark delegation, and buffer-alias rejection. |
-| `deflate-test` | Codec payload roundtrips, context and no-context takeover, compression bounds, exact-full and decompression-bomb output, structurally invalid input, truncation behavior, aliasing, adapter boundaries, and RFC 7692 vector decoding. |
-| `handshake-test` | Request, head, response, and client handshake behavior. |
+| `deflate-test` | Codec payload roundtrips, context and no-context takeover, sender windows 8 through 15 with stored fallback, compression bounds, exact-full and decompression-bomb output, structurally invalid input, truncation behavior, aliasing, adapter boundaries, and RFC 7692 vector decoding. |
+| `handshake-test` | Request, head, response, client handshake, and permessage-deflate offer/selection/response-subset behavior. |
 | `upgrade-test` | Server upgrade call order, including validation and async behavior. |
 
-The deflate category covers the RFC 7692 message payload codec only. It does not
-claim wire activation, negotiated RSV1 support, or Autobahn compliance; those
-remain blocked on zslay and the handshake layer. Malformed input that leaves a
-non-clean block boundary fails closed, but DEFLATE has no integrity or checksum,
-so some truncated or corrupted streams can still decode to a shorter or wrong
-message. Decompressed output is untrusted.
+The deflate category covers the RFC 7692 message payload codec, including
+sender windows 8 through 15 with the stored-block fallback. Negotiated RSV1 and
+handshake negotiation are implemented in the library, but compression remains
+edge-composed; these tests do not claim full Autobahn or compression compliance.
+Malformed input that leaves a non-clean block boundary fails closed, but DEFLATE
+has no integrity or checksum, so some truncated or corrupted streams can still
+decode to a shorter or wrong message. Decompressed output is untrusted.
 
 `tests/main.zig` imports every category test file in one `test` block. It is the
 root module for both the Debug and ReleaseSafe test steps. `tests/support.zig`

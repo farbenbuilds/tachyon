@@ -12,6 +12,27 @@ const next_wire_frame = support.next_wire_frame;
 const append_masked = support.append_masked;
 const SplitRig = support.SplitRig;
 
+test "Split: FragmentCollectorRead defers UTF8 for a compressed fragmented message" {
+    var stream: EncodedStream(32) = .{};
+    var first = [_]u8{0xff};
+    var second = [_]u8{0xfe};
+    try append_masked(&stream, Frame.init_rsv1(false, .text, true, null, &first), .{ 0x71, 0x72, 0x73, 0x74 });
+    try append_masked(&stream, Frame.init_rsv1(true, .continuation, false, null, &second), .{ 0x75, 0x76, 0x77, 0x78 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{
+        .role = .server,
+        .options = .{ .allow_rsv1 = true },
+    });
+    var collector = try split.FragmentCollectorRead.init(parts.split.read, &parts.message_buffer);
+
+    const message = try collector.read_frame(&parts.split.write);
+    try std.testing.expect(message.rsv1);
+    try std.testing.expectEqualSlices(u8, &.{ 0xff, 0xfe }, message.payload);
+    try std.testing.expect(collector.is_at_frame_boundary());
+}
+
 test "Split: FragmentCollectorRead assembles a split code point with an interleaved ping" {
     var stream: EncodedStream(64) = .{};
     var first = [_]u8{ 'A', 0xe2 };
