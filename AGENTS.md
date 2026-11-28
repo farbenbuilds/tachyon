@@ -41,7 +41,8 @@ documentation foundation:
 
 - `build.zig` and `build.zig.zon` define the public `tachyon` module, the
   static library, the Debug and ReleaseSafe test steps over `tests/main.zig`,
-  the `check` step, and the zslay dependency.
+  the `check` step, the repository-only `autobahn-server` step, and the zslay
+  dependency. The default `zig build` remains library-only.
 - `src/root.zig` is the module entry point; it re-exports zslay, the frame
   facade, the UTF-8 validator, the WebSocket error model, the chunked message
   reader and writer, the deflate codec, the pub/sub hub, the fragment
@@ -269,7 +270,10 @@ borrows; `tests/module-test/module_test.zig` adds deflate, pub/sub, fragment,
 connection, split, native-stream, and handshake re-export tests, and
 `tests/stream-test/state_test.zig` checks the chunked-message re-exports. The
 aggregate runs 416 test blocks in each of Debug and ReleaseSafe, 832 runs in
-total. Library sources contain no test blocks.
+total. Library sources contain no test blocks. `tests/autobahn-test/server.zig`
+is a repository-only integration fixture built by the `autobahn-server` step and
+run by `.github/workflows/autobahn.yml`; it is not imported by `tests/main.zig`
+and is not part of the aggregate.
 
 ## Non-Negotiable Architecture
 
@@ -316,7 +320,7 @@ Current files:
 
 | Path | Purpose |
 | --- | --- |
-| `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe test steps over `tests/main.zig`, `check` step, and the zslay dependency. |
+| `build.zig`, `build.zig.zon` | Public module, static library, Debug and ReleaseSafe test steps over `tests/main.zig`, `check` step, repository-only `autobahn-server` step, and the zslay dependency. |
 | `build.zig.zon.nix`, `.json`, `.txt` | Generated zon2nix views for offline Nix builds and dependency audits. |
 | `src/root.zig` | Public module entry point; re-exports zslay, the frame facade, the UTF-8 validator, the error model, the chunked message reader and writer, the deflate codec, the fragment accumulator and collector, the connection layer, the split read and write halves, the native stream adapter, the HTTP handshake primitives, and the server upgrade call order. |
 | `src/frame.zig` | `Frame`, `Payload`, `OpCode` and `CloseCode` aliases with conversions, `unmask`/`unmask_at`, the header-length bridge, and write paths. |
@@ -334,12 +338,14 @@ Current files:
 | `tests/main.zig` | Test aggregator; imports every category test file so one module runs under Debug and ReleaseSafe. |
 | `tests/support.zig` | Shared fixtures and test-only readers and writers. |
 | `tests/<category>-test/` | Unit coverage grouped by protocol area: module, error, frame, UTF-8, stream, pub/sub, fragment, connection, split, native stream, deflate, handshake, and upgrade. |
+| `tests/autobahn-test/server.zig` | Repository-only Autobahn echo fixture built by the `autobahn-server` step and run by `.github/workflows/autobahn.yml`; not imported by `tests/main.zig`. |
 | `tests/README.md` | Test tree, aggregator, category naming, and run instructions. |
 | `flake.nix`, `flake.lock` | Zig 0.17.1 shell, zon2nix, Nix formatting check, and musl shell. |
 | `.envrc` | direnv entry point; selects the musl shell when the host uses musl. |
 | `.pre-commit-config.yaml` | Formatting, hygiene, and zon2nix hooks. |
 | `.github/workflows/lint.yml` | Pull-request Zig formatting lint with Zig 0.17.1. |
 | `.github/workflows/test.yml` | Pull-request and main-push Zig test and check jobs plus an eight-target compile-only cross-check matrix for Zig, Zon, `build.zig`, and workflow changes, recorded in the `Testing` deployment environment. |
+| `.github/workflows/autobahn.yml` | Pull-request and main-push Autobahn gate over the `tests/autobahn-test/` echo fixture, pinned to `farbenbuilds/autobahn-action` v1; report artifact uploaded. |
 | `scripts/update_zon_files.sh` | Regenerates `build.zig.zon.nix`, `.json`, and `.txt` with zon2nix. |
 | `.agents/skills/`, `skills-lock.json` | Shared skill pack, lock file, and the Antigravity graphify skill copy. |
 | `.agents/agents/`, `.opencode/agents/`, `.codex/agents/`, `.claude/agents/` | Matching agent definitions for agy, OpenCode, Codex, and Claude Code. |
@@ -374,7 +380,8 @@ Target source layout, roughly in dependency order:
 | `tests/main.zig` | Aggregates the category test files for the Debug and ReleaseSafe test steps. |
 | `tests/support.zig` | Shared test fixtures and protocol helpers. |
 | `tests/<category>-test/*.zig` | Unit tests grouped by area: module, error, backpressure, frame, UTF-8, stream, pub/sub, fragment, connection, split, native stream, deflate, handshake, and upgrade. |
-| `tests/<integration>-test/` | Planned Autobahn, fuzz, and loopback integration suites; no adapter exists yet. |
+| `tests/autobahn-test/server.zig` | Repository-only Autobahn echo fixture; built by `autobahn-server`, run by the workflow, and not aggregated by `tests/main.zig`. |
+| `tests/<integration>-test/` | Autobahn fixture and workflow implemented under `tests/autobahn-test/`; fuzz and full loopback suites remain planned. |
 
 The handshake/upgrade pair deliberately forms a small re-export cycle:
 `src/upgrade.zig` uses the handshake request and response primitives, and
@@ -434,8 +441,13 @@ Library commands:
 zig build                   # static library
 zig build test              # Debug and ReleaseSafe suites over tests/main.zig
 zig build check             # type-check library and tests
+zig build autobahn-server -Doptimize=ReleaseSafe  # repository-only Autobahn echo fixture
 zig fmt --check .           # formatting gate
 ```
+
+The `autobahn-server` step builds and installs `zig-out/bin/tachyon-autobahn`
+without changing the default library-only `zig build`; it requires a full
+checkout because the package excludes `tests/`.
 
 Cross-target compile checks reuse the `check` step with a target override:
 
@@ -497,10 +509,11 @@ contain no test blocks; do not add tests back to `src/`.
 - Keep payloads caller-owned in tests; do not introduce a test allocator into
   the frame core.
 - Run both Debug and ReleaseSafe before review.
-- Autobahn, fuzzing, and loopback echo suites belong under `tests/` as future
-  integration category folders; none is implemented yet. The connection layer
-  has unit coverage only. Do not claim compliance before those suites exist and
-  pass.
+- The Autobahn integration fixture at `tests/autobahn-test/server.zig` is
+  implemented and gated by `.github/workflows/autobahn.yml` over the configured
+  case set, which excludes group 8 and compression groups 11-13. Fuzzing and a
+  full loopback echo suite remain future work. A green run is evidence only for
+  the configured case set, not a full Autobahn or compression compliance claim.
 
 ## Security and Protocol Rules
 

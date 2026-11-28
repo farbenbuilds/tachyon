@@ -299,6 +299,15 @@ This project follows semantic versioning.
 - `.github/workflows/lint.yml` runs `zig fmt --check .` on pull requests into
   `main` that change Zig files, `.zon` files, or `build.zig`, using Zig 0.17.1
   through `mlugg/setup-zig`.
+- `tests/autobahn-test/server.zig`, the `autobahn-server` build step, and
+  `.github/workflows/autobahn.yml` with `farbenbuilds/autobahn-action` pinned at
+  `1c4d57b3ca48e1ddf742e5ae1ab4ce5b51625b36` (`v1`). The fixture reuses the
+  existing upgrade, connection, stream, and error-mapping layers; no wire logic
+  is duplicated and `src/` stays zero-allocation.
+- Group 8 is omitted by the action. Compression groups 11-13 remain excluded
+  until zslay negotiated RSV1 and handshake negotiation land. A green run is
+  evidence only for the configured case set, not a full Autobahn or compression
+  compliance claim.
 
 ### Changed
 

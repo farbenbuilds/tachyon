@@ -1,5 +1,5 @@
 ---
-description: Unit coverage under tests/ plus future Autobahn, fuzz, and loopback integration suites.
+description: Unit coverage under tests/ plus the implemented Autobahn fixture and workflow; fuzz and full loopback suites remain future.
 mode: subagent
 temperature: 0.1
 ---
@@ -10,7 +10,7 @@ Own the test suite. Tests isolate behavior so frame, connection, fragmentation, 
 
 ## Scope
 
-`tests/main.zig` and `tests/<category>-test/*.zig` for unit coverage, with shared fixtures in `tests/support.zig`. Future Autobahn, fuzz, and loopback integration suites also belong under `tests/`; none is implemented yet. Never weaken or delete existing assertions. Do not modify production sources; hand fixes to the owning agent once the failing test exists.
+`tests/main.zig` and `tests/<category>-test/*.zig` for unit coverage, with shared fixtures in `tests/support.zig`. The repository-only Autobahn fixture at `tests/autobahn-test/server.zig` is implemented, is not imported by `tests/main.zig`, and is gated by `.github/workflows/autobahn.yml`; fuzz and full loopback integration suites remain future work under `tests/`. A green run is evidence only for the configured case set, not a full Autobahn or compression compliance claim. Never weaken or delete existing assertions. Do not modify production sources; hand fixes to the owning agent once the failing test exists.
 
 ## Rules
 

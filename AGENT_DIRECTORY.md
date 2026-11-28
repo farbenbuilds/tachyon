@@ -48,7 +48,7 @@ Claude Code reads `.claude/agents/<name>.md` automatically. The `architect`,
 | `fragments` | Chunked messages in `src/stream.zig`, message buffering and shared UTF-8 streaming in `src/fragment.zig`, and split read/write halves in `src/split.zig` | `src/stream.zig`, `src/fragment.zig`, `src/split.zig` |
 | `handshake` | Client handshake and server upgrade | `src/handshake.zig`, `src/upgrade.zig` |
 | `pubsub` | Bounded zero-allocation topic hub and fanout over stream writes and backpressure watermarks | `src/pubsub.zig` |
-| `testing` | Unit and integration coverage, plus future Autobahn, fuzz, and loopback suites | `tests/**` |
+| `testing` | Unit coverage plus the Autobahn fixture; fuzz and full loopback suites remain future | `tests/**` |
 | `review` | Read-only review | any changed file |
 | `release` | Build, Nix, packaging, dependency generation, CI | `build.zig`, `build.zig.zon`, `flake.nix`, `flake.lock`, `scripts/update_zon_files.sh`, `.pre-commit-config.yaml`, `.github/workflows/`, `.github/dependabot.yml` |
 | `docs` | Human and agent documentation | root `*.md`, `.github/*.md`, `.github/ISSUE_TEMPLATE/`, `.codex/TEAM_WORKFLOW.md` |
@@ -73,7 +73,11 @@ re-exports those names for client callers and keeps the server request and
 response primitives. Tests live in `tests/` category folders aggregated by
 `tests/main.zig` and belong to the `testing` agent; work that needs new coverage
 hands the test change to `testing` instead of editing the test tree in the same
-pass.
+pass. The repository-only Autobahn fixture at `tests/autobahn-test/server.zig`
+is implemented under `testing` and run by the `release`-owned
+`.github/workflows/autobahn.yml`; fuzz and full loopback suites remain future
+integration work. A green run is evidence only for the configured case set, not
+a full Autobahn or compression compliance claim.
 
 ## Extension Ownership
 

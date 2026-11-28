@@ -1,8 +1,9 @@
 # tachyon - CI/CD Pipeline
 
-Contract for the GitHub Actions pipelines. The lint and test workflows are
-implemented in `.github/workflows/lint.yml` and `.github/workflows/test.yml`;
-the release workflow is specified here and remains planned.
+Contract for the GitHub Actions pipelines. The lint, test, and Autobahn
+workflows are implemented in `.github/workflows/lint.yml`,
+`.github/workflows/test.yml`, and `.github/workflows/autobahn.yml`; the release
+workflow is specified here and remains planned.
 
 ## Workflows
 
@@ -10,6 +11,7 @@ the release workflow is specified here and remains planned.
 | --- | --- | --- |
 | `.github/workflows/lint.yml` | Pull request into `main` changing `.zig`, `.zon`, or `build.zig` files | Implemented. `zig fmt --check .` with Zig 0.17.1. |
 | `.github/workflows/test.yml` | Pull request into `main` and push to `main` changing Zig or Zon files, `build.zig`, or workflows | Implemented. Native `zig build test --summary all` and `zig build check` plus an eight-target compile-only `cross-check` matrix with Zig 0.17.1. |
+| `.github/workflows/autobahn.yml` | Pull request into `main` and push to `main` changing Zig or Zon files, `build.zig`, or workflows | Implemented. Pinned Autobahn testsuite gate over the `tests/autobahn-test/` echo fixture; report artifact uploaded; a green run is evidence only for the configured case set, not a full Autobahn or compression compliance claim. |
 | `.github/workflows/publish.yml` | Push of a `v*` tag | Planned. Verify version and changelog, build cross-target packages, publish release assets. |
 
 ## Lint Pipeline
@@ -90,9 +92,38 @@ portability failures surface before merge; the test-only fix in
 `x86-linux-musl` compiling. No runtime coverage is claimed for macOS, Windows,
 or non-x86_64 Linux targets in CI.
 
+## Autobahn Pipeline
+
+Implemented in `.github/workflows/autobahn.yml`. Runs on pull requests into
+`main` and pushes to `main` that change a `.zig` or `.zon` file, `build.zig`, or
+a workflow file. The workflow requests `contents: read`, cancels superseded runs
+for the same ref, and defines one job, `autobahn`, named `Run Autobahn Tests`, on
+`ubuntu-24.04` in the `Testing` environment with a 30-minute timeout.
+
+1. Check out the repository with `actions/checkout` v7.
+2. Install Zig 0.17.1 with `mlugg/setup-zig` v2.
+3. Run `zig build autobahn-server -Doptimize=ReleaseSafe` to install
+   `zig-out/bin/tachyon-autobahn`.
+4. Run `farbenbuilds/autobahn-action` pinned at
+   `1c4d57b3ca48e1ddf742e5ae1ab4ce5b51625b36` (`v1`) with
+   `server-command: ./zig-out/bin/tachyon-autobahn`, URL
+   `ws://127.0.0.1:9001`, and host Docker networking. The action waits for a
+   complete handshake before running the suite.
+
+The configured case set is `1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.*`. Group 8 is
+omitted by the action. Compression groups 11-13 are excluded until zslay
+negotiated RSV1 and handshake negotiation land. `fail-on: failed` fails the job
+on failed cases; non-strict outcomes are reported but do not gate. Reports are
+written to `autobahn-reports`, uploaded as the `autobahn-report` artifact, and
+appended to the step summary. The suite is bounded to 1500 seconds inside the
+30-minute job.
+
+A green run is evidence only for the configured case set, not a full Autobahn or
+compression compliance claim.
+
 ## Path Filters
 
-The implemented test workflow runs when any of these changes:
+The implemented test and Autobahn workflows run when any of these changes:
 
 - `**/*.zig`
 - `**/*.zon`
@@ -100,9 +131,9 @@ The implemented test workflow runs when any of these changes:
 - `.github/workflows/**`
 
 The lint workflow uses the Zig and Zon path set plus `build.zig`.
-Documentation-only changes do not trigger either job. Workflow-only changes run
-the test workflow so CI configuration changes are exercised before merge and
-publish a `Testing` deployment.
+Documentation-only changes do not trigger the lint, test, or Autobahn jobs.
+Workflow-only changes run the test and Autobahn workflows so CI configuration
+changes are exercised before merge, and both publish a `Testing` deployment.
 
 ## Dependency Updates
 
@@ -115,20 +146,22 @@ change gets its own review. Commits and pull request titles use the
 `ci(actions)` prefix. Dependabot's generated subject begins with `Bump`, which
 is the documented exception to the lowercase-subject rule.
 
-Dependabot edits the existing `uses:` lines. Both workflows pin each action to
-a commit SHA with a trailing version comment, so an update moves the SHA and
-raises the comment, and the immutable-revision rule for actions in the `release`
-agent scope still holds.
+Dependabot edits the existing `uses:` lines. The workflows pin each action to a
+commit SHA with a trailing version comment, including the
+`farbenbuilds/autobahn-action` pin at
+`1c4d57b3ca48e1ddf742e5ae1ab4ce5b51625b36` (`v1`), so an update moves the SHA
+and raises the comment, and the immutable-revision rule for actions in the
+`release` agent scope still holds.
 Only the `github-actions` ecosystem is configured. Zig is not a Dependabot
 ecosystem, so `build.zig.zon` and `flake.lock` updates remain manual.
 
 Dependabot pull requests are ordinary pull requests and need the same review.
 Their workflow runs receive a read-only `GITHUB_TOKEN` and no repository or
 environment secrets. An Actions update changes only `.github/workflows/**`, so
-the `test` job runs through its path filter and the `lint` job does not. A
-change to `.github/dependabot.yml` matches neither filter; contributors validate
-it with the `check-yaml` pre-commit hook listed in `CONTRIBUTE.md` before
-opening a pull request.
+the test and Autobahn workflows run through their path filters and the `lint`
+job does not. A change to `.github/dependabot.yml` matches neither filter;
+contributors validate it with the `check-yaml` pre-commit hook listed in
+`CONTRIBUTE.md` before opening a pull request.
 
 ## Release Pipeline
 
@@ -164,12 +197,13 @@ Planned. Releases are tag-driven, not push-to-main-driven.
 | Name | Use |
 | --- | --- |
 | `GITHUB_TOKEN` | Release creation and asset upload; provided by GitHub. |
-| `contents: read` | Checkout, lint, flake checks, and test jobs. |
+| `contents: read` | Checkout, lint, flake checks, test jobs, and the Autobahn gate. |
 | `contents: write` | Release job only. |
 
-The lint and test workflows request `contents: read`. The `contents: write`
-entry applies to the planned release workflow. No third-party registry
-credentials are required.
+The lint, test, and Autobahn workflows request `contents: read`. The Autobahn
+action uses the runner runtime token for artifact upload and needs no repository
+or environment secret. The `contents: write` entry applies to the planned release
+workflow. No third-party registry credentials are required.
 
 ## Versioning Rules
 

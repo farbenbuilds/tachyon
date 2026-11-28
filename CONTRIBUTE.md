@@ -88,10 +88,14 @@ with ReleaseSafe, so overflow and bounds behavior in release mode is exercised
 before review.
 
 There is no numeric coverage target. Changed behavior needs a focused test,
-including malformed input and length boundaries. Autobahn, fuzz, and loopback
-echo suites remain planned; they belong under `tests/` as future integration
-category folders, and the connection layer has unit coverage only. Do not claim
-compliance before those suites pass.
+including malformed input and length boundaries. The Autobahn integration
+fixture and gate are implemented: `tests/autobahn-test/server.zig` is built with
+`zig build autobahn-server -Doptimize=ReleaseSafe` and
+`.github/workflows/autobahn.yml` runs the configured case set. Group 8 is omitted
+by the action; compression groups 11-13 remain excluded until zslay negotiated
+RSV1 and handshake negotiation land. Fuzz and full loopback echo suites remain
+planned. A green run is evidence only for the configured case set, not a full
+Autobahn or compression compliance claim.
 
 ## Pre-commit Hooks
 

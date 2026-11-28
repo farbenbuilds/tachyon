@@ -16,6 +16,8 @@ tests/
 ├── README.md
 ├── main.zig                              # Aggregates every category test file.
 ├── support.zig                           # Shared fixtures and test-only readers and writers.
+├── autobahn-test/
+│   └── server.zig                        # Repository-only Autobahn echo fixture; not aggregated by tests/main.zig.
 ├── module-test/
 │   └── module_test.zig                   # Dependency boundary and public re-exports.
 ├── error-test/
@@ -113,6 +115,7 @@ input coverage in [AGENTS.md](../AGENTS.md#testing-guidelines).
 zig build test              # Debug and ReleaseSafe suites over tests/main.zig
 zig build test --summary all
 zig build check             # Type-check the library and tests
+zig build autobahn-server -Doptimize=ReleaseSafe  # Repository-only Autobahn echo fixture
 zig fmt --check .           # Formatting gate
 ```
 
@@ -129,6 +132,36 @@ and `std.Io.net.Stream.writer` paths without spawning a test task: the listening
 backlog lets `connect` complete before `accept`, and the frames fit in the
 kernel socket buffers.
 
+`zig build autobahn-server -Doptimize=ReleaseSafe` builds and installs
+`zig-out/bin/tachyon-autobahn` without changing the default library-only
+`zig build`. The published package excludes `tests/`, so this step requires a
+full repository checkout.
+
+## Autobahn Integration
+
+`tests/autobahn-test/server.zig` is a repository-only executable echo fixture.
+It is not part of `zig build test` and is not imported by `tests/main.zig`; the
+Autobahn suite is the integration test.
+
+The fixture binds `127.0.0.1:9001` and accepts one connection at a time. Each
+connection passes through strict `upgrade.incoming` validation, the shared
+`handshake.write_response` 101 response, the native `std.Io.net.Stream`
+transport, and an assembled message echo that returns text and binary messages
+as one FIN frame. Automatic pong and close handling stay in the connection
+layer; peer failures map to close codes 1002 and 1007 through
+`errors.to_close_code`, and oversized messages map to 1009. The 16 MiB + 1 case
+is consumed through one byte of frame-buffer headroom, and larger rejected
+frames are drained within a 64 MiB bound so the failure close is not lost to a
+reset. The fixture encodes or parses no frame header and applies no mask.
+
+`.github/workflows/autobahn.yml` builds the fixture and runs
+`farbenbuilds/autobahn-action`, pinned to commit
+`1c4d57b3ca48e1ddf742e5ae1ab4ce5b51625b36` (`v1`), over the configured case set
+`1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.*`. Group 8 is omitted by the action, and
+compression groups 11-13 stay excluded until zslay negotiated RSV1 and
+handshake negotiation land. A green run is evidence only for the configured
+case set, not a full Autobahn or compression compliance claim.
+
 ## Adding Coverage
 
 1. Choose the matching `tests/<area>-test/` folder, or add a new category folder
@@ -143,9 +176,9 @@ kernel socket buffers.
 
 ## Future Integration Suites
 
-Autobahn, fuzz, and loopback echo suites belong under `tests/` as new category
-folders. None of these compliance suites is implemented yet. This tree currently
-provides unit coverage
-plus the loopback native-stream integration described above; do not claim
-Autobahn, fuzz, or a full loopback echo compliance suite until those suites
-exist and pass.
+The Autobahn fixture at `tests/autobahn-test/server.zig` and its workflow gate
+now exist. Fuzzing and a full loopback echo suite remain future integration
+work. The configured Autobahn case set excludes group 8 and compression groups
+11-13. A green run is evidence only for the configured case set, not a full
+Autobahn or compression compliance claim. This tree provides unit coverage plus
+the loopback native-stream integration described above.
