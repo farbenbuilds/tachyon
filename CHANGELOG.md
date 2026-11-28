@@ -7,14 +7,18 @@ This project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-28
+
 ### Added
 
 - `tests/autobahn-test/server.zig` now negotiates permessage-deflate from the
   request offers, enables negotiated RSV1, inflates compressed messages before
   text validation, and deflates echoes with the selected sender window and
   context-takeover policy. `.github/workflows/autobahn.yml` enables Autobahn
-  cases 11-13; group 8 remains omitted, and a green run is evidence only for the
-  configured case set.
+  cases 11-13. Group 8 is absent from the pinned testsuite, and the action's
+  default list omits it, so the gate covers every case the suite ships (1-7,
+  9-13). The full pinned gate is green, including all 216 cases in groups 11-13.
+  A green run is evidence only for the configured case set.
 - RFC 7692 capability plumbing: `Frame.rsv1` with strict `init` and explicit
   `init_rsv1`, connection `allow_rsv1`, compressed-message state and RSV1 writer
   options in `src/stream.zig`, RSV1-aware fragment accumulation, zero-allocation
@@ -271,12 +275,12 @@ This project follows semantic versioning.
   `PubSubPublishResult`, `PubSubError`, `PubSubInitError`,
   `PubSubSubscribeError`, `PubSubPublishError`, `required_name_bytes`, and
   `required_index_capacity`.
-- `tests/pubsub-test/` with 41 focused tests across hub core, publish,
+- `tests/pubsub-test/` with focused tests across hub core, publish,
   backpressure, reentrancy, and name concerns, plus pub/sub re-export coverage
-  in `tests/module-test/module_test.zig`. The aggregate now runs 416 test blocks
-  in each of Debug and ReleaseSafe, 832 runs in total. A test-only 32-bit
-  portability fix in `tests/connection-test/connection_limits_test.zig` keeps
-  the `x86-linux-musl` cross-check compiling.
+  in `tests/module-test/module_test.zig`. The aggregate runs under Debug and
+  ReleaseSafe. A test-only 32-bit portability fix in
+  `tests/connection-test/connection_limits_test.zig` keeps the `x86-linux-musl`
+  cross-check compiling.
 - `.github/workflows/test.yml` with an eight-target `cross-check` matrix that
   compile-checks x86_64-linux-gnu, x86_64-linux-musl, aarch64-linux-gnu,
   aarch64-linux-musl, x86-linux-musl, x86_64-macos, aarch64-macos, and
@@ -320,10 +324,11 @@ This project follows semantic versioning.
   `1c4d57b3ca48e1ddf742e5ae1ab4ce5b51625b36` (`v1`). The fixture reuses the
   existing upgrade, connection, stream, and error-mapping layers; no wire logic
   is duplicated and `src/` stays zero-allocation.
-- Group 8 is omitted by the action. Compression groups 11-13 are enabled through
-  the fixture's negotiated permessage-deflate composition. A green run is
-  evidence only for the configured case set, not a full Autobahn or compression
-  compliance claim.
+- Group 8 is absent from the pinned testsuite, and the action's default list
+  omits it, so the gate covers every case the suite ships (1-7, 9-13).
+  Compression groups 11-13 are enabled through the fixture's negotiated
+  permessage-deflate composition. A green run is evidence only for the
+  configured case set, not a full Autobahn or compression compliance claim.
 
 ### Changed
 
@@ -350,8 +355,8 @@ This project follows semantic versioning.
 - Added the post-parity extension roadmap: backpressure, streaming messages,
   native `std.Io` transport, incremental UTF-8 validation, RFC 7692
   permessage-deflate, and pub/sub. The roadmap records module ownership,
-  dependency order, and fail-closed limits. permessage-deflate now requires a
-  zslay RSV1 extension before tachyon can advertise it.
+  dependency order, and fail-closed limits. permessage-deflate requires
+  negotiated RSV1, which zslay provides.
 - Marked `src/utf8.zig` implemented in the extension roadmap, moved it into the
   `framing` owner roster, and updated the matching agent definitions with the
   `std.unicode` and `std.Io.Reader` boundaries.

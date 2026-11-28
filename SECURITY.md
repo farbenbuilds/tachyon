@@ -2,12 +2,10 @@
 
 ## Reporting a Vulnerability
 
-Do not open a public issue for a security vulnerability.
-
-Use GitHub's private vulnerability reporting for
+Do not open a public issue. Use GitHub's private vulnerability reporting for
 [farbenbuilds/tachyon](https://github.com/farbenbuilds/tachyon/security/advisories/new).
-If private reporting is unavailable, contact the maintainer through the GitHub
-profile for `farbenbuilds` and state that the report is security-sensitive.
+If unavailable, contact the maintainer through GitHub and state that the report
+is security-sensitive.
 
 Include:
 
@@ -21,33 +19,27 @@ Include:
 
 Security-relevant areas include:
 
-- frame header and extended-length parsing,
-- masking direction and key handling,
-- connection policy, close replies, and client mask-key sources,
-- fragmentation and message-size accounting,
-- close-code and UTF-8 reason validation,
-- incremental UTF-8 validation of text messages across frame boundaries,
-- HTTP upgrade, client handshake, and WebSocket extension negotiation,
-- permessage-deflate decompression bombs and unbounded output,
-- backpressure, slow-consumer, and pub/sub fanout limits,
-- native stream adapter lifetimes and read/write cancellation,
-- denial of service through unbounded lengths, loops, or buffering,
-- memory-safety failures in Zig safety modes.
+- Framing, masking, limits, close handling, and UTF-8 validation: header and
+  extended-length parsing, masking direction and keys, close codes and reasons,
+  message-size accounting, and incremental text validation.
+- Connection and transport policy: client mask-key sources, fragmentation,
+  streaming, backpressure, slow consumers, native stream lifetimes, and
+  read/write cancellation.
+- Handshake and extensions: client handshake, server upgrade, origin handling,
+  extension negotiation, permessage-deflate bounds, and decompression bombs.
+- Application and safety: pub/sub fanout limits, unbounded lengths or loops,
+  and memory-safety failures in Zig safety modes.
 
-zslay owns header coding, length handling, masking, the close predicate and
-payload validation, masking direction, fragment ordering, limits, and the
-bounded connection state machine.
-A defect that reproduces in zslay alone should also be reported to
-[farbenbuilds/zslay](https://github.com/farbenbuilds/zslay/security/advisories/new).
-A defect in tachyon's fastwebsockets policy, fragment buffering, UTF-8 text
-validation, handshake, upgrade, or stream adapter belongs here.
+zslay owns header coding, length handling, masking, close validation, fragment
+ordering, limits, and the bounded connection state machine. Report a zslay-only
+defect to [farbenbuilds/zslay](https://github.com/farbenbuilds/zslay/security/advisories/new);
+report tachyon policy, buffering, UTF-8, handshake, upgrade, compression, or
+stream adapter defects here.
 
 ## Supported Versions
 
-Security fixes target the latest released minor version. Pre-release and
-unreleased branches receive fixes at the maintainer's discretion. The current
-tree is not a released version and should not be deployed as a production
-server.
+Security fixes target the latest tagged release; `main` and pre-release branches
+are development branches and receive fixes at the maintainer's discretion.
 
 ## Disclosure Policy
 
