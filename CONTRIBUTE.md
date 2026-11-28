@@ -8,11 +8,9 @@ guide covers setup, checks, commits, and the manual release. For architecture se
 ## Repository Scope
 
 The repository contains the Zig package, tests, Nix environment, documentation,
-agent rules, and skill pack. `build.zig` defines the public module, static
-library, Debug and ReleaseSafe tests, `check`, and repository-only
-`autobahn-server` steps; `src/root.zig` is the public entry point. See
-[CODEBASE.md#target-source-layout](CODEBASE.md#target-source-layout) and
-[AGENT_DIRECTORY.md](AGENT_DIRECTORY.md) for modules and ownership.
+agent rules, skill pack, examples, and benchmarks. `build.zig` defines the public
+module, static library, tests, `check`, and repository-only `autobahn-server`,
+`examples`, and `benches` steps. See [CODEBASE.md#target-source-layout](CODEBASE.md#target-source-layout) and [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md) for modules and ownership.
 
 ## Local Setup
 
@@ -46,8 +44,12 @@ zig build                   # static library at zig-out/lib/libtachyon.a
 zig build test              # Debug and ReleaseSafe suites over tests/main.zig
 zig build check             # type-check library and tests
 zig build autobahn-server -Doptimize=ReleaseSafe
+zig build examples          # echo servers and client
+zig build benches -Doptimize=ReleaseSafe
 zig fmt .                   # apply formatting
 ```
+
+`examples` and `benches` require a full checkout; see `examples/README.md` and `benches/README.md` for setup and the Node runner.
 
 The zslay dependency lives in `build.zig.zon`. The `zon2nix` pre-commit hook
 regenerates `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt`
@@ -63,12 +65,11 @@ and naming.
 Changed behavior needs a focused test, including malformed input and length
 boundaries, and both Debug and ReleaseSafe must pass. See
 [AGENTS.md#testing-guidelines](AGENTS.md#testing-guidelines) for the full rule
-set. The Autobahn fixture and gate are implemented; negotiated
-permessage-deflate enables compression cases 11-13. Group 8 is absent from the
-pinned testsuite, and the action's default list omits it, so the gate covers
-every case the suite ships (1-7, 9-13). Fuzz and full loopback echo suites remain
-planned. A green run is evidence only for the configured case set, not full
-compliance.
+set. The Autobahn gate covers cases 1-7 and 9-13; group 8 is absent from the
+pinned testsuite and the action's default list omits it, so every shipped case
+is covered. Compression cases 11-13 are enabled through the fixture. Fuzz and
+full loopback suites remain planned. A green run is evidence only for the
+configured case set, not full compliance.
 
 ## Pre-commit Hooks
 
@@ -141,8 +142,7 @@ Releases use semantic versioning and an annotated `v*` tag. The tag,
 6. The maintainer creates the GitHub release manually from the changelog notes.
    No artifacts are built or uploaded, and there is no publish workflow.
 
-The published package is runtime-only: `build.zig.zon` `.paths` ships the build
-files, generated views, `flake.nix`, `flake.lock`, `src/`, `LICENSE`, and `README.md`.
+The published package is runtime-only: `.paths` ships the build files, generated views, `flake.nix`, `flake.lock`, `src/`, `LICENSE`, and `README.md`.
 
 ## Dependency Policy
 

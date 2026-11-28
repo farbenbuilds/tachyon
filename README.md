@@ -47,6 +47,24 @@ pub fn main() !void {
 
 The [Autobahn echo fixture](https://github.com/farbenbuilds/tachyon/blob/main/tests/autobahn-test/server.zig) is the full server example.
 
+## Examples
+
+Build the echo servers and client with `zig build examples`. See
+[examples/README.md](https://github.com/farbenbuilds/tachyon/blob/main/examples/README.md)
+for commands and raw-frame behavior.
+
+## Benchmarks
+
+```sh
+zig build benches -Doptimize=ReleaseFast
+sh benches/setup-competitors.sh
+node benches/run.mjs
+```
+
+See [benches/README.md](https://github.com/farbenbuilds/tachyon/blob/main/benches/README.md)
+for the comparison setup, results table, and SVG charts. The benchmark workflow
+is manual and weekly, not a PR gate.
+
 ## Features
 
 - Frame facade with `Frame`, `Payload`, `OpCode`, `CloseCode`, masking helpers,
@@ -122,13 +140,15 @@ pre-commit run --all-files
 - [CONTRIBUTE.md](https://github.com/farbenbuilds/tachyon/blob/main/CONTRIBUTE.md):
   setup, checks, commits, and the manual release process.
 - [CI_CD_PIPELINE.md](https://github.com/farbenbuilds/tachyon/blob/main/CI_CD_PIPELINE.md):
-  lint, test, and Autobahn workflows.
+  lint, test, Autobahn, and benchmark workflows.
 - [SECURITY.md](https://github.com/farbenbuilds/tachyon/blob/main/SECURITY.md):
   vulnerability reporting and security scope.
 - [AGENTS.md](https://github.com/farbenbuilds/tachyon/blob/main/AGENTS.md):
   repository rules for coding agents.
 - [tests/README.md](https://github.com/farbenbuilds/tachyon/blob/main/tests/README.md):
   test tree, naming, and run commands.
+- [examples/README.md](https://github.com/farbenbuilds/tachyon/blob/main/examples/README.md) and [benches/README.md](https://github.com/farbenbuilds/tachyon/blob/main/benches/README.md):
+  echo examples, benchmark setup, results, and charts.
 - [CODING_CONVENTION.md](https://github.com/farbenbuilds/tachyon/blob/main/CODING_CONVENTION.md):
   Zig style and safety rules.
 - [THIRD_PARTY_NOTICES.md](https://github.com/farbenbuilds/tachyon/blob/main/THIRD_PARTY_NOTICES.md):

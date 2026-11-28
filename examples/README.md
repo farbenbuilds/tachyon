@@ -55,14 +55,3 @@ They preserve fragmentation as received and rely on the connection layer's
 clear-FIN text validation. A fragmented text message whose invalid UTF-8 spans
 frames is therefore not validated as a whole. Use `MessageReader` or
 `FragmentCollector` when strict cross-fragment UTF-8 validation is required.
-
-## Why Swerver is not used
-
-[Swerver](https://github.com/justinGrosvenor/swerver) is not included as a
-WebSocket server example. Its documentation lists WebSocket server support for
-1.0, its current main targets Zig 0.16, and it fails to build with Zig 0.17.1
-because `b.args` was removed. It is therefore not a usable WebSocket server for
-this tree, and adding it as a dependency or shipping a broken example would not
-demonstrate tachyon. The direct `tachyon-echo-server` and
-`tachyon-echo-server-split` examples above use the public upgrade, native stream,
-and split APIs instead.

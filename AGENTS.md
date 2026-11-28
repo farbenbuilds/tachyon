@@ -105,7 +105,11 @@ These rules apply to the implementation:
 ## Repository Structure
 
 Core paths are `build.zig`, `build.zig.zon`, `src/root.zig`, `src/*.zig`,
-`tests/`, and `.github/workflows/`. The full module and test layout is in
+`tests/`, `examples/`, `benches/`, and `.github/workflows/`, including
+`.github/workflows/bench.yml`. The opt-in `examples` and `benches` steps require
+a full checkout; the default `zig build` stays library-only. The benchmark
+workflow is manual and weekly, not a PR gate.
+The full module and test layout is in
 [CODEBASE.md#target-source-layout](CODEBASE.md#target-source-layout); ownership
 is in [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md). Keep one owner per file and hand
 cross-scope work to the owning agent or reviewer instead of editing it in the
@@ -166,8 +170,8 @@ Debug and ReleaseSafe suite on x86_64-linux-gnu plus the host and musl tests in
 `nix flake check`; no CI runtime claim is made for macOS or Windows. See
 `CODEBASE.md#platform-support`.
 
-Use `zig fmt .` to apply formatting. Do not install project tools globally with
-`apt`, `brew`, or `npm`.
+Use `zig fmt .` to apply formatting. Do not install project tools globally
+outside the Nix shell.
 
 zslay is declared in `build.zig.zon`. The `zon2nix` pre-commit hook regenerates
 `build.zig.zon.nix`, `build.zig.zon.json`, and `build.zig.zon.txt` whenever

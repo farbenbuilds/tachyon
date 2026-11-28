@@ -11,6 +11,12 @@ This project follows semantic versioning.
 
 ### Added
 
+- Root `examples/` and `benches/` tooling: native echo servers and client, Zig
+  load and unmask benchmarks, a Node comparison runner, and best-effort C++
+  uWebSockets plus Rust competitor setup. The runner writes the results table
+  and per-case SVG charts into `benches/README.md`, and
+  `.github/workflows/bench.yml` runs manually and weekly. Competitor sources are
+  fetched into a cache and are not bundled.
 - `tests/autobahn-test/server.zig` now negotiates permessage-deflate from the
   request offers, enables negotiated RSV1, inflates compressed messages before
   text validation, and deflates echoes with the selected sender window and
