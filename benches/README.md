@@ -66,7 +66,9 @@ The runner executes the original comparison cases:
 For each case and target it starts the server, waits for the port, runs the load
 generator for `BENCH_DURATION` seconds (default 5), averages the per-second
 samples, stops the server, and updates the generated results block in this
-README. A startup grace period (default 1000 ms) follows port readiness; set
+README. It also writes one plain-SVG chart per case
+(`<connections>-<payload_bytes>-chart.svg`) and links the charts in the generated
+block. A startup grace period (default 1000 ms) follows port readiness; set
 `BENCH_START_DELAY_MS` to adjust it. The same Markdown table is printed to stdout.
 Missing targets are skipped rather than failing the run. Node is only the
 runner; there is no JavaScript WebSocket target.
@@ -133,34 +135,46 @@ The benchmark runner replaces only the text between these markers. Do not edit
 inside the block by hand.
 
 <!-- bench-results:start -->
-Generated: 2026-11-28T11:25:25.861Z
+Generated: 2026-11-28T11:38:02.043Z
 Duration: 1s per case
 
 | Target | Connections | Payload | Avg Msg/sec |
 | --- | ---: | ---: | ---: |
-| tachyon | 100 | 20 B | 1741040 |
-| uWebSockets | 100 | 20 B | 547231 |
-| fastwebsockets | 100 | 20 B | 530011 |
-| tokio-tungstenite | 100 | 20 B | 881601 |
-| rust-websocket | 100 | 20 B | 1202471 |
-| tachyon | 10 | 1024 B | 1088247 |
-| uWebSockets | 10 | 1024 B | 521743 |
-| fastwebsockets | 10 | 1024 B | 475135 |
-| tokio-tungstenite | 10 | 1024 B | 681821 |
-| rust-websocket | 10 | 1024 B | 490101 |
-| tachyon | 10 | 16384 B | 473796 |
-| uWebSockets | 10 | 16384 B | 236939 |
-| fastwebsockets | 10 | 16384 B | 219436 |
-| tokio-tungstenite | 10 | 16384 B | 376306 |
-| rust-websocket | 10 | 16384 B | 177146 |
-| tachyon | 200 | 16384 B | 489116 |
-| uWebSockets | 200 | 16384 B | 211399 |
-| fastwebsockets | 200 | 16384 B | 151323 |
-| tokio-tungstenite | 200 | 16384 B | 208824 |
-| rust-websocket | 200 | 16384 B | 233538 |
-| tachyon | 500 | 16384 B | 452708 |
-| uWebSockets | 500 | 16384 B | 140965 |
-| fastwebsockets | 500 | 16384 B | 127349 |
-| tokio-tungstenite | 500 | 16384 B | 179531 |
-| rust-websocket | 500 | 16384 B | 223158 |
+| tachyon | 100 | 20 B | 1737129 |
+| uWebSockets | 100 | 20 B | 572138 |
+| fastwebsockets | 100 | 20 B | 514972 |
+| tokio-tungstenite | 100 | 20 B | 892086 |
+| rust-websocket | 100 | 20 B | 1204370 |
+| tachyon | 10 | 1024 B | 1083069 |
+| uWebSockets | 10 | 1024 B | 520337 |
+| fastwebsockets | 10 | 1024 B | 486593 |
+| tokio-tungstenite | 10 | 1024 B | 691535 |
+| rust-websocket | 10 | 1024 B | 494150 |
+| tachyon | 10 | 16384 B | 475121 |
+| uWebSockets | 10 | 16384 B | 248830 |
+| fastwebsockets | 10 | 16384 B | 241575 |
+| tokio-tungstenite | 10 | 16384 B | 379387 |
+| rust-websocket | 10 | 16384 B | 179143 |
+| tachyon | 200 | 16384 B | 502853 |
+| uWebSockets | 200 | 16384 B | 218751 |
+| fastwebsockets | 200 | 16384 B | 155299 |
+| tokio-tungstenite | 200 | 16384 B | 216372 |
+| rust-websocket | 200 | 16384 B | 246212 |
+| tachyon | 500 | 16384 B | 499106 |
+| uWebSockets | 500 | 16384 B | 146143 |
+| fastwebsockets | 500 | 16384 B | 135793 |
+| tokio-tungstenite | 500 | 16384 B | 186677 |
+| rust-websocket | 500 | 16384 B | 227864 |
+
+### Charts
+
+![Connections: 100, Payload: 20 bytes](100-20-chart.svg)
+
+![Connections: 10, Payload: 1024 bytes](10-1024-chart.svg)
+
+![Connections: 10, Payload: 16384 bytes](10-16384-chart.svg)
+
+![Connections: 200, Payload: 16384 bytes](200-16384-chart.svg)
+
+![Connections: 500, Payload: 16384 bytes](500-16384-chart.svg)
 <!-- bench-results:end -->

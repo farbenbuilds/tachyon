@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="404" viewBox="0 0 960 404" role="img" aria-labelledby="chart-title">
+  <title id="chart-title">Connections: 10, Payload: 16384 bytes</title>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <text x="24" y="38" font-family="sans-serif" font-size="20" font-weight="bold" fill="#222">Connections: 10, Payload: 16384 bytes</text>
+  <text x="24" y="62" font-family="sans-serif" font-size="13" fill="#666">Average Msg/sec, sorted by target</text>
+  <line x1="260" y1="78" x2="936" y2="78" stroke="#dddddd"/>
+  <text x="24" y="117" font-family="sans-serif" font-size="14" fill="#222">tachyon</text>
+  <rect x="260" y="96" width="580.0" height="32" fill="#4e79a7" rx="3"/>
+  <text x="936" y="117" text-anchor="end" font-family="sans-serif" font-size="13" fill="#222">475,121</text>
+  <text x="24" y="169" font-family="sans-serif" font-size="14" fill="#222">tokio-tungstenite</text>
+  <rect x="260" y="148" width="463.1" height="32" fill="#f28e2b" rx="3"/>
+  <text x="936" y="169" text-anchor="end" font-family="sans-serif" font-size="13" fill="#222">379,387</text>
+  <text x="24" y="221" font-family="sans-serif" font-size="14" fill="#222">uWebSockets</text>
+  <rect x="260" y="200" width="303.8" height="32" fill="#59a14f" rx="3"/>
+  <text x="936" y="221" text-anchor="end" font-family="sans-serif" font-size="13" fill="#222">248,830</text>
+  <text x="24" y="273" font-family="sans-serif" font-size="14" fill="#222">fastwebsockets</text>
+  <rect x="260" y="252" width="294.9" height="32" fill="#e15759" rx="3"/>
+  <text x="936" y="273" text-anchor="end" font-family="sans-serif" font-size="13" fill="#222">241,575</text>
+  <text x="24" y="325" font-family="sans-serif" font-size="14" fill="#222">rust-websocket</text>
+  <rect x="260" y="304" width="218.7" height="32" fill="#b07aa1" rx="3"/>
+  <text x="936" y="325" text-anchor="end" font-family="sans-serif" font-size="13" fill="#222">179,143</text>
+</svg>

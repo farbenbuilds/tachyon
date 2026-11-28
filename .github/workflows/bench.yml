@@ -49,12 +49,19 @@ jobs:
       - name: Append results to summary
         if: always()
         run: |
-          awk '/<!-- bench-results:start -->/{flag=1} flag; /<!-- bench-results:end -->/{flag=0}' benches/README.md >> "$GITHUB_STEP_SUMMARY"
+          awk '
+            /<!-- bench-results:start -->/ { flag = 1; next }
+            /<!-- bench-results:end -->/ { flag = 0 }
+            flag && /^### Charts$/ { exit }
+            flag
+          ' benches/README.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: bench-results
-          path: benches/README.md
+          path: |
+            benches/README.md
+            benches/*-chart.svg
           if-no-files-found: warn

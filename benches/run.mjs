@@ -222,6 +222,77 @@ async function runLoadTest(connections, payloadBytes, port) {
   return { average, samples };
 }
 
+
+function chartFileName(testCase) {
+  return `${testCase.connections}-${testCase.payloadBytes}-chart.svg`;
+}
+
+function escapeXml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&apos;";
+    }
+  });
+}
+
+function formatCount(value) {
+  return Math.round(value)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function renderChart(testCase, rows) {
+  const width = 960;
+  const left = 260;
+  const right = 120;
+  const top = 96;
+  const rowHeight = 52;
+  const barHeight = 32;
+  const height = Math.max(260, top + rows.length * rowHeight + 48);
+  const plotWidth = width - left - right;
+  const maxValue = Math.max(1, ...rows.map((row) => row.avg_msg_per_sec));
+  const title = `Connections: ${testCase.connections}, Payload: ${testCase.payloadBytes} bytes`;
+  const palette = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#b07aa1"];
+  const parts = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="chart-title">`,
+    `  <title id="chart-title">${escapeXml(title)}</title>`,
+    '  <rect width="100%" height="100%" fill="#ffffff"/>',
+    `  <text x="24" y="38" font-family="sans-serif" font-size="20" font-weight="bold" fill="#222">${escapeXml(title)}</text>`,
+    `  <text x="24" y="62" font-family="sans-serif" font-size="13" fill="#666">Average Msg/sec, sorted by target</text>`,
+    `  <line x1="${left}" y1="78" x2="${width - 24}" y2="78" stroke="#dddddd"/>`,
+  ];
+
+  if (rows.length === 0) {
+    parts.push(
+      '  <text x="24" y="120" font-family="sans-serif" font-size="14" fill="#666">No successful target results</text>',
+    );
+  } else {
+    rows.forEach((row, index) => {
+      const y = top + index * rowHeight;
+      const barWidth = plotWidth * (row.avg_msg_per_sec / maxValue);
+      const color = palette[index % palette.length];
+      parts.push(
+        `  <text x="24" y="${y + 21}" font-family="sans-serif" font-size="14" fill="#222">${escapeXml(row.target)}</text>`,
+        `  <rect x="${left}" y="${y}" width="${barWidth.toFixed(1)}" height="${barHeight}" fill="${color}" rx="3"/>`,
+        `  <text x="${width - 24}" y="${y + 21}" text-anchor="end" font-family="sans-serif" font-size="13" fill="#222">${formatCount(row.avg_msg_per_sec)}</text>`,
+      );
+    });
+  }
+
+  parts.push("</svg>");
+  return `${parts.join("\n")}\n`;
+}
+
 async function main() {
   if (!(await fileExists(loadTest))) {
     throw new Error(
@@ -301,6 +372,20 @@ async function main() {
     ),
   ];
 
+  for (const testCase of cases) {
+    const rows = results
+      .filter(
+        (result) =>
+          result.connections === testCase.connections &&
+          result.payload_bytes === testCase.payloadBytes,
+      )
+      .sort((left, right) => right.avg_msg_per_sec - left.avg_msg_per_sec);
+    await writeFile(
+      path.join(benchesDir, chartFileName(testCase)),
+      renderChart(testCase, rows),
+    );
+  }
+
   if (missing.length > 0) {
     markdown.push("", "Skipped targets:", "");
     for (const item of missing) {
@@ -315,7 +400,14 @@ async function main() {
       );
     }
   }
-  markdown.push("");
+
+  markdown.push("", "### Charts", "");
+  for (const testCase of cases) {
+    markdown.push(
+      `![Connections: ${testCase.connections}, Payload: ${testCase.payloadBytes} bytes](${chartFileName(testCase)})`,
+      "",
+    );
+  }
 
   const readmePath = path.join(benchesDir, "README.md");
   const readme = await readFile(readmePath, "utf8");
