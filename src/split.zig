@@ -184,8 +184,9 @@ pub const WebSocketRead = struct {
         if (self.inner.read_failure) |failure| return failure;
         if (sink.failure()) |failure| return failure;
 
-        // Each iteration consumes one wire frame or returns; a peer that only
-        // sends pings keeps the loop alive, so the transport owns termination.
+        // Each iteration consumes one wire frame or returns. Pings before a
+        // close keep the loop alive; after a close the ping reaches the closed
+        // gate and returns ConnectionClosed instead of looping.
         while (true) {
             var reply: ?Frame = null;
             const event = self.inner.read_event(self.read_closed(sink), &reply);
@@ -666,16 +667,20 @@ pub const FragmentCollectorRead = struct {
     /// Binds the collector to a read half and caller-owned message storage.
     ///
     /// `message_buffer` bounds one assembled message and must not overlap
-    /// `read.frame_buffer`, the read half's `std.Io.Reader` buffer, or its
-    /// `std.Io.Writer` buffer, because accumulation copies with `@memcpy` and
-    /// reader fills can move bytes between those regions. A zero-length buffer
-    /// is allowed and rejects every non-empty message with
-    /// `error.BufferTooShort`.
+    /// `read.frame_buffer`, the read close buffer, the read half's
+    /// `std.Io.Reader` buffer, or its `std.Io.Writer` buffer, because
+    /// accumulation copies with `@memcpy` and replies or reader fills can move
+    /// bytes between those regions. The write half's protocol storage
+    /// (`tx_nodes`, `write_buffer`, `close_buffer`, and `mask_scratch`) is not
+    /// visible here, so the caller must keep `message_buffer` disjoint from it
+    /// as well. A zero-length buffer is allowed and rejects every non-empty
+    /// message with `error.BufferTooShort`.
     pub fn init(read: WebSocketRead, message_buffer: []u8) Error!FragmentCollectorRead {
         const frame_buffer = read.frame_buffer();
+        const close_buffer = read.inner.close_buffer;
         const reader_buffer = read.inner.reader.buffer;
         const writer_buffer = read.inner.writer.buffer;
-        const byte_regions = [_][]const u8{ frame_buffer, reader_buffer, writer_buffer };
+        const byte_regions = [_][]const u8{ frame_buffer, close_buffer, reader_buffer, writer_buffer };
 
         for (byte_regions) |region| {
             if (zslay.event.ranges_overlap(

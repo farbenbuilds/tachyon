@@ -78,6 +78,60 @@ test "Split: FragmentCollectorRead rejects a message buffer overlapping the read
     );
 }
 
+test "Split: FragmentCollectorRead rejects a message buffer overlapping the read close buffer" {
+    var empty = std.Io.Reader.fixed("");
+    var parts: SplitRig(16, 1, 32, 8, 0, 8) = .{};
+    try parts.init(&empty, .{ .role = .server });
+
+    try std.testing.expectError(
+        error.InvalidLength,
+        split.FragmentCollectorRead.init(parts.split.read, parts.read_close_buffer[0..8]),
+    );
+}
+
+test "Split: FragmentCollectorRead rejects a message buffer overlapping the shared writer buffer" {
+    var input: [16]u8 = undefined;
+    var reader = std.Io.Reader.fixed(&input);
+    var output: [32]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output);
+    var frame_buffer: [16]u8 = undefined;
+    var close_buffer: [8]u8 = undefined;
+    var compose_buffer: [32]u8 = undefined;
+    const read = try split.WebSocketRead.init(&reader, &writer, .{
+        .frame_buffer = &frame_buffer,
+        .close_buffer = &close_buffer,
+        .compose_buffer = &compose_buffer,
+    }, .{ .role = .server });
+
+    try std.testing.expectError(
+        error.InvalidLength,
+        split.FragmentCollectorRead.init(read, writer.buffer[0..8]),
+    );
+}
+
+test "Split: FragmentCollectorRead ping-only after a close write returns ConnectionClosed without extra read" {
+    var stream: EncodedStream(32) = .{};
+    var first_ping = [_]u8{'?'};
+    var second_ping = [_]u8{'!'};
+    try append_masked(&stream, Frame.ping(&first_ping), .{ 0x10, 0x20, 0x30, 0x40 });
+    try append_masked(&stream, Frame.ping(&second_ping), .{ 0x50, 0x60, 0x70, 0x80 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{ .role = .server });
+    var collector = try split.FragmentCollectorRead.init(parts.split.read, &parts.message_buffer);
+
+    var close_storage: [2]u8 = undefined;
+    try parts.split.write.write_frame(try Frame.close(1000, "", &close_storage));
+    const output_after_close = parts.writer.written;
+
+    try std.testing.expectError(error.ConnectionClosed, collector.read_frame(&parts.split.write));
+    try std.testing.expectEqual(@as(?WebSocketError, null), collector.failure);
+    try std.testing.expectEqual(output_after_close, parts.writer.written);
+    try std.testing.expectEqual(@as(usize, 7), reader.seek);
+    try std.testing.expectEqual(@as(usize, 7), reader.buffered().len);
+}
+
 test "Split: FragmentCollectorRead reset clears an in-progress message and boundary tracking" {
     var stream: EncodedStream(64) = .{};
     var first = [_]u8{ 'h', 'e' };

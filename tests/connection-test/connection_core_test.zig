@@ -5,7 +5,6 @@ const tachyon = @import("tachyon");
 const support = @import("../support.zig");
 
 const connection = tachyon.connection;
-const fragment = tachyon.fragment;
 const Frame = tachyon.Frame;
 const EncodedStream = support.EncodedStream;
 const RecordingVecWriter = support.RecordingVecWriter;
@@ -228,10 +227,6 @@ test "WebSocket: options default to fastwebsockets values" {
     try std.testing.expectEqual(@as(usize, 64 << 20), options.max_message_size);
     try std.testing.expectEqual(@as(usize, 64 << 20), connection.default_max_message_size);
     try std.testing.expectEqual(@as(usize, 1024), connection.default_writev_threshold);
-}
-
-test "WebSocket: connection and fragment defaults agree" {
-    try std.testing.expectEqual(fragment.default_max_message_size, connection.default_max_message_size);
 }
 
 test "WebSocket: role, pending, and limit accessors track state" {

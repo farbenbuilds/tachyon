@@ -349,6 +349,13 @@ This project follows semantic versioning.
 
 ### Fixed
 
+- Post-close ping-only streams now return `ConnectionClosed` instead of
+  consuming frames, both public write paths reject payloads aliasing the caller
+  reader or writer buffer while synchronous echoes may still reuse
+  `frame_buffer`, split collectors reject message buffers overlapping the read
+  close buffer, the error set drops six unproduced names plus the `to_string`
+  and handshake validation aliases, and the fragment layer no longer duplicates
+  the connection message-size default.
 - `split.after_handshake_split` now rejects read storage that overlaps write
   storage with `InvalidLength`, preventing a read reply from clobbering queued
   or composed write bytes before either half is constructed.

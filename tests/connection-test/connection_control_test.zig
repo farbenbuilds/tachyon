@@ -239,12 +239,12 @@ test "WebSocket: auto_pong preserves an in-progress fragmented message" {
     try std.testing.expectEqual(server.writer.written, index);
 }
 
-test "WebSocket: ping after close is suppressed without a pong" {
+test "WebSocket: ping-only after a close write returns ConnectionClosed without pong or extra read" {
     var stream: EncodedStream(32) = .{};
-    var ping_payload = [_]u8{'?'};
-    var text_payload = [_]u8{'x'};
-    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x10, 0x20, 0x30, 0x40 });
-    try append_masked(&stream, Frame.text(&text_payload), .{ 0x50, 0x60, 0x70, 0x80 });
+    var first_ping = [_]u8{'?'};
+    var second_ping = [_]u8{'!'};
+    try append_masked(&stream, Frame.ping(&first_ping), .{ 0x10, 0x20, 0x30, 0x40 });
+    try append_masked(&stream, Frame.ping(&second_ping), .{ 0x50, 0x60, 0x70, 0x80 });
 
     var reader = stream.reader();
     var server: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
@@ -256,5 +256,13 @@ test "WebSocket: ping after close is suppressed without a pong" {
 
     try std.testing.expectError(error.ConnectionClosed, server.ws.read_frame());
     try std.testing.expectEqual(output_after_close, server.writer.written);
+    try std.testing.expectEqual(@as(usize, 7), reader.seek);
+    try std.testing.expectEqual(@as(usize, 7), reader.buffered().len);
     try std.testing.expect(server.ws.is_closed());
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+
+    var index: usize = 0;
+    const close = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqual(connection.OpCode.close, connection.OpCode.from_wire(close.header.header.opcode).?);
+    try std.testing.expectEqual(server.writer.written, index);
 }

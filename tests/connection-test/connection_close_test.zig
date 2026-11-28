@@ -36,6 +36,37 @@ test "WebSocket: valid close is returned and echoed with the exact payload" {
     try std.testing.expectEqual(server.writer.written, index);
 }
 
+test "WebSocket: ping-only after a close echo returns ConnectionClosed without pong or extra read" {
+    var stream: EncodedStream(64) = .{};
+    var close_storage: [8]u8 = undefined;
+    var first_ping = [_]u8{'?'};
+    var second_ping = [_]u8{'!'};
+    try append_masked(&stream, try Frame.close(1000, "", &close_storage), .{ 0xa1, 0xb2, 0xc3, 0xd4 });
+    try append_masked(&stream, Frame.ping(&first_ping), .{ 0x11, 0x22, 0x33, 0x44 });
+    try append_masked(&stream, Frame.ping(&second_ping), .{ 0x55, 0x66, 0x77, 0x88 });
+
+    var reader = stream.reader();
+    var server: ConnectionRig(32, 2, 64, 8, 0, 32) = .{};
+    try server.init(&reader, .{ .role = .server });
+
+    const received = try server.ws.read_frame();
+    try std.testing.expectEqual(connection.OpCode.close, received.opcode);
+    try std.testing.expect(server.ws.is_closed());
+    const output_after_echo = server.writer.written;
+    const seek_after_echo = reader.seek;
+
+    try std.testing.expectError(error.ConnectionClosed, server.ws.read_frame());
+    try std.testing.expectEqual(output_after_echo, server.writer.written);
+    try std.testing.expectEqual(seek_after_echo + 7, reader.seek);
+    try std.testing.expectEqual(@as(usize, 7), reader.buffered().len);
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+
+    var index: usize = 0;
+    const echo = try next_wire_frame(server.bytes(), &index);
+    try std.testing.expectEqual(connection.OpCode.close, connection.OpCode.from_wire(echo.header.header.opcode).?);
+    try std.testing.expectEqual(server.writer.written, index);
+}
+
 test "WebSocket: client echoes a valid close with a masked exact payload" {
     const seed: [connection.mask_seed_len]u8 = @splat(0x47);
     var stream: EncodedStream(32) = .{};

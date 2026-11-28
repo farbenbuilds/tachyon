@@ -47,7 +47,11 @@ documentation foundation:
   writes.
 - `src/error.zig` implements the fastwebsockets 0.10.0 error taxonomy, zslay
   boundary normalization, `std.Io` reader/writer/stream mappings, the status
-  out-parameter helper, and the close-code policy.
+  out-parameter helper, and the close-code policy. The public set keeps the 20
+  upstream names plus the produced zslay boundary names and tachyon extensions;
+  zslay's `InvalidUtf8`/`PayloadTooLarge` and std's `EndOfStream` are boundary
+  spellings accepted by the classification helpers, not `WebSocketError`
+  members.
 - `src/utf8.zig` implements incremental zero-allocation text validation. Complete
   ranges use `std.unicode`; the `State` value carries only a split code point's
   remaining bytes, and `validate_reader` adapts arbitrary `std.Io.Reader` chunk
@@ -268,8 +272,8 @@ protocol layers, `tests/support.zig` holds shared fixtures,
 split, native-stream, and handshake re-export tests, and
 `tests/stream-test/state_test.zig` checks the chunked-message re-exports.
 `tests/pubsub-test/` holds 41 focused hub tests across core, publish,
-backpressure, reentrancy, and name concerns. The aggregate runs 416 test blocks
-in each of Debug and ReleaseSafe, 832 runs in total. Library sources contain no
+backpressure, reentrancy, and name concerns. The aggregate runs 423 test blocks
+in each of Debug and ReleaseSafe, 846 runs in total. Library sources contain no
 test blocks. `tests/autobahn-test/server.zig` is a repository-only integration
 fixture built by the `autobahn-server` step and run by
 `.github/workflows/autobahn.yml`; it is not aggregated by `tests/main.zig` and
@@ -402,8 +406,11 @@ Replace this direct-field coupling with a zslay setter when one lands.
 `write_frame` queues and synchronously drains one outbound frame. The payload
 must be clear; a pre-masked frame is rejected with `PayloadMasked` so zslay
 validates close bytes on the clear payload. An outbound payload must not overlap
-`tx_nodes`, `write_buffer`, `close_buffer`, or `mask_scratch`; a payload borrowed
-from `frame_buffer` is allowed for echoes. The connection uses
+`tx_nodes`, `write_buffer`, `close_buffer`, or `mask_scratch`. Both public write
+paths reject payloads aliasing the caller's reader or writer buffer; a payload
+borrowed from `frame_buffer` is allowed only for the synchronous echo, while
+`enqueue_frame` rejects it because the payload outlives the read. The connection
+uses
 `zslay.Conn.prepare_frame` for payload validation and header serialization and
 `queue_frame` for fragment ordering and queue capacity, then drains the queue
 into the caller's `std.Io.Writer`. Application writes do not flush the writer;
@@ -576,8 +583,12 @@ and drains it.
 
 `FragmentCollectorRead` wraps a `WebSocketRead` by value plus a caller-owned
 `message_buffer` and owns a `Fragments` accumulator. It forwards obligations
-through the sink, assembles continuations and split UTF-8 code points, rejects a
-`message_buffer` that overlaps the read `frame_buffer` with `InvalidLength`, and
+through the sink, assembles continuations and split UTF-8 code points, and
+rejects a `message_buffer` that overlaps the read `frame_buffer`, the read
+`close_buffer`, the reader buffer, or the shared writer buffer with
+`InvalidLength`. The write half's protocol storage (`tx_nodes`, `write_buffer`,
+`close_buffer`, and `mask_scratch`) is not reachable from the read half, so the
+caller must keep `message_buffer` disjoint from it as well. The collector
 latches read and accumulation failures until `reset` except `ConnectionClosed`,
 which is returned without latching so a later peer close stays deliverable, the
 zero-maximum `FrameTooLarge` configuration rejection, and a sink-owned transport
@@ -827,9 +838,10 @@ second queue:
 - `ConnectionOptions.backpressure` is opt-in. `write_frame` keeps the
   fastwebsockets drain-and-write behavior; `enqueue_frame` is the batching path
   that queues without draining. `flush` drains zslay then the caller's writer.
-  A deferred payload must not alias the read `frame_buffer`, reader buffer, or
-  writer buffer; the synchronous path may reuse `frame_buffer` for an echo
-  because it drains before returning. Read pacing stays with the caller: the raw
+  Any public write rejects payloads aliasing the caller reader or writer
+  buffer; deferred enqueue also rejects the read `frame_buffer`, while the
+  synchronous path may reuse it for an echo because it drains before returning.
+  Read pacing stays with the caller: the raw
   connection has no inbound frame queue, so not calling `read_frame` is the
   receive-side backpressure.
 - `std.Io` has no stream `WouldBlock` result. Its writer blocks or suspends

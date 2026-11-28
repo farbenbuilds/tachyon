@@ -303,6 +303,28 @@ test "Handshake: validate_request rejects malformed and folded headers" {
     try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(bad_host_value));
 }
 
+test "Handshake: validate_request rejects Transfer-Encoding and Expect body headers" {
+    const transfer_encoding =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n" ++
+        "Transfer-Encoding: chunked\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(transfer_encoding));
+
+    const expect_header =
+        "GET /chat HTTP/1.1\r\n" ++
+        "Host: server.example.com\r\n" ++
+        "Upgrade: websocket\r\n" ++
+        "Connection: Upgrade\r\n" ++
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" ++
+        "Sec-WebSocket-Version: 13\r\n" ++
+        "Expect: 100-continue\r\n\r\n";
+    try std.testing.expectError(error.InvalidHttpRequest, handshake.validate_request(expect_header));
+}
+
 test "Handshake: write_request emits the canonical client request" {
     var out: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&out);

@@ -40,9 +40,6 @@ pub const Frame = frame.Frame;
 /// tachyon error set for the fragment layer.
 pub const Error = errors.WebSocketError;
 
-/// fastwebsockets default: 64 MiB, exclusive.
-pub const default_max_message_size: usize = 64 << 20;
-
 /// Fragment accumulator over caller-owned storage.
 ///
 /// `accumulate` is a pure transition over the supplied frame: every check and

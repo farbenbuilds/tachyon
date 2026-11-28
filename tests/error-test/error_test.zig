@@ -12,7 +12,6 @@ const from_writer = tachyon.from_writer;
 const from_stream = tachyon.from_stream;
 const to_zslay = tachyon.to_zslay;
 const description = tachyon.description;
-const to_string = tachyon.to_string;
 const to_close_code = tachyon.to_close_code;
 const is_protocol_error = tachyon.is_protocol_error;
 const is_fatal = tachyon.is_fatal;
@@ -58,10 +57,9 @@ test "Error: fastwebsockets parity contains all 20 upstream error variants" {
     }
 }
 
-test "Error: every WebSocketError variant has a description and to_string alias" {
+test "Error: every WebSocketError variant has a description" {
     const all_errors = [_]WebSocketError{
         error.InvalidFragment,
-        error.InvalidUtf8,
         error.InvalidUTF8,
         error.InvalidContinuationFrame,
         error.InvalidStatusCode,
@@ -71,7 +69,6 @@ test "Error: every WebSocketError variant has a description and to_string alias"
         error.InvalidCloseFrame,
         error.InvalidCloseCode,
         error.UnexpectedEOF,
-        error.UnexpectedEof,
         error.ReservedBitsNotZero,
         error.ControlFrameFragmented,
         error.PingFrameTooLarge,
@@ -89,23 +86,35 @@ test "Error: every WebSocketError variant has a description and to_string alias"
         error.PayloadMasked,
         error.PayloadNotMasked,
         error.MaskingKeyRequired,
-        error.PayloadTooLarge,
         error.QueueFull,
         error.WouldBlock,
-        error.EndOfStream,
-        error.DecompressionFailed,
-        error.DecompressedPayloadTooLarge,
         error.InvalidSecWebSocketAccept,
         error.InvalidHttpRequest,
     };
 
     const err_names = @typeInfo(WebSocketError).error_set.error_names.?;
+    try std.testing.expectEqual(@as(usize, 31), err_names.len);
     try std.testing.expectEqual(@as(usize, err_names.len), @as(usize, all_errors.len));
 
     for (all_errors) |err| {
-        const desc = description(err);
-        try std.testing.expect(desc.len > 0);
-        try std.testing.expectEqualStrings(desc, to_string(err));
+        try std.testing.expect(description(err).len > 0);
+    }
+}
+
+test "Error: unproduced aliases are absent from WebSocketError" {
+    const absent = [_][]const u8{
+        "InvalidUtf8",
+        "UnexpectedEof",
+        "PayloadTooLarge",
+        "EndOfStream",
+        "DecompressionFailed",
+        "DecompressedPayloadTooLarge",
+    };
+    const names = @typeInfo(WebSocketError).error_set.error_names.?;
+    for (absent) |name| {
+        for (names) |actual| {
+            try std.testing.expect(!std.mem.eql(u8, name, actual));
+        }
     }
 }
 
@@ -125,7 +134,6 @@ test "Error: to_close_code maps wire protocol violations to 1002" {
         error.PayloadNotMasked,
         error.MaskingKeyRequired,
         error.InvalidValue,
-        error.DecompressionFailed,
     };
 
     for (protocol_violations) |err| {
@@ -133,18 +141,12 @@ test "Error: to_close_code maps wire protocol violations to 1002" {
     }
 }
 
-test "Error: to_close_code maps InvalidUtf8 and InvalidUTF8 to 1007" {
-    try std.testing.expectEqual(@as(?zslay.StatusCode, .invalid_payload), to_close_code(error.InvalidUtf8));
+test "Error: to_close_code maps InvalidUTF8 to 1007" {
     try std.testing.expectEqual(@as(?zslay.StatusCode, .invalid_payload), to_close_code(error.InvalidUTF8));
 }
 
-test "Error: to_close_code maps frame and payload size limits to 1009" {
+test "Error: to_close_code maps FrameTooLarge to 1009" {
     try std.testing.expectEqual(@as(?zslay.StatusCode, .message_too_big), to_close_code(error.FrameTooLarge));
-    try std.testing.expectEqual(@as(?zslay.StatusCode, .message_too_big), to_close_code(error.PayloadTooLarge));
-    try std.testing.expectEqual(
-        @as(?zslay.StatusCode, .message_too_big),
-        to_close_code(error.DecompressedPayloadTooLarge),
-    );
 }
 
 test "Error: to_close_code returns null for handshake, closed, transport, and retryable failures" {
@@ -157,9 +159,7 @@ test "Error: to_close_code returns null for handshake, closed, transport, and re
         error.InvalidHttpRequest,
         error.HTTPError,
         error.UnexpectedEOF,
-        error.UnexpectedEof,
         error.BufferTooShort,
-        error.EndOfStream,
         error.WouldBlock,
         error.ConnectionClosed,
         error.QueueFull,
@@ -188,7 +188,6 @@ test "Error: every WebSocketError variant has explicit protocol and fatal classi
 
     const cases = [_]Case{
         .{ .err = error.InvalidFragment, .protocol = true, .fatal = true },
-        .{ .err = error.InvalidUtf8, .protocol = true, .fatal = true },
         .{ .err = error.InvalidUTF8, .protocol = true, .fatal = true },
         .{ .err = error.InvalidContinuationFrame, .protocol = true, .fatal = true },
         .{ .err = error.InvalidStatusCode, .protocol = false, .fatal = true },
@@ -198,7 +197,6 @@ test "Error: every WebSocketError variant has explicit protocol and fatal classi
         .{ .err = error.InvalidCloseFrame, .protocol = true, .fatal = true },
         .{ .err = error.InvalidCloseCode, .protocol = true, .fatal = true },
         .{ .err = error.UnexpectedEOF, .protocol = false, .fatal = true },
-        .{ .err = error.UnexpectedEof, .protocol = false, .fatal = true },
         .{ .err = error.ReservedBitsNotZero, .protocol = true, .fatal = true },
         .{ .err = error.ControlFrameFragmented, .protocol = true, .fatal = true },
         .{ .err = error.PingFrameTooLarge, .protocol = true, .fatal = true },
@@ -216,12 +214,8 @@ test "Error: every WebSocketError variant has explicit protocol and fatal classi
         .{ .err = error.PayloadMasked, .protocol = true, .fatal = true },
         .{ .err = error.PayloadNotMasked, .protocol = true, .fatal = true },
         .{ .err = error.MaskingKeyRequired, .protocol = true, .fatal = true },
-        .{ .err = error.PayloadTooLarge, .protocol = false, .fatal = true },
         .{ .err = error.QueueFull, .protocol = false, .fatal = false },
         .{ .err = error.WouldBlock, .protocol = false, .fatal = false },
-        .{ .err = error.EndOfStream, .protocol = false, .fatal = true },
-        .{ .err = error.DecompressionFailed, .protocol = true, .fatal = true },
-        .{ .err = error.DecompressedPayloadTooLarge, .protocol = false, .fatal = true },
         .{ .err = error.InvalidSecWebSocketAccept, .protocol = false, .fatal = true },
         .{ .err = error.InvalidHttpRequest, .protocol = false, .fatal = true },
     };
@@ -319,17 +313,15 @@ test "Error: boundary descriptions approximate fastwebsockets text for all 20 pa
     }
 }
 
-test "Error: to_zslay reverse-maps zslay origin errors" {
+test "Error: to_zslay reverse-maps canonical zslay origin errors" {
     try std.testing.expectEqual(@as(?zslay.Error, error.InvalidOpcode), to_zslay(error.InvalidOpcode));
     try std.testing.expectEqual(@as(?zslay.Error, error.InvalidLength), to_zslay(error.InvalidLength));
     try std.testing.expectEqual(@as(?zslay.Error, error.BufferTooShort), to_zslay(error.BufferTooShort));
     try std.testing.expectEqual(@as(?zslay.Error, error.ProtocolError), to_zslay(error.ProtocolError));
     try std.testing.expectEqual(@as(?zslay.Error, error.PayloadMasked), to_zslay(error.PayloadMasked));
     try std.testing.expectEqual(@as(?zslay.Error, error.PayloadNotMasked), to_zslay(error.PayloadNotMasked));
-    try std.testing.expectEqual(@as(?zslay.Error, error.PayloadTooLarge), to_zslay(error.PayloadTooLarge));
     try std.testing.expectEqual(@as(?zslay.Error, error.PayloadTooLarge), to_zslay(error.FrameTooLarge));
     try std.testing.expectEqual(@as(?zslay.Error, error.MaskingKeyRequired), to_zslay(error.MaskingKeyRequired));
-    try std.testing.expectEqual(@as(?zslay.Error, error.InvalidUtf8), to_zslay(error.InvalidUtf8));
     try std.testing.expectEqual(@as(?zslay.Error, error.InvalidUtf8), to_zslay(error.InvalidUTF8));
 
     try std.testing.expectEqual(@as(?zslay.Error, null), to_zslay(error.InvalidFragment));
@@ -337,19 +329,12 @@ test "Error: to_zslay reverse-maps zslay origin errors" {
     try std.testing.expectEqual(@as(?zslay.Error, null), to_zslay(error.SendError));
 }
 
-test "Error: zslay.Error compiles as direct subset of WebSocketError" {
-    const z_err: zslay.Error = error.InvalidOpcode;
-    const w_err: WebSocketError = z_err;
-    try std.testing.expectEqual(error.InvalidOpcode, w_err);
-}
-
-test "Error: is_utf8_error and is_eof_error identify matching errors" {
+test "Error: is_utf8_error and is_eof_error identify boundary spellings" {
     try std.testing.expect(is_utf8_error(error.InvalidUtf8));
     try std.testing.expect(is_utf8_error(error.InvalidUTF8));
     try std.testing.expect(!is_utf8_error(error.InvalidFragment));
 
     try std.testing.expect(is_eof_error(error.UnexpectedEOF));
-    try std.testing.expect(is_eof_error(error.UnexpectedEof));
     try std.testing.expect(is_eof_error(error.EndOfStream));
     try std.testing.expect(!is_eof_error(error.ConnectionClosed));
 }

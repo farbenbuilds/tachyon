@@ -5,7 +5,6 @@ const tachyon = @import("tachyon");
 const support = @import("../support.zig");
 
 const connection = tachyon.connection;
-const fragment = tachyon.fragment;
 const Frame = tachyon.Frame;
 const EncodedStream = support.EncodedStream;
 const RecordingVecWriter = support.RecordingVecWriter;
@@ -467,11 +466,41 @@ test "WebSocket: write rejects storage overlaps but allows frame_buffer payloads
     try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
 
     // A delivered frame may be echoed from frame_buffer; that region is not
-    // connection-owned scratch.
+    // connection-owned scratch. Deferred enqueue still rejects it because the
+    // payload outlives the read.
     @memcpy(server.frame_buffer[0..2], "hi");
+    try std.testing.expectError(error.InvalidLength, server.ws.enqueue_frame(Frame.text(server.frame_buffer[0..2])));
+    try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
     try server.ws.write_frame(Frame.text(server.frame_buffer[0..2]));
     try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x02, 'h', 'i' }, server.bytes());
     try std.testing.expectEqual(@as(usize, 0), server.ws.tx_pending());
+}
+
+test "WebSocket: write rejects payloads aliasing reader or writer buffers" {
+    var input: [8]u8 = @splat(0x41);
+    var output: [64]u8 = undefined;
+    var reader = std.Io.Reader.fixed(&input);
+    var writer = std.Io.Writer.fixed(&output);
+    var frame_buffer: [16]u8 = undefined;
+    var tx_nodes: [2]zslay.FrameNode = undefined;
+    var write_buffer: [16]u8 = undefined;
+    var close_buffer: [8]u8 = undefined;
+    var ws = try connection.WebSocket.init(&reader, &writer, .{
+        .frame_buffer = &frame_buffer,
+        .tx_nodes = &tx_nodes,
+        .write_buffer = &write_buffer,
+        .close_buffer = &close_buffer,
+    }, .{ .role = .server });
+
+    try std.testing.expectError(error.InvalidLength, ws.write_frame(Frame.binary(ws.reader.buffer[0..4])));
+    try std.testing.expectError(error.InvalidLength, ws.write_frame(Frame.binary(ws.writer.buffer[0..4])));
+    try std.testing.expectEqual(@as(usize, 0), writer.buffered().len);
+    try std.testing.expectEqual(@as(usize, 0), ws.tx_pending());
+
+    try std.testing.expectError(error.InvalidLength, ws.enqueue_frame(Frame.binary(ws.reader.buffer[0..4])));
+    try std.testing.expectError(error.InvalidLength, ws.enqueue_frame(Frame.binary(ws.writer.buffer[0..4])));
+    try std.testing.expectEqual(@as(usize, 0), writer.buffered().len);
+    try std.testing.expectEqual(@as(usize, 0), ws.tx_pending());
 }
 
 test "WebSocket: max_message_size above zslay MaxPayloadLen is clamped" {

@@ -347,7 +347,10 @@ pub const WebSocket = struct {
     /// borrowing it until `reset_tx` or transport discard. The call drains the
     /// zslay queue into the `std.Io.Writer` but does not call `writer.flush()`;
     /// call `flush()` for buffered transports. Outbound text is not UTF-8
-    /// validated, matching fastwebsockets and zslay.
+    /// validated, matching fastwebsockets and zslay. The payload is rejected
+    /// with `InvalidLength` if it aliases connection storage or either caller
+    /// I/O buffer. The inbound `frame_buffer` remains allowed because a
+    /// synchronous echo drains before this call returns.
     ///
     /// When watermarks are configured, a data frame is refused with
     /// `error.WouldBlock` while the policy is backpressured or when a non-empty
@@ -373,7 +376,9 @@ pub const WebSocket = struct {
     /// later flush advances it, or until `reset_tx` if the transport is
     /// discarded after a failure. It must not alias the read `frame_buffer`,
     /// the reader buffer, or the writer buffer, because a later read or drain
-    /// can overwrite those regions. Data frames are admitted while the policy
+    /// can overwrite those regions. Both public write paths reject reader and
+    /// writer buffer aliases; only `write_frame` may reuse `frame_buffer`.
+    /// Data frames are admitted while the policy
     /// is writable; application controls other than close stop at the data
     /// capacity, and a close or automatic reply may use the reserved node.
     pub fn enqueue_frame(self: *WebSocket, outgoing: Frame) Error!void {
@@ -386,6 +391,7 @@ pub const WebSocket = struct {
         if (outgoing.masking_key != null) return error.PayloadMasked;
         if (outgoing.opcode != .close and self.closed) return error.ConnectionClosed;
         if (self.payload_overlaps_storage(outgoing.payload)) return error.InvalidLength;
+        if (self.payload_overlaps_io_buffers(outgoing.payload)) return error.InvalidLength;
         if (deferred and self.payload_overlaps_read_lifetime(outgoing.payload)) return error.InvalidLength;
     }
 
@@ -597,8 +603,9 @@ pub const WebSocket = struct {
     /// close is still delivered after its echo sets `closed`, matching
     /// fastwebsockets. `reply_capable` gates both obligations: a client that
     /// cannot mask delivers clear ping and close frames instead of sending a
-    /// frame zslay would reject. A suppressed ping returns `null` so the caller
-    /// sends the pong and continues to the next frame.
+    /// frame zslay would reject. A ping suppressed before close returns `null`
+    /// so the caller sends the pong and continues to the next frame; after a
+    /// close it reaches the closed gate instead.
     fn read_event_inner(
         self: *WebSocket,
         reply_out: *?Frame,
@@ -615,10 +622,10 @@ pub const WebSocket = struct {
                 return try self.gate_closed(incoming, was_closed);
             },
             .ping => {
-                if (self.options.auto_pong and reply_capable and incoming.masking_key == null) {
-                    if (!was_closed) {
-                        reply_out.* = Frame.init(true, .pong, null, incoming.payload);
-                    }
+                if (self.options.auto_pong and reply_capable and
+                    incoming.masking_key == null and !was_closed)
+                {
+                    reply_out.* = Frame.init(true, .pong, null, incoming.payload);
                     return null;
                 }
                 return try self.gate_closed(incoming, was_closed);
@@ -811,18 +818,13 @@ pub const WebSocket = struct {
         return false;
     }
 
-    /// True when the outbound payload overlaps caller read lifetime storage.
+    /// True when the outbound payload overlaps either caller I/O buffer.
     ///
-    /// Deferred enqueue keeps the payload borrowed until a later flush, so it
-    /// must not point into the inbound frame buffer, the reader buffer, or the
-    /// writer buffer. The synchronous write path may reuse `frame_buffer` for
-    /// an echo because it drains before returning.
-    fn payload_overlaps_read_lifetime(self: *const WebSocket, payload: []const u8) bool {
-        const regions = [_][]const u8{
-            self.frame_buffer,
-            self.reader.buffer,
-            self.writer.buffer,
-        };
+    /// The synchronous and deferred public write paths reject these regions
+    /// because the transport can overwrite them while a queued payload is
+    /// still being read.
+    fn payload_overlaps_io_buffers(self: *const WebSocket, payload: []const u8) bool {
+        const regions = [_][]const u8{ self.reader.buffer, self.writer.buffer };
         for (regions) |region| {
             if (zslay.event.ranges_overlap(
                 @intFromPtr(payload.ptr),
@@ -832,6 +834,22 @@ pub const WebSocket = struct {
             )) return true;
         }
         return false;
+    }
+
+    /// True when a deferred payload overlaps caller read lifetime storage.
+    ///
+    /// Deferred enqueue keeps the payload borrowed until a later flush, so it
+    /// must not point into the inbound frame buffer. The synchronous write path
+    /// may reuse `frame_buffer` for an echo because it drains before returning;
+    /// both public paths reject reader and writer buffers separately.
+    fn payload_overlaps_read_lifetime(self: *const WebSocket, payload: []const u8) bool {
+        const region = self.frame_buffer;
+        return zslay.event.ranges_overlap(
+            @intFromPtr(payload.ptr),
+            payload.len,
+            @intFromPtr(region.ptr),
+            region.len,
+        );
     }
 
     /// True when the outbound payload overlaps connection-owned scratch or the
