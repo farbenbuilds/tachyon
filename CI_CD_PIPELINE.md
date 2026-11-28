@@ -110,10 +110,11 @@ for the same ref, and defines one job, `autobahn`, named `Run Autobahn Tests`, o
    `ws://127.0.0.1:9001`, and host Docker networking. The action waits for a
    complete handshake before running the suite.
 
-The configured case set is `1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.*`. Group 8 is
-omitted by the action. Compression groups 11-13 are excluded until zslay
-negotiated RSV1 and handshake negotiation land. `fail-on: failed` fails the job
-on failed cases; non-strict outcomes are reported but do not gate. Reports are
+The configured case set is `1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.* 11.* 12.*
+13.*`. Group 8 is omitted by the action. Compression groups 11-13 are enabled
+through the fixture's negotiated permessage-deflate composition. `fail-on:
+failed` fails the job on failed cases; non-strict outcomes are reported but do
+not gate. Reports are
 written to `autobahn-reports`, uploaded as the `autobahn-report` artifact, and
 appended to the step summary. The suite is bounded to 1500 seconds inside the
 30-minute job.

@@ -9,6 +9,12 @@ This project follows semantic versioning.
 
 ### Added
 
+- `tests/autobahn-test/server.zig` now negotiates permessage-deflate from the
+  request offers, enables negotiated RSV1, inflates compressed messages before
+  text validation, and deflates echoes with the selected sender window and
+  context-takeover policy. `.github/workflows/autobahn.yml` enables Autobahn
+  cases 11-13; group 8 remains omitted, and a green run is evidence only for the
+  configured case set.
 - RFC 7692 capability plumbing: `Frame.rsv1` with strict `init` and explicit
   `init_rsv1`, connection `allow_rsv1`, compressed-message state and RSV1 writer
   options in `src/stream.zig`, RSV1-aware fragment accumulation, zero-allocation
@@ -147,15 +153,15 @@ This project follows semantic versioning.
   libdeflate, or zlib. The public surface is `sync_tail`, `Config`, `Error`,
   `DeflaterStorage`/`Deflater`, `InflaterStorage`/`Inflater`, and
   `max_compressed_len`; `Deflater` exposes `init`, `compress`, and `reset`, and
-  `Inflater` exposes `init`, `decompress`, and `reset`. The sender accepts only
-  `window_bits == 15`, preflights `max_compressed_len`, sync-flushes each
-  message, and appends one `0x00` byte; empty input is the canonical one-byte
-  `0x00` payload, and the codec never strips four trailing octets. The receiver
-  accepts `window_bits` 8 through 15 but does not enforce the negotiated
-  distance limit: `std.compress.flate.max_window_len` is a 64 KiB std
-  history-buffer requirement, not the DEFLATE wire LZ77 window. Future
-  negotiation must reject values below 15 for sending or enforce the limit
-  before advertising a smaller receive window, and outbound stays at 15. The
+  `Inflater` exposes `init`, `decompress`, and `reset`. The sender accepts
+  `window_bits` 8 through 15: window 15 uses the std compressor and 8 through 14
+  emit non-final stored blocks with no LZ77 distances. It preflights
+  `max_compressed_len`, sync-flushes each message, and appends one `0x00` byte;
+  empty input is the canonical one-byte `0x00` payload, and the codec never
+  strips four trailing octets. The receiver accepts `window_bits` 8 through 15
+  but does not enforce the negotiated distance limit:
+  `std.compress.flate.max_window_len` is a 64 KiB std history-buffer
+  requirement, not the DEFLATE wire LZ77 window. The
   receiver serves the compressed payload followed by `00 00 ff ff`, drains the
   decoder's indirect output, and requires a clean block boundary with
   `state == .block_header`, zero consumed bits, and no unconsumed input; a
@@ -183,10 +189,9 @@ This project follows semantic versioning.
   `DeflateConfig`, `DeflateError`, `DeflaterStorage`, `InflaterStorage`,
   `sync_tail`, and `max_compressed_len`, with tests in `tests/deflate-test/`
   aggregated by `tests/main.zig` and module re-export coverage in
-  `tests/module-test/module_test.zig`. Wire activation and RFC 7692 negotiation
-  remain blocked: the pinned zslay rejects RSV1, the handshake and upgrade layers
-  do not parse offers or responses, and the connection, fragment, and split
-  layers do not invoke the codec.
+  `tests/module-test/module_test.zig`. Negotiated RSV1 and RFC 7692 negotiation
+  are implemented; compression remains edge-composed, and the Autobahn fixture
+  enables the configured compression cases 11-13.
 - `src/native_stream.zig` with the native `std.Io.net.Stream` transport edge.
   `Transport` builds the `std.Io.Reader` and `std.Io.Writer` interfaces with
   `stream.reader(io, read_buffer)` and `stream.writer(io, write_buffer)`, and
@@ -315,8 +320,8 @@ This project follows semantic versioning.
   `1c4d57b3ca48e1ddf742e5ae1ab4ce5b51625b36` (`v1`). The fixture reuses the
   existing upgrade, connection, stream, and error-mapping layers; no wire logic
   is duplicated and `src/` stays zero-allocation.
-- Group 8 is omitted by the action. Compression groups 11-13 remain excluded
-  until zslay negotiated RSV1 and handshake negotiation land. A green run is
+- Group 8 is omitted by the action. Compression groups 11-13 are enabled through
+  the fixture's negotiated permessage-deflate composition. A green run is
   evidence only for the configured case set, not a full Autobahn or compression
   compliance claim.
 

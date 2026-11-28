@@ -18,8 +18,10 @@ chunked streaming is implemented in `src/stream.zig`; the RFC 7692
 permessage-deflate codec, RSV1 plumbing, and handshake negotiation are
 implemented in `src/deflate.zig`, `src/frame.zig`, `src/connection.zig`,
 `src/stream.zig`, `src/fragment.zig`, `src/handshake.zig`, and
-`src/upgrade.zig`. The default no-extension path remains strict, and compression
-composition stays at the application edge rather than inside the stream layer.
+`src/upgrade.zig`. The default no-extension path remains strict; compression
+composition stays at the application edge rather than inside the stream layer,
+and the Autobahn fixture now negotiates permessage-deflate and enables cases
+11-13 through that edge composition.
 The bounded pub/sub hub is implemented in `src/pubsub.zig` as an application
 layer; and the native `std.Io.net.Stream` adapter is implemented in
 `src/native_stream.zig`.
@@ -657,10 +659,11 @@ The Autobahn integration fixture and gate are implemented:
 `tests/autobahn-test/server.zig` is built by the `autobahn-server` step with
 `-Doptimize=ReleaseSafe` (a full checkout is required because the package
 excludes `tests/`), and `.github/workflows/autobahn.yml` runs the configured case
-set, excluding group 8 and compression groups 11-13. Fuzz and full loopback echo
-suites remain planned integration work. A green workflow run is evidence only
-for the configured case set, not a full Autobahn or compression compliance
-claim. Library sources contain no test blocks.
+set `1-7, 9-13`. Group 8 remains omitted by the action; compression groups 11-13
+are enabled through the fixture's negotiated permessage-deflate composition.
+Fuzz and full loopback echo suites remain planned integration work. A green
+workflow run is evidence only for the configured case set, not a full Autobahn
+or compression compliance claim. Library sources contain no test blocks.
 
 The target layout deliberately contains no `src/close.zig` or `src/mask.zig`.
 The close predicate, payload validator, masking routine, and outgoing close
@@ -672,7 +675,7 @@ All roadmap modules are implemented. `src/stream.zig`, `src/pubsub.zig`, and
 `src/deflate.zig` are implemented; zslay negotiated RSV1, the handshake
 permessage-deflate negotiation, and the stream/fragment RSV1 plumbing are
 landed. The codec remains edge-composed rather than automatic, and the Autobahn
-fixture compression path is the next integration step. The current agent
+fixture now negotiates it and enables compression cases 11-13. The current agent
 definitions own only current files. Extend the owner map in
 `AGENT_DIRECTORY.md` and the matching agent definitions before adding a new
 module.
@@ -700,7 +703,7 @@ module.
 | `set_auto_close` / `set_auto_pong` | same setters | Implemented |
 | `set_auto_apply_mask` | same setter | Implemented |
 | `set_max_message_size` | same setter | Implemented |
-| permessage-deflate (not in 0.10.0) | frame/connection/stream RSV1 plumbing, handshake negotiation, and `src/deflate.zig` message payload codec | Implemented beyond parity: strict default path, opt-in RSV1, offer/selection/verification, and edge-composed codec; the Autobahn fixture compression path is next |
+| permessage-deflate (not in 0.10.0) | frame/connection/stream RSV1 plumbing, handshake negotiation, `src/deflate.zig` message payload codec, and Autobahn fixture composition | Implemented beyond parity: strict default path, opt-in RSV1, offer/selection/verification, edge-composed codec, and configured Autobahn cases 11-13 |
 
 ## zslay Ownership Boundary
 
@@ -817,7 +820,8 @@ defers compressed text, the connection and split layers consume the backpressure
 policy, the deflate codec transforms payloads without touching the wire, and the
 pub/sub hub fans out through the strict stream writer. Compression remains
 edge-composed: the library exposes RSV1 and negotiation but does not compress
-automatically.
+automatically, while the Autobahn fixture enables the configured compression
+cases 11-13 through that composition.
 
 | Module | Capability | Depends on | Exit criteria |
 | --- | --- | --- | --- |

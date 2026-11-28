@@ -401,8 +401,8 @@ zslay behavior.
 
 All roadmap modules are implemented. `src/stream.zig`, `src/pubsub.zig`, and
 `src/deflate.zig` are implemented, and zslay negotiated RSV1 plus the handshake
-permessage-deflate negotiation are landed. The codec remains edge-composed,
-with the Autobahn fixture compression path as the next integration step. The
+permessage-deflate negotiation are landed. The codec remains edge-composed, and
+the Autobahn fixture now negotiates it and enables compression cases 11-13. The
 landed modules are `src/utf8.zig`,
 `src/connection.zig`, `src/backpressure.zig`, `src/native_stream.zig`,
 `src/stream.zig`, `src/pubsub.zig`, `src/deflate.zig`, `src/fragment.zig`,
@@ -517,9 +517,11 @@ contain no test blocks; do not add tests back to `src/`.
 - Run both Debug and ReleaseSafe before review.
 - The Autobahn integration fixture at `tests/autobahn-test/server.zig` is
   implemented and gated by `.github/workflows/autobahn.yml` over the configured
-  case set, which excludes group 8 and compression groups 11-13. Fuzzing and a
-  full loopback echo suite remain future work. A green run is evidence only for
-  the configured case set, not a full Autobahn or compression compliance claim.
+  case set `1-7, 9-13`. Group 8 is omitted by the action; compression groups
+  11-13 are enabled through negotiated permessage-deflate fixture composition.
+  Fuzzing and a full loopback echo suite remain future work. A green run is
+  evidence only for the configured case set, not a full Autobahn or compression
+  compliance claim.
 
 ## Security and Protocol Rules
 

@@ -22,7 +22,11 @@ client handshake, the server upgrade call order, the native
 application layer. The RFC 7692 permessage-deflate codec is implemented in
 `src/deflate.zig`, with negotiated RSV1 plumbing through the frame, connection,
 stream, fragment, handshake, and upgrade layers. The default no-extension path
-remains strict, and compression composition stays at the application edge.
+remains strict, and compression composition stays at the application edge; the
+Autobahn fixture now negotiates permessage-deflate and enables the configured
+compression cases 11-13 through that composition. The configured gate omits
+group 8, and a green run is evidence only for that case set, not full Autobahn
+or compression compliance.
 Backpressure is implemented in `src/backpressure.zig` as a bounded byte/frame
 watermark policy over zslay's transmit ring, with an opt-in per-connection
 admission gate and a `flush`-driven wait point through `std.Io`. Incremental
@@ -208,7 +212,7 @@ edge-composed.
 | Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig`: the fragment collector validates assembled messages, the stream reader validates chunked text across frames, and the raw connection read path validates clear FIN text frames |
 | Streaming message reader/writer | Implemented in `src/stream.zig`: borrowed chunks, explicit FIN, control interleaving, incremental UTF-8, terminal close, pure reader/writer state, and watermark-aware enqueue with `flush` retry |
 | Native `std.Io.Reader`/`Writer` transport adapter | Implemented in `src/native_stream.zig`: caller-owned `std.Io.net.Stream` transport plus native `WebSocket` and `Split` wrappers over the connection layers |
-| permessage-deflate (RFC 7692) | Implemented beyond 0.10.0 parity: `src/deflate.zig` transforms complete message payloads over caller-owned storage with sender windows 8 through 15, while the frame/connection/stream/fragment/handshake/upgrade layers expose negotiated RSV1 and offer/selection/verification. Compression remains edge-composed |
+| permessage-deflate (RFC 7692) | Implemented beyond 0.10.0 parity: `src/deflate.zig` transforms complete message payloads over caller-owned storage with sender windows 8 through 15, while the frame/connection/stream/fragment/handshake/upgrade layers expose negotiated RSV1 and offer/selection/verification. Compression remains edge-composed, and the Autobahn fixture enables configured cases 11-13 through that composition |
 | Pub/Sub topic hub and fanout | Implemented in `src/pubsub.zig`: bounded zero-allocation `Hub` over caller-owned storage, exact-byte names copied into a fixed-stride arena, intrusive subscriber lists, idempotent subscribe, reusable ids, O(k) fanout with expected O(1) lookup, per-subscriber `MessageWriter` enqueue, skip accounting, borrowed payloads, and a publish reentrancy guard; no wire change |
 
 ## Design
@@ -246,8 +250,9 @@ edge-composed.
   successful enqueue so a retry never duplicates a frame.
 - `src/deflate.zig` uses Zig's `std.compress.flate` raw deflate codec for
   permessage-deflate payloads. Compression is fail-closed and control frames are
-  never compressed. Negotiated RSV1 and handshake negotiation are implemented,
-  while the stream layer leaves compression composition to the application.
+  never compressed. Negotiated RSV1 and handshake negotiation are implemented;
+  the stream layer leaves composition to the application, and the Autobahn
+  fixture enables configured cases 11-13 through that composition.
 - Pub/Sub is an application layer over the connection and stream APIs, not a
   wire-format change. The bounded `Hub` stores topic and subscription rows, a
   fixed-stride name arena, and one open-addressed topic index in caller-owned

@@ -152,22 +152,25 @@ Autobahn suite is the integration test.
 
 The fixture binds `127.0.0.1:9001` and accepts one connection at a time. Each
 connection passes through strict `upgrade.incoming` validation, the shared
-`handshake.write_response` 101 response, the native `std.Io.net.Stream`
-transport, and an assembled message echo that returns text and binary messages
-as one FIN frame. Automatic pong and close handling stay in the connection
-layer; peer failures map to close codes 1002 and 1007 through
-`errors.to_close_code`, and oversized messages map to 1009. The 16 MiB + 1 case
-is consumed through one byte of frame-buffer headroom, and larger rejected
-frames are drained within a 64 MiB bound so the failure close is not lost to a
-reset. The fixture encodes or parses no frame header and applies no mask.
+`handshake.write_response` or `handshake.write_response_with_extensions` 101
+response, the native `std.Io.net.Stream` transport, and an assembled message
+echo that returns text and binary messages as one FIN frame. Automatic pong and
+close handling stay in the connection layer; peer failures map to close codes
+1002 and 1007 through `errors.to_close_code`, and oversized messages map to 1009.
+Negotiated permessage-deflate messages are inflated before text validation and
+echoed with RSV1; uncompressed clients keep the strict path. The frame buffer
+covers the 32 MiB connection limit while the application message buffer remains
+16 MiB, and larger rejected frames are drained within a 64 MiB bound so the
+failure close is not lost to a reset. The fixture encodes or parses no frame
+header and applies no mask.
 
 `.github/workflows/autobahn.yml` builds the fixture and runs
 `farbenbuilds/autobahn-action`, pinned to commit
 `1c4d57b3ca48e1ddf742e5ae1ab4ce5b51625b36` (`v1`), over the configured case set
-`1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.*`. Group 8 is omitted by the action, and
-compression groups 11-13 stay excluded until zslay negotiated RSV1 and
-handshake negotiation land. A green run is evidence only for the configured
-case set, not a full Autobahn or compression compliance claim.
+`1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.* 11.* 12.* 13.*`. Group 8 is omitted by
+the action; compression groups 11-13 are enabled through the fixture's
+negotiated permessage-deflate composition. A green run is evidence only for the
+configured case set, not a full Autobahn or compression compliance claim.
 
 ## Adding Coverage
 
@@ -185,7 +188,9 @@ case set, not a full Autobahn or compression compliance claim.
 
 The Autobahn fixture at `tests/autobahn-test/server.zig` and its workflow gate
 now exist. Fuzzing and a full loopback echo suite remain future integration
-work. The configured Autobahn case set excludes group 8 and compression groups
-11-13. A green run is evidence only for the configured case set, not a full
-Autobahn or compression compliance claim. This tree provides unit coverage plus
-the loopback native-stream integration described above.
+work. The configured Autobahn case set is `1-7, 9-13`: group 8 is omitted by the
+action, and compression groups 11-13 are enabled through the fixture's
+negotiated permessage-deflate composition. A green run is evidence only for the
+configured case set, not a full Autobahn or compression compliance claim. This
+tree provides unit coverage plus the loopback native-stream integration described
+above.
