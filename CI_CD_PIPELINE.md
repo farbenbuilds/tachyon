@@ -67,7 +67,6 @@ timeout, and a 1500-second suite timeout.
 | Group | Cases |
 | --- | --- |
 | `core` | `1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.*` |
-| `deflate-11` | `11.*` |
 | `deflate-12-1-2` | `12.1.* 12.2.*` |
 | `deflate-12-3-4` | `12.3.* 12.4.*` |
 | `deflate-12-5` | `12.5.*` |
@@ -86,10 +85,9 @@ timeout, and a 1500-second suite timeout.
    `ws://127.0.0.1:9001`, host Docker networking, and `cases` from the matrix.
    The action waits for a complete handshake before running the suite.
 
-The configured case set is `1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.* 11.* 12.*
-13.*`. Group 8 is absent from the pinned testsuite, and the action's default
-list omits it; the gate covers every case the suite ships (1-7, 9-13).
-Compression groups 11-13 are enabled through the fixture's negotiated
+The configured case set is `1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.* 12.* 13.*`.
+Groups 8 and 11 have no cases in the pinned testsuite, so they are not matrix
+entries. Compression groups 12-13 are enabled through the fixture's negotiated
 permessage-deflate composition. `fail-on: failed` fails a group on failed cases;
 non-strict outcomes are reported but do not gate. Reports are written to
 `autobahn-reports-<group>`, uploaded as `autobahn-report-<group>`, and appended
@@ -97,7 +95,7 @@ to the step summary. Splitting the suite keeps each container's memory from
 accumulating across case groups.
 
 The current full gate run reports 517 cases: 511 passed, 0 failed, 3 non-strict
-(6.4.2-6.4.4), and 3 informational. All 216 cases in groups 11-13 passed. A
+(6.4.2-6.4.4), and 3 informational. All 216 cases in groups 12-13 passed. A
 green run is evidence only for the configured case set, not a full Autobahn or
 compression compliance claim.
 
