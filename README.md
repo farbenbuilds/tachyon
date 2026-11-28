@@ -19,9 +19,10 @@ chunked streaming reads and writes, split read/write halves, UTF-8 checks, the
 client handshake, the server upgrade call order, the native
 `std.Io.net.Stream` adapter, and the bounded pub/sub hub are implemented. The
 0.10.0 surface is the parity baseline; the pub/sub hub is a post-parity
-application layer. The RFC 7692 permessage-deflate message payload codec is
-implemented in `src/deflate.zig`, but wire activation and negotiation remain
-blocked on zslay negotiated RSV1 support.
+application layer. The RFC 7692 permessage-deflate codec is implemented in
+`src/deflate.zig`, with negotiated RSV1 plumbing through the frame, connection,
+stream, fragment, handshake, and upgrade layers. The default no-extension path
+remains strict, and compression composition stays at the application edge.
 Backpressure is implemented in `src/backpressure.zig` as a bounded byte/frame
 watermark policy over zslay's transmit ring, with an opt-in per-connection
 admission gate and a `flush`-driven wait point through `std.Io`. Incremental
@@ -117,19 +118,20 @@ wrapper binds them.
 `src/deflate.zig` adds the zero-allocation RFC 7692 permessage-deflate message
 payload codec over caller-owned storage. It uses Zig 0.17.1
 `std.compress.flate` with the raw container and adds no allocator, C
-dependency, or wire state. The deflater accepts `window_bits == 15`, preflights
-`max_compressed_len`, sync-flushes each message, and appends one `0x00` byte;
-empty input becomes the canonical one-byte `0x00` payload, and the codec never
-strips four octets. The inflater accepts `window_bits` 8 through 15, serves the
-payload followed by `00 00 ff ff`, and requires a clean block boundary; a
-zero-length received payload is accepted as an empty message. The 64 KiB
+dependency, or wire state. The deflater accepts `window_bits` 8 through 15:
+window 15 uses the std compressor, while 8 through 14 emit valid non-final
+stored blocks with no LZ77 distances. It preflights `max_compressed_len`,
+sync-flushes each message, and appends one `0x00` byte; empty input becomes the
+canonical one-byte `0x00` payload, and the codec never strips four octets. The
+inflater accepts `window_bits` 8 through 15, serves the payload followed by
+`00 00 ff ff`, and requires a clean block boundary; a zero-length received
+payload is accepted as an empty message. The 64 KiB
 `std.compress.flate.max_window_len` history buffer is not the DEFLATE wire LZ77
-window, and the codec does not enforce a smaller negotiated distance limit;
-outbound stays at 15, and future negotiation must reject a lower send window or
-enforce the limit before advertising a smaller receive window. A BFINAL block
-is rejected as `InvalidCompressedData` per RFC 7692; when the overflowing block
-is BFINAL, `InvalidCompressedData` takes precedence over `MessageTooLarge`, and
-both errors are terminal for the session. Context takeover is the default,
+window, and the codec does not enforce a smaller negotiated distance limit.
+A BFINAL block is rejected as `InvalidCompressedData` per RFC 7692; when the
+overflowing block is BFINAL, `InvalidCompressedData` takes precedence over
+`MessageTooLarge`, and both errors are terminal for the session. Context
+takeover is the default,
 and `no_context_takeover` reinitializes the sender before each nonempty message
 and the receiver per message. Output is capped by the caller slice. Malformed
 input that leaves a non-clean boundary fails closed, but DEFLATE has no
@@ -142,9 +144,9 @@ connection or renegotiating `no_context_takeover`. Input and output must not
 overlap each other or the handle or its storage; `AliasedBuffer` rejects such
 calls. The storage regions are large, about 295 KiB for a deflater and 69 KiB
 for an inflater, and must be initialized at their final addresses and not copied
-after init. Wire activation remains blocked on zslay negotiated RSV1, and the
-handshake, upgrade, connection, fragment, and split layers do not invoke the
-codec.
+after init. Negotiated RSV1 and handshake negotiation are available, but the
+stream layer never compresses automatically; callers compose this codec at the
+edge.
 `src/handshake.zig` adds the RFC 6455 HTTP handshake boundary over caller-provided
 `std.Io.Reader` and `std.Io.Writer` values: secure 16-byte key generation,
 canonical base64 validation, accept-token re-exports from `src/upgrade.zig`,
@@ -186,8 +188,9 @@ read paths own automatic replies; the stream reader and writer delegate all
 automatic replies and wire state to the same connection. No separate close or
 masking module is planned; zslay owns the close predicate, payload validator,
 and mask routine. All extension roadmap modules have landed: the streaming,
-deflate, and pub/sub modules are implemented, but deflate wire activation still
-waits for zslay negotiated RSV1.
+deflate, and pub/sub modules are implemented, and negotiated RSV1 plus
+permessage-deflate handshake negotiation are available. Compression remains
+edge-composed.
 
 ## Targets
 
@@ -205,7 +208,7 @@ waits for zslay negotiated RSV1.
 | Incremental UTF-8 validation across fragments | Implemented in `src/utf8.zig`: the fragment collector validates assembled messages, the stream reader validates chunked text across frames, and the raw connection read path validates clear FIN text frames |
 | Streaming message reader/writer | Implemented in `src/stream.zig`: borrowed chunks, explicit FIN, control interleaving, incremental UTF-8, terminal close, pure reader/writer state, and watermark-aware enqueue with `flush` retry |
 | Native `std.Io.Reader`/`Writer` transport adapter | Implemented in `src/native_stream.zig`: caller-owned `std.Io.net.Stream` transport plus native `WebSocket` and `Split` wrappers over the connection layers |
-| permessage-deflate (RFC 7692) | Implemented codec beyond 0.10.0 parity: `src/deflate.zig` transforms complete message payloads over caller-owned storage; wire activation and negotiation remain blocked on zslay negotiated RSV1 |
+| permessage-deflate (RFC 7692) | Implemented beyond 0.10.0 parity: `src/deflate.zig` transforms complete message payloads over caller-owned storage with sender windows 8 through 15, while the frame/connection/stream/fragment/handshake/upgrade layers expose negotiated RSV1 and offer/selection/verification. Compression remains edge-composed |
 | Pub/Sub topic hub and fanout | Implemented in `src/pubsub.zig`: bounded zero-allocation `Hub` over caller-owned storage, exact-byte names copied into a fixed-stride arena, intrusive subscriber lists, idempotent subscribe, reusable ids, O(k) fanout with expected O(1) lookup, per-subscriber `MessageWriter` enqueue, skip accounting, borrowed payloads, and a publish reentrancy guard; no wire change |
 
 ## Design
@@ -243,8 +246,8 @@ waits for zslay negotiated RSV1.
   successful enqueue so a retry never duplicates a frame.
 - `src/deflate.zig` uses Zig's `std.compress.flate` raw deflate codec for
   permessage-deflate payloads. Compression is fail-closed and control frames are
-  never compressed. Wire activation and negotiation wait for zslay negotiated
-  RSV1 support.
+  never compressed. Negotiated RSV1 and handshake negotiation are implemented,
+  while the stream layer leaves compression composition to the application.
 - Pub/Sub is an application layer over the connection and stream APIs, not a
   wire-format change. The bounded `Hub` stores topic and subscription rows, a
   fixed-stride name arena, and one open-addressed topic index in caller-owned

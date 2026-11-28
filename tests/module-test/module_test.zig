@@ -112,6 +112,31 @@ test "Deflate: public module re-exports the codec" {
     try std.testing.expectEqualStrings("module", try inflater.decompress(compressed, &output));
 }
 
+test "Handshake: public module re-exports extension negotiation" {
+    const std = @import("std");
+
+    try std.testing.expect(tachyon.PerMessageDeflate == tachyon.handshake.PerMessageDeflate);
+    try std.testing.expect(tachyon.Extensions == tachyon.handshake.Extensions);
+    try std.testing.expect(tachyon.ExtensionLimits == tachyon.handshake.ExtensionLimits);
+    try std.testing.expect(tachyon.ExtensionOffers == tachyon.handshake.ExtensionOffers);
+    try std.testing.expect(tachyon.parse_extensions == tachyon.handshake.parse_extensions);
+    try std.testing.expect(tachyon.parse_extension_offers == tachyon.handshake.parse_extension_offers);
+    try std.testing.expect(tachyon.parse_response_extensions == tachyon.handshake.parse_response_extensions);
+    try std.testing.expect(tachyon.select_permessage_deflate == tachyon.handshake.select_permessage_deflate);
+    try std.testing.expect(
+        tachyon.select_permessage_deflate_offers == tachyon.handshake.select_permessage_deflate_offers,
+    );
+    try std.testing.expect(tachyon.write_extensions == tachyon.handshake.write_extensions);
+    try std.testing.expect(
+        tachyon.write_response_with_extensions == tachyon.handshake.write_response_with_extensions,
+    );
+    try std.testing.expect(tachyon.verify_with_extensions == tachyon.handshake.verify_with_extensions);
+    try std.testing.expect(
+        tachyon.read_response_with_extensions == tachyon.handshake.read_response_with_extensions,
+    );
+    try std.testing.expect(tachyon.upgrade_with_extensions == tachyon.upgrade.upgrade_with_extensions);
+}
+
 test "Fragment: public module re-exports the fragment layer" {
     const std = @import("std");
 

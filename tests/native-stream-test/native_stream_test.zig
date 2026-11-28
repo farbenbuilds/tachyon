@@ -230,6 +230,7 @@ test "Native stream: split half answers a ping and exchanges text" {
 
     const pong = try client.read_frame();
     try std.testing.expectEqual(tachyon.OpCode.pong, pong.opcode);
+    try std.testing.expect(!pong.rsv1);
     try std.testing.expectEqualStrings("ping", pong.payload);
 
     var reply = [_]u8{ 'o', 'k' };

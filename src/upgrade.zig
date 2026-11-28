@@ -111,11 +111,30 @@ pub const IncomingUpgrade = struct {
         storage: split.Storage,
         config: split.Config,
     ) Error!Upgrade {
+        return self.upgrade_with_extensions(reader, writer, storage, config, .{});
+    }
+
+    /// Builds the split pair and answers with a selected extension response.
+    ///
+    /// The request was validated by `incoming`. The server role and
+    /// `allow_rsv1` are set on a config copy before split construction; the
+    /// split validates caller storage without I/O before any response byte is
+    /// written. The extension response is written and flushed only after the
+    /// split exists.
+    pub fn upgrade_with_extensions(
+        self: IncomingUpgrade,
+        reader: *std.Io.Reader,
+        writer: *std.Io.Writer,
+        storage: split.Storage,
+        config: split.Config,
+        extensions: handshake.Extensions,
+    ) Error!Upgrade {
         var server_config = config;
         server_config.role = .server;
+        server_config.options.allow_rsv1 = extensions.permessage_deflate != null;
         const websocket = try split.after_handshake_split(reader, writer, storage, server_config);
 
-        try handshake.write_response(writer, self.request.key);
+        try handshake.write_response_with_extensions(writer, self.request.key, extensions);
         writer.flush() catch |err| return errors.from_writer(err);
 
         return .{ .request = self.request, .websocket = websocket };
@@ -149,8 +168,24 @@ pub fn upgrade(
     storage: split.Storage,
     config: split.Config,
 ) Error!Upgrade {
+    return upgrade_with_extensions(reader, writer, head_storage, storage, config, .{});
+}
+
+/// Reads, validates, splits, and answers with an extension response.
+///
+/// The strict request validation and split-storage construction still happen
+/// before the 101 write and flush. `extensions` must be the selected server
+/// response; it enables negotiated RSV1 on the constructed server split.
+pub fn upgrade_with_extensions(
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    head_storage: []u8,
+    storage: split.Storage,
+    config: split.Config,
+    extensions: handshake.Extensions,
+) Error!Upgrade {
     const incoming_upgrade = try incoming(reader, head_storage);
-    return incoming_upgrade.upgrade(reader, writer, storage, config);
+    return incoming_upgrade.upgrade_with_extensions(reader, writer, storage, config, extensions);
 }
 
 /// Runs `upgrade` through the caller's `std.Io` and returns its future.

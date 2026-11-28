@@ -31,8 +31,10 @@ pub const Frame = struct {
     /// Present exactly when the payload bytes are masked on the wire.
     masking_key: ?MaskingKey,
     payload: Payload,
+    /// Negotiated RSV1 bit. False for every frame unless an extension is active.
+    rsv1: bool = false,
 
-    /// Builds a frame from its parts.
+    /// Builds a frame from its parts with RSV1 clear.
     ///
     /// When `masking_key` is non-null, `payload` must already be masked with
     /// that key. Prefer `mask` when starting from plaintext payload bytes.
@@ -42,6 +44,25 @@ pub const Frame = struct {
             .opcode = opcode,
             .masking_key = masking_key,
             .payload = payload,
+        };
+    }
+
+    /// Builds a frame with an explicit negotiated RSV1 bit.
+    ///
+    /// zslay enforces the RFC 7692 position rules when the frame is queued.
+    pub fn init_rsv1(
+        fin: bool,
+        opcode: OpCode,
+        rsv1: bool,
+        masking_key: ?MaskingKey,
+        payload: Payload,
+    ) Frame {
+        return .{
+            .fin = fin,
+            .opcode = opcode,
+            .masking_key = masking_key,
+            .payload = payload,
+            .rsv1 = rsv1,
         };
     }
 
@@ -91,7 +112,8 @@ pub const Frame = struct {
     /// masked bytes are ciphertext and are not a meaningful UTF-8 stream. Never
     /// validate a non-FIN fragment in isolation, because a code point may span
     /// fragments; use the incremental validator for a message assembled across
-    /// frames.
+    /// frames. Do not use this on an RSV1 payload: compressed bytes are not
+    /// text and must be inflated and validated by the extension layer.
     pub fn is_utf8(self: *const Frame) bool {
         if (self.masking_key != null) return false;
         return utf8.is_valid(self.payload);
@@ -122,7 +144,13 @@ pub const Frame = struct {
 
     /// Serializes the header into `head` and returns its byte length.
     pub fn fmt_head(self: *const Frame, head: []u8) zslay.Error!usize {
-        return zslay.encode_header(head, self.header(), self.payload.len, self.masking_key);
+        return zslay.encode_header_with_options(
+            head,
+            self.header(),
+            self.payload.len,
+            self.masking_key,
+            .{ .allow_rsv1 = self.rsv1 },
+        );
     }
 
     /// Wire header size for this payload and masking state.
@@ -163,14 +191,14 @@ pub const Frame = struct {
         return buf[0 .. head_len + self.payload.len];
     }
 
-    /// zslay header view of this record; RSV bits stay zero until an extension
-    /// is negotiated and the length marker is derived by zslay.
+    /// zslay header view of this record. RSV1 follows the negotiated frame bit;
+    /// RSV2 and RSV3 remain clear. The length marker is derived by zslay.
     fn header(self: *const Frame) zslay.FrameHeader {
         return .{
             .opcode = @backingInt(self.opcode),
             .rsv3 = false,
             .rsv2 = false,
-            .rsv1 = false,
+            .rsv1 = self.rsv1,
             .fin = self.fin,
             .payload_len = zslay.frame.length_marker(self.payload.len),
             .mask = self.masking_key != null,

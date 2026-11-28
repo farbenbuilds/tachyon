@@ -55,6 +55,7 @@ pub const Error = errors.WebSocketError;
 pub const Fragments = struct {
     buffer: []u8,
     opcode: ?OpCode = null,
+    compressed: bool = false,
     len: usize = 0,
     utf8_state: utf8.State = .{},
 
@@ -69,6 +70,7 @@ pub const Fragments = struct {
     /// Discards the in-progress message without touching `buffer` bytes.
     pub fn reset(self: *Fragments) void {
         self.opcode = null;
+        self.compressed = false;
         self.len = 0;
         self.utf8_state = .{};
     }
@@ -93,12 +95,14 @@ pub const Fragments = struct {
     ///
     /// Text validation is incremental: a non-FIN text fragment is accepted with
     /// a trailing partial code point, and the FIN continuation rejects a
-    /// message that ends inside one. Invalid UTF-8 returns
-    /// `error.InvalidUTF8`; a message exceeding `buffer` returns
-    /// `error.BufferTooShort`, matching the collector's fail-closed contract.
-    /// Payload bytes must already be unmasked, as the collector delivers them;
-    /// masked frames return `error.PayloadMasked` instead of validating
-    /// ciphertext as UTF-8.
+    /// message that ends inside one. A first text or binary frame with RSV1
+    /// marks the whole message compressed, so UTF-8 validation is skipped for
+    /// every continuation until the extension layer inflates and validates it.
+    /// Invalid UTF-8 returns `error.InvalidUTF8`; a message exceeding `buffer`
+    /// returns `error.BufferTooShort`, matching the collector's fail-closed
+    /// contract. Payload bytes must already be unmasked, as the collector
+    /// delivers them; masked frames return `error.PayloadMasked` instead of
+    /// validating ciphertext as UTF-8.
     pub fn accumulate(self: *Fragments, incoming: Frame) Error!?Frame {
         if (incoming.masking_key != null) return error.PayloadMasked;
 
@@ -114,7 +118,7 @@ pub const Fragments = struct {
         if (self.opcode != null) return error.InvalidFragment;
 
         if (incoming.fin) {
-            if (incoming.opcode == .text) {
+            if (incoming.opcode == .text and !incoming.rsv1) {
                 utf8.validate(incoming.payload) catch |err| return errors.from_zslay(err);
             }
             return incoming;
@@ -124,12 +128,13 @@ pub const Fragments = struct {
 
         // A pure transition: `self.utf8_state` is untouched on failure.
         var next_state = self.utf8_state;
-        if (incoming.opcode == .text) {
+        if (incoming.opcode == .text and !incoming.rsv1) {
             next_state = self.utf8_state.feed(incoming.payload) catch |err| return errors.from_zslay(err);
         }
 
         @memcpy(self.buffer[0..incoming.payload.len], incoming.payload);
         self.opcode = incoming.opcode;
+        self.compressed = incoming.rsv1;
         self.len = incoming.payload.len;
         self.utf8_state = next_state;
         return null;
@@ -138,13 +143,14 @@ pub const Fragments = struct {
     /// Appends a continuation and returns the assembled message on `fin`.
     fn continue_message(self: *Fragments, incoming: Frame) Error!?Frame {
         const opcode = self.opcode orelse return error.InvalidContinuationFrame;
+        if (incoming.rsv1) return error.ProtocolError;
 
         const new_len = std.math.add(usize, self.len, incoming.payload.len) catch return error.FrameTooLarge;
         if (new_len > self.buffer.len) return error.BufferTooShort;
 
         // Validate the appended bytes before copying or committing length.
         var next_state = self.utf8_state;
-        if (opcode == .text) {
+        if (opcode == .text and !self.compressed) {
             next_state = self.utf8_state.feed(incoming.payload) catch |err| return errors.from_zslay(err);
             if (incoming.fin) {
                 next_state.finish() catch |err| return errors.from_zslay(err);
@@ -159,7 +165,7 @@ pub const Fragments = struct {
             return null;
         }
 
-        const completed = Frame.init(true, opcode, null, self.buffer[0..new_len]);
+        const completed = Frame.init_rsv1(true, opcode, self.compressed, null, self.buffer[0..new_len]);
         self.reset();
         return completed;
     }
@@ -194,7 +200,9 @@ pub const FragmentCollector = struct {
     /// never used, so `zslay.Conn` is initialized with an empty node slice.
     /// `message_buffer` must not overlap `frame_buffer` or the reader buffer,
     /// because accumulation copies with `@memcpy` and header reads can copy
-    /// from the reader buffer.
+    /// from the reader buffer. This standalone collector initializes zslay in
+    /// strict mode, so it rejects RSV1; negotiated compressed messages use the
+    /// connection, stream, or split collector path with `allow_rsv1` enabled.
     pub fn init(
         reader: *std.Io.Reader,
         frame_buffer: []u8,
@@ -356,6 +364,12 @@ pub const FragmentCollector = struct {
         if (decoded.masking_key) |key| zslay.mask(payload, key, 0);
 
         const opcode = OpCode.from_wire(decoded.header.opcode) orelse return error.InvalidOpcode;
-        return self.fragments.accumulate(Frame.init(decoded.header.fin, opcode, null, payload));
+        return self.fragments.accumulate(Frame.init_rsv1(
+            decoded.header.fin,
+            opcode,
+            decoded.header.rsv1,
+            null,
+            payload,
+        ));
     }
 };

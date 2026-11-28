@@ -91,6 +91,28 @@ test "Split: ping-only after a close write returns ConnectionClosed without pong
     try std.testing.expectEqual(parts.writer.written, index);
 }
 
+test "Split: automatic obligations remain RSV1-free" {
+    var stream: EncodedStream(32) = .{};
+    var ping_payload = [_]u8{'p'};
+    var text_payload = [_]u8{ 'o', 'k' };
+    try append_masked(&stream, Frame.ping(&ping_payload), .{ 0x61, 0x62, 0x63, 0x64 });
+    try append_masked(&stream, Frame.text(&text_payload), .{ 0x65, 0x66, 0x67, 0x68 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{
+        .role = .server,
+        .options = .{ .allow_rsv1 = true },
+    });
+
+    const received = try parts.split.read_frame();
+    try std.testing.expectEqualStrings("ok", received.payload);
+    var index: usize = 0;
+    const pong = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expect(!pong.header.header.rsv1);
+    try std.testing.expectEqual(split.OpCode.pong, split.OpCode.from_wire(pong.header.header.opcode).?);
+}
+
 test "Split: zero max_message_size rejects before consuming and does not latch" {
     var stream: EncodedStream(16) = .{};
     var payload = [_]u8{ 'o', 'k' };

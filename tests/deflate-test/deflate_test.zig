@@ -342,12 +342,35 @@ test "Deflate: rejects sender input and output aliasing storage" {
     try std.testing.expectError(error.AliasedBuffer, deflater.compress(&buffer, storage_output));
 }
 
+test "Deflate: stored fallback roundtrips 16 MiB at window 8" {
+    const allocator = std.testing.allocator;
+    const len = 16 * 1024 * 1024;
+    const plain = try allocator.alloc(u8, len);
+    defer allocator.free(plain);
+    @memset(plain, 0x5a);
+
+    const wire = try allocator.alloc(u8, try max_compressed_len(len));
+    defer allocator.free(wire);
+    const output = try allocator.alloc(u8, len);
+    defer allocator.free(output);
+
+    var deflater_storage: DeflaterStorage = undefined;
+    var deflater = try Deflater.init(&deflater_storage, .{ .window_bits = 8 });
+    const compressed = try deflater.compress(plain, wire);
+    try std.testing.expect(compressed.len <= wire.len);
+
+    var inflater_storage: InflaterStorage = undefined;
+    var inflater = try Inflater.init(&inflater_storage, .{ .window_bits = 8 });
+    try std.testing.expectEqualSlices(u8, plain, try inflater.decompress(compressed, output));
+}
+
 test "Deflate: validates window bits and bounds" {
     var deflater_storage: DeflaterStorage = undefined;
-    try std.testing.expectError(error.UnsupportedWindowBits, Deflater.init(&deflater_storage, .{ .window_bits = 14 }));
-    try std.testing.expectError(error.UnsupportedWindowBits, Deflater.init(&deflater_storage, .{ .window_bits = 8 }));
+    for ([_]u4{ 8, 9, 10, 11, 12, 13, 14, 15 }) |bits| {
+        _ = try Deflater.init(&deflater_storage, .{ .window_bits = bits });
+    }
+    try std.testing.expectError(error.UnsupportedWindowBits, Deflater.init(&deflater_storage, .{ .window_bits = 7 }));
     try std.testing.expectError(error.UnsupportedWindowBits, Deflater.init(&deflater_storage, .{ .window_bits = 0 }));
-    _ = try Deflater.init(&deflater_storage, .{ .window_bits = 15 });
 
     var inflater_storage: InflaterStorage = undefined;
     _ = try Inflater.init(&inflater_storage, .{ .window_bits = 8 });
@@ -363,4 +386,46 @@ test "Deflate: validates window bits and bounds" {
     try std.testing.expectError(error.SizeOverflow, max_compressed_len(overflow_len));
     try std.testing.expectError(error.SizeOverflow, max_compressed_len(std.math.maxInt(usize)));
     try std.testing.expectEqualSlices(u8, &.{ 0x00, 0x00, 0xff, 0xff }, &tachyon.sync_tail);
+}
+
+test "Deflate: stored-block fallback roundtrips windows 8 through 14" {
+    const allocator = std.testing.allocator;
+    const lengths = [_]usize{ 0, 1, 126, 65_535, 65_536 };
+    const wire_capacity = try max_compressed_len(65_536);
+    const wire = try allocator.alloc(u8, wire_capacity);
+    defer allocator.free(wire);
+    const plain = try allocator.alloc(u8, 65_536);
+    defer allocator.free(plain);
+    const output = try allocator.alloc(u8, 65_536);
+    defer allocator.free(output);
+
+    for ([_]u4{ 8, 9, 10, 11, 12, 13, 14 }) |bits| {
+        for (lengths) |len| {
+            fillText(plain[0..len]);
+            var deflater_storage: DeflaterStorage = undefined;
+            var deflater = try Deflater.init(&deflater_storage, .{ .window_bits = bits });
+            var inflater_storage: InflaterStorage = undefined;
+            var inflater = try Inflater.init(&inflater_storage, .{ .window_bits = bits });
+
+            const compressed = try deflater.compress(plain[0..len], wire);
+            try std.testing.expect(compressed.len <= try max_compressed_len(len));
+            if (len != 0 and len <= 65_535) {
+                // Stored block: BFINAL=0 and BTYPE=00, with no distance codes.
+                try std.testing.expectEqual(@as(u8, 0x00), compressed[0] & 0x07);
+                const block_len = std.mem.readInt(u16, compressed[1..3], .little);
+                const block_nlen = std.mem.readInt(u16, compressed[3..5], .little);
+                try std.testing.expectEqual(@as(u16, @intCast(len)), block_len);
+                try std.testing.expectEqual(~block_len, block_nlen);
+            }
+            const decompressed = try inflater.decompress(compressed, output[0..len]);
+            try std.testing.expectEqualSlices(u8, plain[0..len], decompressed);
+        }
+    }
+
+    // Stored overhead is five bytes per 65,535-byte block plus the terminator.
+    for ([_]usize{ 0, 1, 126, 65_535, 65_536, 16 * 1024 * 1024 }) |len| {
+        const blocks = if (len == 0) 0 else (len + 65_534) / 65_535;
+        const stored_len = len + blocks * 5 + 1;
+        try std.testing.expect(stored_len <= try max_compressed_len(len));
+    }
 }

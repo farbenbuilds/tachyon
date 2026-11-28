@@ -13,6 +13,9 @@
 //!
 //! zslay owns the header codec, masking direction, fragment ordering, frame and
 //! message limits, close payload validation, and the bounded transmit queue.
+//! `Options.allow_rsv1` is opt-in after extension negotiation; inbound RSV1 is
+//! carried on `Frame`, outbound RSV1 is set per frame, and compressed text is
+//! not UTF-8 validated until the extension layer inflates it.
 //! The optional `Options.backpressure` policy adds byte/frame watermarks above
 //! that queue; `enqueue_frame` batches, `write_frame` drains, and `flush` is the
 //! `std.Io` wait point. Nothing here allocates, opens a socket, or spawns a task.
@@ -69,6 +72,8 @@ pub const Options = struct {
     /// synchronous write behavior and never gates admission on a high-water
     /// mark. The high frame mark must leave headroom for automatic controls.
     backpressure: ?backpressure.Limits = null,
+    /// Set only after the caller negotiates an RSV1 extension.
+    allow_rsv1: bool = false,
 };
 
 /// Seeded ChaCha8 source for client-to-server mask keys.
@@ -240,6 +245,7 @@ pub const WebSocket = struct {
             .role = config.role,
             .max_frame_len = limit,
             .max_message_len = limit,
+            .allow_rsv1 = options.allow_rsv1,
         }) catch |err| return errors.from_zslay(err);
 
         return .{
@@ -631,7 +637,9 @@ pub const WebSocket = struct {
                 return try self.gate_closed(incoming, was_closed);
             },
             .text => {
-                if (incoming.fin and incoming.masking_key == null and !utf8.is_valid(incoming.payload)) {
+                if (!incoming.rsv1 and incoming.fin and incoming.masking_key == null and
+                    !utf8.is_valid(incoming.payload))
+                {
                     return error.InvalidUTF8;
                 }
                 return try self.gate_closed(incoming, was_closed);
@@ -716,7 +724,7 @@ pub const WebSocket = struct {
         }
 
         const opcode = OpCode.from_wire(decoded.header.opcode) orelse return error.InvalidOpcode;
-        return Frame.init(decoded.header.fin, opcode, key, payload);
+        return Frame.init_rsv1(decoded.header.fin, opcode, decoded.header.rsv1, key, payload);
     }
 
     /// Validates an inbound close frame and fills the reply obligation.
@@ -914,12 +922,13 @@ pub const WebSocket = struct {
             return err;
         } else null;
 
-        const node = self.conn.prepare_frame(
+        const node = self.conn.prepare_frame_with_options(
             outgoing.fin,
             outgoing.opcode,
             outgoing.payload,
             masked,
             key,
+            .{ .rsv1 = outgoing.rsv1 },
         ) catch |err| {
             self.restore_flow(saved_flow);
             return errors.from_zslay(err);

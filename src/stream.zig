@@ -15,14 +15,17 @@
 //! requires `reset_tx` and discarding the transport.
 //!
 //! Text is validated incrementally across frames and chunks; binary bypasses
-//! UTF-8. Nothing here allocates, copies a whole message, or opens I/O.
+//! UTF-8. A first text or binary frame with RSV1 marks the whole message
+//! compressed, so UTF-8 validation is deferred for every continuation until the
+//! extension layer inflates and validates it. `Chunk.rsv1` identifies the frame
+//! that carried the bit, and `MessageWriter.write_with_options` sets it only on
+//! a first frame. Nothing here allocates, copies a whole message, or opens I/O.
 //! `ReaderState` and `WriterState` are pure and can drive split halves later.
 //! The data-ordering rules mirror `Fragments.accumulate`; if the two diverge,
 //! extract a shared pure state in a follow-up rather than editing
 //! `src/fragment.zig` here.
-//! A future deflate layer belongs between the connection and these states: it
-//! must decompress before read validation, cap output by the message limit, and
-//! never compress control frames.
+//! Compression itself belongs at the edge: the stream exposes RSV1 and the
+//! compressed-message state, while the caller composes `deflate.zig`.
 
 const std = @import("std");
 const errors = @import("error.zig");
@@ -48,6 +51,8 @@ pub const Chunk = struct {
     kind: MessageKind,
     /// True exactly when this chunk ends the message.
     fin: bool,
+    /// True only when this frame carried RSV1; continuation chunks report false.
+    rsv1: bool,
     /// Borrowed from `connection.WebSocket.frame_buffer`; valid until the next
     /// `MessageReader.next` call. Never written by this module.
     payload: []const u8,
@@ -70,6 +75,7 @@ pub const Event = union(enum) {
 /// Pure per-message read state. Drives no I/O and can be reused by split.
 pub const ReaderState = struct {
     kind: ?MessageKind = null,
+    compressed: bool = false,
     utf8_state: utf8.State = .{},
 
     pub fn init() ReaderState {
@@ -88,13 +94,20 @@ pub const ReaderState = struct {
         return self.kind;
     }
 
+    pub fn is_compressed(self: *const ReaderState) bool {
+        return self.compressed;
+    }
+
     /// Consumes one data frame (`text`, `binary`, or `continuation`).
     ///
     /// Control frames are the wrapper's responsibility. The transition commits
     /// only after every check succeeds, so a rejected frame leaves the previous
-    /// message state untouched.
+    /// message state untouched. RSV1 on the first text or binary frame marks
+    /// the whole message compressed, so UTF-8 validation is deferred until
+    /// after inflate for every chunk, including continuations without RSV1.
     pub fn accept(self: *ReaderState, incoming: Frame) Error!Chunk {
         if (incoming.masking_key != null) return error.PayloadMasked;
+        if (incoming.opcode == .continuation and incoming.rsv1) return error.ProtocolError;
 
         const kind: MessageKind = switch (incoming.opcode) {
             .text, .binary => started: {
@@ -104,19 +117,35 @@ pub const ReaderState = struct {
             .continuation => self.kind orelse return error.InvalidContinuationFrame,
             else => return error.InvalidFragment,
         };
+        const compressed = switch (incoming.opcode) {
+            .text, .binary => incoming.rsv1,
+            else => self.compressed,
+        };
 
-        const next_utf8 = try self.validate(kind, incoming.payload, incoming.fin);
+        const next_utf8 = try self.validate(kind, incoming.payload, incoming.fin, compressed);
         if (incoming.fin) {
             self.reset();
         } else {
             self.kind = kind;
+            self.compressed = compressed;
             self.utf8_state = next_utf8;
         }
-        return .{ .kind = kind, .fin = incoming.fin, .payload = incoming.payload };
+        return .{
+            .kind = kind,
+            .fin = incoming.fin,
+            .rsv1 = incoming.rsv1,
+            .payload = incoming.payload,
+        };
     }
 
-    fn validate(self: *const ReaderState, kind: MessageKind, payload: []const u8, fin: bool) Error!utf8.State {
-        if (kind == .binary) return self.utf8_state;
+    fn validate(
+        self: *const ReaderState,
+        kind: MessageKind,
+        payload: []const u8,
+        fin: bool,
+        compressed: bool,
+    ) Error!utf8.State {
+        if (kind == .binary or compressed) return self.utf8_state;
 
         const next = utf8.State.feed(self.utf8_state, payload) catch |err| return errors.from_zslay(err);
         if (fin) next.finish() catch |err| return errors.from_zslay(err);
@@ -188,6 +217,14 @@ pub const MessageReader = struct {
         return self.state.message_kind();
     }
 
+    /// True while the in-progress message was started with RSV1.
+    ///
+    /// A completed single-frame message resets the state before returning, so
+    /// adapters should also inspect `Chunk.rsv1` on the delivered chunk.
+    pub fn is_compressed(self: *const MessageReader) bool {
+        return self.state.is_compressed();
+    }
+
     /// True after a delivered close, a rejected close frame, or an error that
     /// also closed the connection. A latched failure that leaves the connection
     /// open is terminal even when this is false.
@@ -210,6 +247,12 @@ pub const MessageReader = struct {
 pub const FrameSpec = struct {
     opcode: OpCode,
     fin: bool,
+};
+
+/// Per-chunk writer options for negotiated frame extensions.
+pub const WriteOptions = struct {
+    /// Set only on the first frame of a compressed message.
+    rsv1: bool = false,
 };
 
 /// Pure per-message write state. Can be driven by split later.
@@ -288,15 +331,35 @@ pub const MessageWriter = struct {
     /// disjoint from connection read and write storage. On any error the writer
     /// state is unchanged; a `WouldBlock` or `QueueFull` chunk may be retried
     /// after `flush`. Outbound text is not UTF-8 validated, matching
-    /// `connection.write_frame` and zslay.
+    /// `connection.write_frame` and zslay. This strict wrapper never sets RSV1.
     pub fn write(self: *MessageWriter, payload: []u8, fin: bool) Error!void {
+        return self.write_with_options(payload, fin, .{});
+    }
+
+    /// Queues one chunk with explicit negotiated frame options.
+    ///
+    /// `options.rsv1` is valid only on the first frame; zslay rejects it on a
+    /// continuation. The writer state advances only after a successful queue.
+    pub fn write_with_options(
+        self: *MessageWriter,
+        payload: []u8,
+        fin: bool,
+        options: WriteOptions,
+    ) Error!void {
         const next = try self.state.spec(fin);
-        try self.ws.enqueue_frame(Frame.init(next.fin, next.opcode, null, payload));
+        try self.ws.enqueue_frame(Frame.init_rsv1(
+            next.fin,
+            next.opcode,
+            options.rsv1,
+            null,
+            payload,
+        ));
         self.state.note_queued(next);
     }
 
     /// Queues an empty FIN continuation, or an empty FIN first frame when no
-    /// chunk was written.
+    /// chunk was written. The strict convenience path never sets RSV1; use
+    /// `write_with_options` for a compressed empty message.
     pub fn finish(self: *MessageWriter) Error!void {
         try self.write(self.empty[0..], true);
     }
