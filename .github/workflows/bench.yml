@@ -1,0 +1,67 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.17.1
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Install competitor build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zlib1g-dev libssl-dev pkg-config
+
+      - name: Build examples and benchmarks
+        run: zig build examples benches -Doptimize=ReleaseFast
+
+      - name: Setup competitor servers
+        continue-on-error: true
+        run: sh benches/setup-competitors.sh
+
+      - name: Run benchmarks
+        run: node benches/run.mjs
+
+      - name: Append results to summary
+        if: always()
+        run: |
+          awk '
+            /<!-- bench-results:start -->/ { flag = 1; next }
+            /<!-- bench-results:end -->/ { flag = 0 }
+            flag && /^### Charts$/ { exit }
+            flag
+          ' benches/README.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: bench-results
+          path: |
+            benches/README.md
+            benches/*-chart.svg
+          if-no-files-found: warn

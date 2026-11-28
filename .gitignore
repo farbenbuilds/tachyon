@@ -20,6 +20,14 @@ result-*
 # generated knowledge graph (graphify)
 graphify-out/
 
+# benchmarks
+benches/.servers/
+benches/competitors/
+benches/fastwebsockets/
+benches/tokio-tungstenite/
+benches/rust-websocket/
+benches/uWebSockets/
+
 # os / editors
 .DS_Store
 .vscode/
