@@ -135,8 +135,9 @@ Releases use semantic versioning and an annotated `v*` tag. The tag,
 
 1. Land the release changes on `main` and confirm a clean tree.
 2. Set the same semantic version in `build.zig.zon` and `flake.nix`.
-3. Move `Unreleased` entries into a dated changelog section and leave
-   `Unreleased` empty.
+3. Move the current changelog entries into a dated release section. The release
+   section is the first section; add a fresh `Unreleased` heading when the next
+   change lands.
 4. Run the full checks.
 5. The maintainer creates and pushes the annotated tag.
 6. The maintainer creates the GitHub release manually from the changelog notes.
