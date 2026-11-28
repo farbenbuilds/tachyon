@@ -11,7 +11,7 @@ workflow is specified here and remains planned.
 | --- | --- | --- |
 | `.github/workflows/lint.yml` | Pull request into `main` changing `.zig`, `.zon`, or `build.zig` files | Implemented. `zig fmt --check .` with Zig 0.17.1. |
 | `.github/workflows/test.yml` | Pull request into `main` and push to `main` changing Zig or Zon files, `build.zig`, or workflows | Implemented. Native `zig build test --summary all` and `zig build check` plus an eight-target compile-only `cross-check` matrix with Zig 0.17.1. |
-| `.github/workflows/autobahn.yml` | Pull request into `main` and push to `main` changing Zig or Zon files, `build.zig`, or workflows | Implemented. Pinned Autobahn testsuite gate over the `tests/autobahn-test/` echo fixture; report artifact uploaded; a green run is evidence only for the configured case set, not a full Autobahn or compression compliance claim. |
+| `.github/workflows/autobahn.yml` | Pull request into `main` and push to `main` changing Zig or Zon files, `build.zig`, or workflows | Implemented. Pinned Autobahn testsuite gate over the `tests/autobahn-test/` echo fixture, split into independent matrix groups with per-group report artifacts; a green run is evidence only for the configured case set, not a full Autobahn or compression compliance claim. |
 | `.github/workflows/publish.yml` | Push of a `v*` tag | Planned. Verify version and changelog, build cross-target packages, publish release assets. |
 
 ## Lint Pipeline
@@ -97,8 +97,21 @@ or non-x86_64 Linux targets in CI.
 Implemented in `.github/workflows/autobahn.yml`. Runs on pull requests into
 `main` and pushes to `main` that change a `.zig` or `.zon` file, `build.zig`, or
 a workflow file. The workflow requests `contents: read`, cancels superseded runs
-for the same ref, and defines one job, `autobahn`, named `Run Autobahn Tests`, on
-`ubuntu-24.04` in the `Testing` environment with a 30-minute timeout.
+for the same ref, and defines one matrix job on `ubuntu-24.04` in the `Testing`
+environment. Each matrix entry runs on a fresh runner and gets its own container,
+`report-dir`, and report artifact.
+
+| Group | Cases |
+| --- | --- |
+| `core` | `1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.*` |
+| `deflate-11-12` | `11.* 12.*` |
+| `deflate-13-1` | `13.1.*` |
+| `deflate-13-2` | `13.2.*` |
+| `deflate-13-3-4` | `13.3.* 13.4.*` |
+| `deflate-13-5-7` | `13.5.* 13.6.* 13.7.*` |
+
+The matrix uses `fail-fast: false`, so every group reports even if another group
+fails. Each job has a 30-minute timeout and its own 1500-second suite timeout.
 
 1. Check out the repository with `actions/checkout` v7.
 2. Install Zig 0.17.1 with `mlugg/setup-zig` v2.
@@ -107,17 +120,18 @@ for the same ref, and defines one job, `autobahn`, named `Run Autobahn Tests`, o
 4. Run `farbenbuilds/autobahn-action` pinned at
    `1c4d57b3ca48e1ddf742e5ae1ab4ce5b51625b36` (`v1`) with
    `server-command: ./zig-out/bin/tachyon-autobahn`, URL
-   `ws://127.0.0.1:9001`, and host Docker networking. The action waits for a
-   complete handshake before running the suite.
+   `ws://127.0.0.1:9001`, host Docker networking, and `cases` set from the
+   matrix group. The action waits for a complete handshake before running the
+   suite.
 
-The configured case set is `1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.* 11.* 12.*
-13.*`. Group 8 is omitted by the action. Compression groups 11-13 are enabled
-through the fixture's negotiated permessage-deflate composition. `fail-on:
-failed` fails the job on failed cases; non-strict outcomes are reported but do
-not gate. Reports are
-written to `autobahn-reports`, uploaded as the `autobahn-report` artifact, and
-appended to the step summary. The suite is bounded to 1500 seconds inside the
-30-minute job.
+The combined configured case set is `1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.* 11.*
+12.* 13.*`. Group 8 is omitted by the action. Compression groups 11-13 are
+enabled through the fixture's negotiated permessage-deflate composition.
+`fail-on: failed` fails a group on failed cases; non-strict outcomes are
+reported but do not gate. Reports are written to
+`autobahn-reports-<group>`, uploaded as `autobahn-report-<group>`, and appended
+to the step summary. Splitting the suite keeps each container's memory from
+accumulating across case groups.
 
 A green run is evidence only for the configured case set, not a full Autobahn or
 compression compliance claim.

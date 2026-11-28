@@ -27,10 +27,26 @@ concurrency:
 
 jobs:
   autobahn:
-    name: Run Autobahn Tests
+    name: Run Autobahn Tests (${{ matrix.name }})
     runs-on: ubuntu-24.04
     environment: Testing
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: core
+            cases: "1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.*"
+          - name: deflate-11-12
+            cases: "11.* 12.*"
+          - name: deflate-13-1
+            cases: "13.1.*"
+          - name: deflate-13-2
+            cases: "13.2.*"
+          - name: deflate-13-3-4
+            cases: "13.3.* 13.4.*"
+          - name: deflate-13-5-7
+            cases: "13.5.* 13.6.* 13.7.*"
 
     steps:
       - name: Checkout code
@@ -51,9 +67,9 @@ jobs:
           server-command: ./zig-out/bin/tachyon-autobahn
           server-working-directory: .
           server-ready-timeout: "30"
-          cases: "1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.* 11.* 12.* 13.*"
+          cases: ${{ matrix.cases }}
           docker-network: host
           timeout: "1500"
           fail-on: failed
-          report-dir: autobahn-reports
-          artifact-name: autobahn-report
+          report-dir: autobahn-reports-${{ matrix.name }}
+          artifact-name: autobahn-report-${{ matrix.name }}
