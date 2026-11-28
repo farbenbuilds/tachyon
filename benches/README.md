@@ -12,6 +12,8 @@ zig build examples benches -Doptimize=ReleaseFast
 This installs:
 
 - `zig-out/bin/tachyon-echo-server`
+- `zig-out/bin/tachyon-echo-server-split`
+- `zig-out/bin/tachyon-echo-client`
 - `zig-out/bin/tachyon-load-test`
 - `zig-out/bin/tachyon-unmask`
 

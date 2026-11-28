@@ -37,8 +37,12 @@ jobs:
         include:
           - name: core
             cases: "1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.*"
-          - name: deflate-11-12
-            cases: "11.* 12.*"
+          - name: deflate-12-1-2
+            cases: "12.1.* 12.2.*"
+          - name: deflate-12-3-4
+            cases: "12.3.* 12.4.*"
+          - name: deflate-12-5
+            cases: "12.5.*"
           - name: deflate-13-1
             cases: "13.1.*"
           - name: deflate-13-2
