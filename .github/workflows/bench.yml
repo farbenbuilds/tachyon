@@ -24,43 +24,24 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
 
+      - name: Install competitor build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zlib1g-dev libssl-dev pkg-config
+
       - name: Build examples and benchmarks
         run: zig build examples benches -Doptimize=ReleaseFast
 
-      - name: Install benchmark dependencies
+      - name: Setup competitor servers
         continue-on-error: true
-        run: npm install --prefix benches --no-audit --no-fund
-
-      - name: Build fastwebsockets echo server
-        continue-on-error: true
-        run: |
-          mkdir -p /tmp/tachyon-bench
-          git clone --depth 1 https://github.com/denoland/fastwebsockets /tmp/tachyon-bench/fastwebsockets
-          cargo build --release --manifest-path /tmp/tachyon-bench/fastwebsockets/Cargo.toml --example echo_server
-          echo "FASTWEBSOCKETS_SERVER=/tmp/tachyon-bench/fastwebsockets/target/release/examples/echo_server" >> "$GITHUB_ENV"
-
-      - name: Build tokio-tungstenite echo server
-        continue-on-error: true
-        run: |
-          mkdir -p /tmp/tachyon-bench
-          git clone --depth 1 https://github.com/snapview/tokio-tungstenite /tmp/tachyon-bench/tokio-tungstenite
-          cargo build --release --manifest-path /tmp/tachyon-bench/tokio-tungstenite/Cargo.toml --example echo-server
-          echo "TOKIO_TUNGSTENITE_SERVER=/tmp/tachyon-bench/tokio-tungstenite/target/release/examples/echo-server" >> "$GITHUB_ENV"
-
-      - name: Build rust-websocket echo server
-        continue-on-error: true
-        run: |
-          mkdir -p /tmp/tachyon-bench
-          git clone --depth 1 https://github.com/websockets-rs/rust-websocket /tmp/tachyon-bench/rust-websocket
-          cargo build --release --manifest-path /tmp/tachyon-bench/rust-websocket/Cargo.toml --example async-autobahn-server
-          echo "RUST_WEBSOCKET_SERVER=/tmp/tachyon-bench/rust-websocket/target/release/examples/async-autobahn-server" >> "$GITHUB_ENV"
+        run: sh benches/setup-competitors.sh
 
       - name: Run benchmarks
         run: node benches/run.mjs
@@ -68,16 +49,12 @@ jobs:
       - name: Append results to summary
         if: always()
         run: |
-          if [ -f benches/results.md ]; then
-            cat benches/results.md >> "$GITHUB_STEP_SUMMARY"
-          fi
+          awk '/<!-- bench-results:start -->/{flag=1} flag; /<!-- bench-results:end -->/{flag=0}' benches/README.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: bench-results
-          path: |
-            benches/results.md
-            benches/results.json
+          path: benches/README.md
           if-no-files-found: warn

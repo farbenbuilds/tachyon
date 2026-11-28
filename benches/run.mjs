@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { access, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ const benchesDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(benchesDir, "..");
 const host = "127.0.0.1";
 const duration = Number(process.env.BENCH_DURATION ?? 5);
+const startDelayMs = Number(process.env.BENCH_START_DELAY_MS ?? 1000);
 const loadTest =
   process.env.TACHYON_LOAD_TEST ?? path.join(rootDir, "zig-out/bin/tachyon-load-test");
 
@@ -20,11 +21,6 @@ const cases = [
   { connections: 500, payloadBytes: 16 * 1024 },
 ];
 
-const uwsScript = path.resolve(
-  benchesDir,
-  process.env.UWEBSOCKETS_SERVER ?? "servers/uwebsockets.mjs",
-);
-
 const targets = [
   {
     name: "tachyon",
@@ -33,48 +29,48 @@ const targets = [
       process.env.TACHYON_ECHO_SERVER ?? "zig-out/bin/tachyon-echo-server",
     ),
     args: [],
-    port: Number(process.env.TACHYON_PORT ?? 8080),
-    requires: [],
+    port: 8080,
   },
   {
     name: "uWebSockets",
-    command: process.execPath,
-    args: [uwsScript],
-    port: Number(process.env.UWEBSOCKETS_PORT ?? 9001),
-    requires: [uwsScript, path.join(benchesDir, "node_modules/uWebSockets.js")],
+    command: path.resolve(
+      rootDir,
+      process.env.UWEBSOCKETS_SERVER ?? "benches/.servers/uWebSockets/EchoServer",
+    ),
+    args: [],
+    port: 9001,
   },
   {
     name: "fastwebsockets",
     command: path.resolve(
       rootDir,
-      process.env.FASTWEBSOCKETS_SERVER ??
-        "../fastwebsockets/target/release/examples/echo_server",
+      process.env.FASTWEBSOCKETS_SERVER ?? "benches/.servers/fastwebsockets/echo_server",
     ),
     args: [],
-    port: Number(process.env.FASTWEBSOCKETS_PORT ?? 8080),
-    requires: [],
+    port: 8080,
   },
   {
     name: "tokio-tungstenite",
     command: path.resolve(
       rootDir,
       process.env.TOKIO_TUNGSTENITE_SERVER ??
-        "../tokio-tungstenite/target/release/examples/echo-server",
+        "benches/.servers/tokio-tungstenite/echo-server",
     ),
-    args: [`${host}:${process.env.TOKIO_TUNGSTENITE_PORT ?? 8080}`],
-    port: Number(process.env.TOKIO_TUNGSTENITE_PORT ?? 8080),
-    requires: [],
+    args: [`${host}:8080`],
+    port: 8080,
   },
   {
     name: "rust-websocket",
     command: path.resolve(
       rootDir,
       process.env.RUST_WEBSOCKET_SERVER ??
-        "../rust-websocket/target/release/examples/async-autobahn-server",
+        "benches/.servers/rust-websocket/async-autobahn-server",
     ),
     args: [],
-    port: Number(process.env.RUST_WEBSOCKET_PORT ?? 9002),
-    requires: [],
+    port: 9002,
+    // The old rust-websocket server can wedge on a bare TCP readiness probe;
+    // wait for its startup delay instead and let the load test connect.
+    probePort: false,
   },
 ];
 
@@ -120,7 +116,6 @@ async function waitForPort(port, child, timeoutMs = 15_000) {
 function spawnServer(target) {
   const child = spawn(target.command, target.args, {
     cwd: rootDir,
-    env: { ...process.env, PORT: String(target.port) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.on("data", () => {});
@@ -182,13 +177,21 @@ async function runLoadTest(connections, payloadBytes, port) {
     );
   }
 
+  const output = `${stdout}\n${stderr}`;
   const samples = [];
-  for (const line of `${stdout}\n${stderr}`.split(/\r?\n/)) {
+  for (const line of output.split(/\r?\n/)) {
     const match = /^Msg\/sec\s+([0-9]+(?:\.[0-9]+)?)$/.exec(line.trim());
     if (match) samples.push(Number(match[1]));
   }
   if (samples.length === 0) {
     throw new Error("load test produced no Msg/sec samples");
+  }
+
+  const final = /^Final Msg\/sec [0-9]+ \(total [0-9]+, errors ([0-9]+)\)$/m.exec(
+    output,
+  );
+  if (final && Number(final[1]) > 0) {
+    throw new Error(`load test reported ${final[1]} connection errors`);
   }
 
   const average =
@@ -207,19 +210,8 @@ async function main() {
   const missing = [];
   for (const target of targets) {
     let reason = null;
-    if (target.name === "tachyon" && !(await fileExists(loadTest))) {
-      reason = "load test is not built";
-    }
-    for (const required of target.requires) {
-      if (!(await fileExists(required))) {
-        reason = `missing ${required}`;
-        break;
-      }
-    }
-    if (reason === null && target.name !== "uWebSockets") {
-      if (!(await fileExists(target.command))) {
-        reason = `missing ${target.command}`;
-      }
+    if (!(await fileExists(target.command))) {
+      reason = `missing ${target.command}`;
     }
     if (reason !== null) {
       missing.push({ name: target.name, reason });
@@ -240,7 +232,10 @@ async function main() {
           `run ${target.name}: ${testCase.connections} connections, ${testCase.payloadBytes} bytes`,
         );
         server = spawnServer(target);
-        await waitForPort(target.port, server);
+        if (target.probePort !== false) {
+          await waitForPort(target.port, server);
+        }
+        await delay(startDelayMs);
         const result = await runLoadTest(
           testCase.connections,
           testCase.payloadBytes,
@@ -270,8 +265,6 @@ async function main() {
 
   const generatedAt = new Date().toISOString();
   const markdown = [
-    "# tachyon WebSocket benchmarks",
-    "",
     `Generated: ${generatedAt}`,
     `Duration: ${duration}s per case`,
     "",
@@ -299,21 +292,25 @@ async function main() {
   }
   markdown.push("");
 
-  const json = {
-    generated_at: generatedAt,
-    duration_seconds: duration,
-    host,
-    cases,
-    results,
-    missing_targets: missing,
-    errors,
-  };
+  const readmePath = path.join(benchesDir, "README.md");
+  const readme = await readFile(readmePath, "utf8");
+  const startMarker = "<!-- bench-results:start -->";
+  const endMarker = "<!-- bench-results:end -->";
+  const start = readme.indexOf(startMarker);
+  const end = readme.indexOf(endMarker);
+  if (start < 0 || end < 0 || end < start) {
+    throw new Error(
+      `missing ${startMarker} or ${endMarker} in ${readmePath}`,
+    );
+  }
 
-  await writeFile(path.join(benchesDir, "results.md"), `${markdown.join("\n")}\n`);
-  await writeFile(
-    path.join(benchesDir, "results.json"),
-    `${JSON.stringify(json, null, 2)}\n`,
-  );
+  const block = `\n${markdown.join("\n").trimEnd()}\n`;
+  const updated =
+    readme.slice(0, start + startMarker.length) +
+    block +
+    readme.slice(end);
+  await writeFile(readmePath, updated);
+
   console.log(markdown.join("\n"));
 
   if (results.length === 0) {

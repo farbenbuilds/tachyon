@@ -21,9 +21,12 @@ result-*
 graphify-out/
 
 # benchmarks
-benches/node_modules/
-benches/results.*
-benches/servers/**/target/
+benches/.servers/
+benches/competitors/
+benches/fastwebsockets/
+benches/tokio-tungstenite/
+benches/rust-websocket/
+benches/uWebSockets/
 
 # os / editors
 .DS_Store
