@@ -286,9 +286,6 @@ pub fn verify(
     return .{ .status = status_out.*, .accept = fields.accept.?, .head = head };
 }
 
-/// Alias for `verify` kept for the validate/read naming used elsewhere.
-pub const validate_response = verify;
-
 /// Reads and verifies one client-side handshake response.
 pub fn read_response(
     reader: *std.Io.Reader,

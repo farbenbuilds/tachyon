@@ -54,7 +54,11 @@ documentation foundation:
   writes.
 - `src/error.zig` implements the fastwebsockets 0.10.0 error taxonomy, zslay
   boundary normalization, `std.Io` reader/writer/stream mappings, the status
-  out-parameter helper, and the close-code policy.
+  out-parameter helper, and the close-code policy. The public set keeps the 20
+  upstream names plus the produced zslay boundary names and tachyon extensions;
+  zslay's `InvalidUtf8`/`PayloadTooLarge` and std's `EndOfStream` are boundary
+  spellings accepted by the classification helpers, not `WebSocketError`
+  members.
 - `src/utf8.zig` implements incremental zero-allocation text validation:
   complete ranges use `std.unicode`, split code points stay in a `State` value,
   `validate_reader` adapts arbitrary `std.Io.Reader` chunk sizes, and
@@ -269,7 +273,7 @@ call order, including validated-only `incoming`, split construction before the
 borrows; `tests/module-test/module_test.zig` adds deflate, pub/sub, fragment,
 connection, split, native-stream, and handshake re-export tests, and
 `tests/stream-test/state_test.zig` checks the chunked-message re-exports. The
-aggregate runs 416 test blocks in each of Debug and ReleaseSafe, 832 runs in
+aggregate runs 423 test blocks in each of Debug and ReleaseSafe, 846 runs in
 total. Library sources contain no test blocks. `tests/autobahn-test/server.zig`
 is a repository-only integration fixture built by the `autobahn-server` step and
 run by `.github/workflows/autobahn.yml`; it is not imported by `tests/main.zig`

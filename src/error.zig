@@ -1,10 +1,16 @@
 //! WebSocket error model for tachyon.
 //!
-//! Mirrors fastwebsockets 0.10.0, maps zslay wire errors, and bridges `std.Io`
-//! transport failures. Zig errors carry no payloads: `InvalidStatusCode` records
-//! its status through `invalid_status_code`, and IO/HTTP/send detail stays at the
-//! boundary. `from_zslay` normalizes zslay's `InvalidUtf8` and `PayloadTooLarge`
-//! to `InvalidUTF8` and `FrameTooLarge`.
+//! Keeps the 20 fastwebsockets 0.10.0 names, the produced zslay boundary
+//! names, and the tachyon extensions. zslay's `InvalidUtf8`/`PayloadTooLarge`
+//! and std's `EndOfStream` are accepted by the classification helpers and
+//! mapped at the boundary, but they are not `WebSocketError` members. The
+//! public UTF-8 validator exposes `zslay.Error` directly, and the deflate codec
+//! owns `deflate.Error`; neither set is flattened into this one.
+//!
+//! Zig errors carry no payloads: `InvalidStatusCode` records its status through
+//! `invalid_status_code`, and IO/HTTP/send detail stays at the boundary.
+//! `from_zslay` normalizes zslay's `InvalidUtf8` and `PayloadTooLarge` to
+//! `InvalidUTF8` and `FrameTooLarge`.
 //!
 //! zslay collapses RSV-bit, control-frame, non-minimal-length, close-frame,
 //! close-code, fragment-order, and masking-key failures into `ProtocolError`.
@@ -13,11 +19,10 @@
 const std = @import("std");
 const zslay = @import("zslay");
 
-/// fastwebsockets 0.10.0 parity, zslay boundary errors, and roadmap extensions.
+/// fastwebsockets 0.10.0 parity, produced zslay boundary errors, and extensions.
 pub const WebSocketError = error{
     // fastwebsockets 0.10.0
     InvalidFragment,
-    InvalidUtf8, // zslay spelling; from_zslay returns InvalidUTF8
     InvalidUTF8,
     InvalidContinuationFrame,
     InvalidStatusCode, // status via invalid_status_code
@@ -27,7 +32,6 @@ pub const WebSocketError = error{
     InvalidCloseFrame,
     InvalidCloseCode,
     UnexpectedEOF,
-    UnexpectedEof, // idiomatic spelling alias
     ReservedBitsNotZero,
     ControlFrameFragmented,
     PingFrameTooLarge,
@@ -39,7 +43,7 @@ pub const WebSocketError = error{
     HTTPError, // detail stays at the handshake boundary
     SendError, // detail stays at the send boundary
 
-    // zslay 0.5.0
+    // produced zslay boundary errors
     InvalidOpcode,
     InvalidLength, // wire overflow or local invariant; close code only for peer data
     BufferTooShort,
@@ -47,14 +51,10 @@ pub const WebSocketError = error{
     PayloadMasked,
     PayloadNotMasked,
     MaskingKeyRequired,
-    PayloadTooLarge, // zslay alias; from_zslay returns FrameTooLarge
     QueueFull,
 
-    // roadmap extensions
+    // tachyon extensions
     WouldBlock,
-    EndOfStream,
-    DecompressionFailed,
-    DecompressedPayloadTooLarge,
     InvalidSecWebSocketAccept,
     InvalidHttpRequest,
 };
@@ -126,7 +126,7 @@ pub fn from_stream(err: std.Io.Reader.StreamError) WebSocketError {
     };
 }
 
-/// Reverse-maps errors with a direct zslay counterpart.
+/// Reverse-maps canonical wire errors with a direct zslay counterpart.
 pub fn to_zslay(err: WebSocketError) ?zslay.Error {
     return switch (err) {
         error.InvalidOpcode => error.InvalidOpcode,
@@ -135,9 +135,9 @@ pub fn to_zslay(err: WebSocketError) ?zslay.Error {
         error.ProtocolError => error.ProtocolError,
         error.PayloadMasked => error.PayloadMasked,
         error.PayloadNotMasked => error.PayloadNotMasked,
-        error.PayloadTooLarge, error.FrameTooLarge => error.PayloadTooLarge,
+        error.FrameTooLarge => error.PayloadTooLarge,
         error.MaskingKeyRequired => error.MaskingKeyRequired,
-        error.InvalidUtf8, error.InvalidUTF8 => error.InvalidUtf8,
+        error.InvalidUTF8 => error.InvalidUtf8,
         else => null,
     };
 }
@@ -147,7 +147,7 @@ pub fn to_zslay(err: WebSocketError) ?zslay.Error {
 pub fn description(err: WebSocketError) []const u8 {
     return switch (err) {
         error.InvalidFragment => "Invalid fragment",
-        error.InvalidUtf8, error.InvalidUTF8 => "Invalid UTF-8",
+        error.InvalidUTF8 => "Invalid UTF-8",
         error.InvalidContinuationFrame => "Invalid continuation frame",
         error.InvalidStatusCode => "Invalid status code",
         error.InvalidUpgradeHeader => "Invalid upgrade header",
@@ -155,7 +155,7 @@ pub fn description(err: WebSocketError) []const u8 {
         error.ConnectionClosed => "Connection is closed",
         error.InvalidCloseFrame => "Invalid close frame",
         error.InvalidCloseCode => "Invalid close code",
-        error.UnexpectedEOF, error.UnexpectedEof => "Unexpected EOF",
+        error.UnexpectedEOF => "Unexpected EOF",
         error.ReservedBitsNotZero => "Reserved bits are not zero",
         error.ControlFrameFragmented => "Control frame must not be fragmented",
         error.PingFrameTooLarge => "Ping frame too large",
@@ -173,20 +173,14 @@ pub fn description(err: WebSocketError) []const u8 {
         error.ProtocolError => "Protocol error",
         error.PayloadMasked => "Payload is masked",
         error.PayloadNotMasked => "Payload is not masked",
-        error.PayloadTooLarge => "Payload too large",
         error.MaskingKeyRequired => "Masking key is required",
         error.QueueFull => "Queue is full",
 
         error.WouldBlock => "Operation would block",
-        error.EndOfStream => "End of stream",
-        error.DecompressionFailed => "Decompression failed",
-        error.DecompressedPayloadTooLarge => "Decompressed payload too large",
         error.InvalidSecWebSocketAccept => "Invalid Sec-WebSocket-Accept header",
         error.InvalidHttpRequest => "Invalid HTTP request",
     };
 }
-
-pub const to_string = description;
 
 /// Returns the close code for a peer-caused wire failure, or null when sending a
 /// close frame is impossible, already done, or inappropriate.
@@ -207,18 +201,14 @@ pub fn to_close_code(err: WebSocketError) ?zslay.StatusCode {
         error.PayloadNotMasked,
         error.MaskingKeyRequired,
         error.InvalidValue,
-        error.DecompressionFailed,
         => .protocol_error,
 
         // 1007
-        error.InvalidUtf8,
         error.InvalidUTF8,
         => .invalid_payload,
 
         // 1009
         error.FrameTooLarge,
-        error.PayloadTooLarge,
-        error.DecompressedPayloadTooLarge,
         => .message_too_big,
 
         // No close frame.
@@ -230,9 +220,7 @@ pub fn to_close_code(err: WebSocketError) ?zslay.StatusCode {
         error.InvalidHttpRequest,
         error.HTTPError,
         error.UnexpectedEOF,
-        error.UnexpectedEof,
         error.BufferTooShort,
-        error.EndOfStream,
         error.WouldBlock,
         error.ConnectionClosed,
         error.QueueFull,
@@ -260,8 +248,6 @@ pub fn is_protocol_error(err: WebSocketError) bool {
         error.PayloadNotMasked,
         error.MaskingKeyRequired,
         error.InvalidValue,
-        error.DecompressionFailed,
-        error.InvalidUtf8,
         error.InvalidUTF8,
         => true,
 
@@ -270,7 +256,6 @@ pub fn is_protocol_error(err: WebSocketError) bool {
         error.InvalidConnectionHeader,
         error.ConnectionClosed,
         error.UnexpectedEOF,
-        error.UnexpectedEof,
         error.FrameTooLarge,
         error.InvalidSecWebsocketVersion,
         error.MissingSecWebSocketKey,
@@ -278,11 +263,8 @@ pub fn is_protocol_error(err: WebSocketError) bool {
         error.HTTPError,
         error.SendError,
         error.BufferTooShort,
-        error.PayloadTooLarge,
         error.QueueFull,
         error.WouldBlock,
-        error.EndOfStream,
-        error.DecompressedPayloadTooLarge,
         error.InvalidSecWebSocketAccept,
         error.InvalidHttpRequest,
         => false,
@@ -298,7 +280,6 @@ pub fn is_fatal(err: WebSocketError) bool {
         => false,
 
         error.InvalidFragment,
-        error.InvalidUtf8,
         error.InvalidUTF8,
         error.InvalidContinuationFrame,
         error.InvalidStatusCode,
@@ -308,7 +289,6 @@ pub fn is_fatal(err: WebSocketError) bool {
         error.InvalidCloseFrame,
         error.InvalidCloseCode,
         error.UnexpectedEOF,
-        error.UnexpectedEof,
         error.ReservedBitsNotZero,
         error.ControlFrameFragmented,
         error.PingFrameTooLarge,
@@ -325,10 +305,6 @@ pub fn is_fatal(err: WebSocketError) bool {
         error.PayloadMasked,
         error.PayloadNotMasked,
         error.MaskingKeyRequired,
-        error.PayloadTooLarge,
-        error.EndOfStream,
-        error.DecompressionFailed,
-        error.DecompressedPayloadTooLarge,
         error.InvalidSecWebSocketAccept,
         error.InvalidHttpRequest,
         => true,
@@ -336,11 +312,17 @@ pub fn is_fatal(err: WebSocketError) bool {
 }
 
 /// True for either UTF-8 error spelling.
+///
+/// `InvalidUtf8` is zslay's spelling accepted from the UTF-8 validator and
+/// boundary mapping; `InvalidUTF8` is the `WebSocketError` member.
 pub fn is_utf8_error(err: anyerror) bool {
     return err == error.InvalidUtf8 or err == error.InvalidUTF8;
 }
 
-/// True for unexpected EOF, the EOF alias, and clean end-of-stream.
+/// True for unexpected EOF and clean end-of-stream.
+///
+/// `EndOfStream` is the std/zslay spelling accepted at the transport boundary;
+/// `UnexpectedEOF` is the `WebSocketError` member.
 pub fn is_eof_error(err: anyerror) bool {
-    return err == error.UnexpectedEOF or err == error.UnexpectedEof or err == error.EndOfStream;
+    return err == error.UnexpectedEOF or err == error.EndOfStream;
 }

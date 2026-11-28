@@ -9,7 +9,7 @@ const handshake_sample_accept = support.handshake_sample_accept;
 const handshake_valid_response = support.handshake_valid_response;
 const build_response_head = support.build_response_head;
 
-test "Handshake: validate_response accepts token lists and the expected accept" {
+test "Handshake: verify accepts token lists and the expected accept" {
     var storage: [256]u8 = undefined;
     var status: u16 = 0;
     const head = try build_response_head(
@@ -20,7 +20,6 @@ test "Handshake: validate_response accepts token lists and the expected accept" 
         handshake_sample_accept,
     );
 
-    try std.testing.expect(handshake.validate_response == handshake.verify);
     const response = try handshake.verify(head, handshake_sample_accept, &status);
     try std.testing.expectEqual(@as(u16, 101), response.status);
     try std.testing.expectEqualStrings(handshake_sample_accept, response.accept);
@@ -28,14 +27,14 @@ test "Handshake: validate_response accepts token lists and the expected accept" 
     try std.testing.expectEqual(@as(u16, 101), status);
 }
 
-test "Handshake: validate_response rejects status, header, and accept failures" {
+test "Handshake: verify rejects status, header, and accept failures" {
     var storage: [256]u8 = undefined;
     var status: u16 = 0;
 
     const rejected = try build_response_head(&storage, "HTTP/1.1 400 Bad Request", null, null, null);
     try std.testing.expectError(
         error.InvalidStatusCode,
-        handshake.validate_response(rejected, handshake_sample_accept, &status),
+        handshake.verify(rejected, handshake_sample_accept, &status),
     );
     try std.testing.expectEqual(@as(u16, 400), status);
 
@@ -48,7 +47,7 @@ test "Handshake: validate_response rejects status, header, and accept failures" 
     );
     try std.testing.expectError(
         error.InvalidSecWebSocketAccept,
-        handshake.validate_response(missing_accept, handshake_sample_accept, &status),
+        handshake.verify(missing_accept, handshake_sample_accept, &status),
     );
 
     const wrong_accept = try build_response_head(
@@ -60,7 +59,7 @@ test "Handshake: validate_response rejects status, header, and accept failures" 
     );
     try std.testing.expectError(
         error.InvalidSecWebSocketAccept,
-        handshake.validate_response(wrong_accept, handshake_sample_accept, &status),
+        handshake.verify(wrong_accept, handshake_sample_accept, &status),
     );
 
     const wrong_upgrade = try build_response_head(
@@ -72,7 +71,7 @@ test "Handshake: validate_response rejects status, header, and accept failures" 
     );
     try std.testing.expectError(
         error.InvalidUpgradeHeader,
-        handshake.validate_response(wrong_upgrade, handshake_sample_accept, &status),
+        handshake.verify(wrong_upgrade, handshake_sample_accept, &status),
     );
 
     const wrong_connection = try build_response_head(
@@ -84,16 +83,16 @@ test "Handshake: validate_response rejects status, header, and accept failures" 
     );
     try std.testing.expectError(
         error.InvalidConnectionHeader,
-        handshake.validate_response(wrong_connection, handshake_sample_accept, &status),
+        handshake.verify(wrong_connection, handshake_sample_accept, &status),
     );
 
     try std.testing.expectError(
         error.InvalidSecWebSocketAccept,
-        handshake.validate_response(handshake_valid_response, "", &status),
+        handshake.verify(handshake_valid_response, "", &status),
     );
 }
 
-test "Handshake: validate_response rejects duplicate accepts and malformed heads" {
+test "Handshake: verify rejects duplicate accepts and malformed heads" {
     var status: u16 = 0;
     const duplicate_accept =
         "HTTP/1.1 101 Switching Protocols\r\n" ++
@@ -104,7 +103,7 @@ test "Handshake: validate_response rejects duplicate accepts and malformed heads
         "\r\n";
     try std.testing.expectError(
         error.InvalidSecWebSocketAccept,
-        handshake.validate_response(duplicate_accept, handshake_sample_accept, &status),
+        handshake.verify(duplicate_accept, handshake_sample_accept, &status),
     );
 
     const folded =
@@ -112,12 +111,12 @@ test "Handshake: validate_response rejects duplicate accepts and malformed heads
         " Upgrade: websocket\r\n\r\n";
     try std.testing.expectError(
         error.InvalidHttpRequest,
-        handshake.validate_response(folded, handshake_sample_accept, &status),
+        handshake.verify(folded, handshake_sample_accept, &status),
     );
 
     try std.testing.expectError(
         error.InvalidHttpRequest,
-        handshake.validate_response("not a response", handshake_sample_accept, &status),
+        handshake.verify("not a response", handshake_sample_accept, &status),
     );
 
     const body_header =
@@ -128,7 +127,7 @@ test "Handshake: validate_response rejects duplicate accepts and malformed heads
         "Content-Length: 2\r\n\r\n";
     try std.testing.expectError(
         error.InvalidHttpRequest,
-        handshake.validate_response(body_header, handshake_sample_accept, &status),
+        handshake.verify(body_header, handshake_sample_accept, &status),
     );
 
     const extension_header =
@@ -139,7 +138,7 @@ test "Handshake: validate_response rejects duplicate accepts and malformed heads
         "Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n";
     try std.testing.expectError(
         error.InvalidHttpRequest,
-        handshake.validate_response(extension_header, handshake_sample_accept, &status),
+        handshake.verify(extension_header, handshake_sample_accept, &status),
     );
 
     const protocol_header =
@@ -150,7 +149,7 @@ test "Handshake: validate_response rejects duplicate accepts and malformed heads
         "Sec-WebSocket-Protocol: chat\r\n\r\n";
     try std.testing.expectError(
         error.InvalidHttpRequest,
-        handshake.validate_response(protocol_header, handshake_sample_accept, &status),
+        handshake.verify(protocol_header, handshake_sample_accept, &status),
     );
 
     const spaced_content_length =
@@ -161,7 +160,7 @@ test "Handshake: validate_response rejects duplicate accepts and malformed heads
         "Content-Length : 2\r\n\r\n";
     try std.testing.expectError(
         error.InvalidHttpRequest,
-        handshake.validate_response(spaced_content_length, handshake_sample_accept, &status),
+        handshake.verify(spaced_content_length, handshake_sample_accept, &status),
     );
 
     const close_connection =
@@ -171,13 +170,13 @@ test "Handshake: validate_response rejects duplicate accepts and malformed heads
         "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n";
     try std.testing.expectError(
         error.InvalidConnectionHeader,
-        handshake.validate_response(close_connection, handshake_sample_accept, &status),
+        handshake.verify(close_connection, handshake_sample_accept, &status),
     );
 
     status = 7;
     try std.testing.expectError(
         error.InvalidHttpRequest,
-        handshake.validate_response(
+        handshake.verify(
             "HTTP/1.1 09; Switching Protocols\r\n\r\n",
             handshake_sample_accept,
             &status,
@@ -186,7 +185,7 @@ test "Handshake: validate_response rejects duplicate accepts and malformed heads
     try std.testing.expectEqual(@as(u16, 7), status);
     try std.testing.expectError(
         error.InvalidHttpRequest,
-        handshake.validate_response("HTTP/1.1 abc Nope\r\n\r\n", handshake_sample_accept, &status),
+        handshake.verify("HTTP/1.1 abc Nope\r\n\r\n", handshake_sample_accept, &status),
     );
     try std.testing.expectEqual(@as(u16, 7), status);
 }

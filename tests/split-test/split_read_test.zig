@@ -65,6 +65,32 @@ test "Split: truncated header and payload latch UnexpectedEOF until reset" {
     }
 }
 
+test "Split: ping-only after a close write returns ConnectionClosed without pong or extra read" {
+    var stream: EncodedStream(32) = .{};
+    var first_ping = [_]u8{'?'};
+    var second_ping = [_]u8{'!'};
+    try append_masked(&stream, Frame.ping(&first_ping), .{ 0x10, 0x20, 0x30, 0x40 });
+    try append_masked(&stream, Frame.ping(&second_ping), .{ 0x50, 0x60, 0x70, 0x80 });
+
+    var reader = stream.reader();
+    var parts: SplitRig(32, 2, 32, 8, 0, 32) = .{};
+    try parts.init(&reader, .{ .role = .server });
+
+    var close_storage: [2]u8 = undefined;
+    try parts.split.write.write_frame(try Frame.close(1000, "", &close_storage));
+    const output_after_close = parts.writer.written;
+
+    try std.testing.expectError(error.ConnectionClosed, parts.split.read_frame());
+    try std.testing.expectEqual(output_after_close, parts.writer.written);
+    try std.testing.expectEqual(@as(usize, 7), reader.seek);
+    try std.testing.expectEqual(@as(usize, 7), reader.buffered().len);
+
+    var index: usize = 0;
+    const close = try next_wire_frame(parts.bytes(), &index);
+    try std.testing.expectEqual(split.OpCode.close, split.OpCode.from_wire(close.header.header.opcode).?);
+    try std.testing.expectEqual(parts.writer.written, index);
+}
+
 test "Split: zero max_message_size rejects before consuming and does not latch" {
     var stream: EncodedStream(16) = .{};
     var payload = [_]u8{ 'o', 'k' };

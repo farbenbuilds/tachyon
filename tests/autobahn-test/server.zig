@@ -299,7 +299,7 @@ fn handle(io: std.Io, stream: std.Io.net.Stream, buffers: *Buffers) tachyon.WebS
 /// True for readiness probes and peers that disconnect before a frame.
 fn is_normal_disconnect(err: tachyon.WebSocketError) bool {
     return switch (err) {
-        error.UnexpectedEOF, error.UnexpectedEof, error.ConnectionClosed => true,
+        error.UnexpectedEOF, error.ConnectionClosed => true,
         else => false,
     };
 }

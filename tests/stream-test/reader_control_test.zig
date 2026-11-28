@@ -154,6 +154,33 @@ test "Stream: a client that cannot mask receives pings instead of replying" {
     try std.testing.expectEqual(@as(usize, 0), rig.writer.written);
 }
 
+test "Stream: ping-only after a close write returns ConnectionClosed without pong or extra read" {
+    var stream: EncodedStream(32) = .{};
+    var first_ping = [_]u8{'?'};
+    var second_ping = [_]u8{'!'};
+    try append_masked(&stream, Frame.ping(&first_ping), .{ 0x10, 0x20, 0x30, 0x40 });
+    try append_masked(&stream, Frame.ping(&second_ping), .{ 0x50, 0x60, 0x70, 0x80 });
+
+    var reader = stream.reader();
+    var rig: ConnectionRig(16, 2, 64, 8, 0, 32) = .{};
+    try rig.init(&reader, .{ .role = .server });
+    var chunks = message.MessageReader.init(&rig.ws);
+
+    var close_storage: [2]u8 = undefined;
+    try rig.ws.write_frame(try Frame.close(1000, "", &close_storage));
+    const output_after_close = rig.writer.written;
+
+    try std.testing.expectError(error.ConnectionClosed, chunks.next());
+    try std.testing.expectEqual(output_after_close, rig.writer.written);
+    try std.testing.expectEqual(@as(usize, 7), reader.seek);
+    try std.testing.expectEqual(@as(usize, 7), reader.buffered().len);
+
+    var index: usize = 0;
+    const close = try next_wire_frame(rig.bytes(), &index);
+    try std.testing.expectEqual(tachyon.OpCode.close, try wire_opcode(close));
+    try std.testing.expectEqual(rig.writer.written, index);
+}
+
 test "Stream: close is a close event, not a control event" {
     var stream: EncodedStream(32) = .{};
     var first = [_]u8{'a'};
