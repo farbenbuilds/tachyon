@@ -424,9 +424,11 @@ policy, and the transmit queue still belong to zslay.
 | `tests/autobahn-test/server.zig` | Repository-only Autobahn echo fixture executable, built by the `autobahn-server` step and run by `.github/workflows/autobahn.yml`; not imported by `tests/main.zig`. |
 | `tests/<integration>-test/` | Autobahn fixture and workflow implemented under `tests/autobahn-test/`; fuzz and full loopback suites remain planned. |
 | `examples/` | Opt-in echo servers and client; raw-frame echo behavior and full-checkout requirement documented in `examples/README.md`. |
-| `benches/` | Opt-in load generator, unmask benchmark, comparison runner, competitor setup, README results, and generated SVG charts. |
+| `benches/load_test.zig` | Zig load generator for client handshakes, echo throughput, and per-second Msg/sec reporting. |
+| `benches/unmask.zig` | Zig unmask throughput benchmark over a 64 MiB payload. |
+| `benches/run.mjs` | Node comparison runner for the tachyon, C++ uWebSockets, and Rust targets. |
+| `benches/README.md`, `benches/*-chart.svg` | Benchmark instructions, generated results table, and per-case SVG charts. |
 | `.github/workflows/bench.yml` | Manual and weekly comparison benchmark workflow; not a PR gate. |
-| `src/bench.zig` | Frame, connection, streaming, and extension microbenchmarks. |
 
 The layout follows the fastwebsockets module split, with Zig-specific names and
 no hidden allocator or runtime dependency. The handshake/upgrade pair

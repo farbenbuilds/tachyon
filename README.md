@@ -56,7 +56,7 @@ for commands and raw-frame behavior.
 ## Benchmarks
 
 ```sh
-zig build benches -Doptimize=ReleaseFast
+zig build examples benches -Doptimize=ReleaseFast
 sh benches/setup-competitors.sh
 node benches/run.mjs
 ```
