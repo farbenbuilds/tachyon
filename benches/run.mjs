@@ -30,6 +30,7 @@ const targets = [
     ),
     args: [],
     port: 8080,
+    env: { PORT: "8080" },
   },
   {
     name: "uWebSockets",
@@ -74,6 +75,9 @@ const targets = [
   },
 ];
 
+let activeServer = null;
+let shuttingDown = false;
+
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function fileExists(file) {
@@ -116,6 +120,7 @@ async function waitForPort(port, child, timeoutMs = 15_000) {
 function spawnServer(target) {
   const child = spawn(target.command, target.args, {
     cwd: rootDir,
+    env: target.env ? { ...process.env, ...target.env } : process.env,
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.on("data", () => {});
@@ -136,6 +141,24 @@ async function stopServer(child) {
     await Promise.race([once(child, "exit").catch(() => {}), delay(1_000)]);
   }
 }
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const server = activeServer;
+  activeServer = null;
+  if (server) {
+    await stopServer(server);
+  }
+  process.exit(signal === "SIGINT" ? 130 : 143);
+}
+
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
 
 async function runLoadTest(connections, payloadBytes, port) {
   const args = [
@@ -232,6 +255,7 @@ async function main() {
           `run ${target.name}: ${testCase.connections} connections, ${testCase.payloadBytes} bytes`,
         );
         server = spawnServer(target);
+        activeServer = server;
         if (target.probePort !== false) {
           await waitForPort(target.port, server);
         }
@@ -259,6 +283,7 @@ async function main() {
         console.error(`fail ${target.name}: ${message}`);
       } finally {
         await stopServer(server);
+        if (activeServer === server) activeServer = null;
       }
     }
   }

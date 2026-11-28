@@ -1,22 +1,22 @@
 //! Minimal concurrent WebSocket echo server.
 //!
-//! The accept loop is sequential, but each accepted connection runs in its own
-//! `std.Io` task so the example can handle many simultaneous clients. Framing,
-//! masking, automatic pong and close replies, and message limits stay in
-//! tachyon and zslay; this file only performs the HTTP upgrade and echoes data
-//! frames.
+//! The accept loop is sequential and dispatches into a bounded `std.Io` task
+//! group. At the group limit, work can run inline instead of on a separate
+//! task. Framing, masking, automatic pong and close replies, and message limits
+//! stay in tachyon and zslay; this file only performs the HTTP upgrade and
+//! echoes data frames.
 //!
 //! Run with:
 //!   zig build examples
 //!   ./zig-out/bin/tachyon-echo-server
 //!
-//! Then connect a client to ws://127.0.0.1:8080/.
+//! Then connect a client to ws://127.0.0.1:8080/ (set PORT to change it).
 
 const std = @import("std");
 const tachyon = @import("tachyon");
 
 const bind_host = "127.0.0.1";
-const bind_port: u16 = 8080;
+const default_port: u16 = 8080;
 const max_message_size: usize = 64 * 1024;
 const transport_buffer_len: usize = 16 * 1024;
 const connection_write_len: usize = 16 * 1024;
@@ -56,13 +56,15 @@ fn handle(io: std.Io, stream: std.Io.net.Stream, buffers: *Buffers) tachyon.WebS
     });
 
     const incoming = try tachyon.upgrade.incoming(transport.reader(), &buffers.head);
-    try tachyon.handshake.write_response(transport.writer(), incoming.request.key);
-    transport.writer().flush() catch |err| return tachyon.from_writer(err);
 
+    // Validate and construct the connection before committing the 101 response.
     var ws = try tachyon.NativeWebSocket.init(&transport, connectionStorage(buffers), .{
         .role = .server,
         .options = .{ .max_message_size = max_message_size },
     });
+
+    try tachyon.handshake.write_response(transport.writer(), incoming.request.key);
+    transport.writer().flush() catch |err| return tachyon.from_writer(err);
 
     while (true) {
         const frame = ws.read_frame() catch |err| {
@@ -119,7 +121,11 @@ pub fn main(init: std.process.Init) !void {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const address = try std.Io.net.IpAddress.parse(bind_host, bind_port);
+    const port = if (init.environ_map.get("PORT")) |raw|
+        try std.fmt.parseInt(u16, raw, 10)
+    else
+        default_port;
+    const address = try std.Io.net.IpAddress.parse(bind_host, port);
     var listener = try address.listen(io, .{
         .kernel_backlog = 1024,
         .reuse_address = true,
@@ -129,7 +135,7 @@ pub fn main(init: std.process.Init) !void {
     var group: std.Io.Group = .init;
     defer group.cancel(io);
 
-    std.debug.print("echo server listening on ws://{s}:{d}/\n", .{ bind_host, bind_port });
+    std.debug.print("echo server listening on ws://{s}:{d}/\n", .{ bind_host, port });
 
     while (true) {
         const stream = listener.accept(io) catch |err| switch (err) {

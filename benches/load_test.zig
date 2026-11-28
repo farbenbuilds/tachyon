@@ -240,7 +240,17 @@ pub fn main(init: std.process.Init) !void {
     }
 
     stop.store(true, .release);
-    group.await(io) catch {};
+    // Give cooperative workers a short chance to finish, then cancel any
+    // worker still blocked on a stalled handshake or read. `Group.cancel`
+    // guarantees every task has run, including its deferred stream close.
+    const grace: std.Io.Timeout = .{
+        .duration = .{
+            .raw = std.Io.Duration.fromMilliseconds(250),
+            .clock = .awake,
+        },
+    };
+    grace.sleep(io) catch {};
+    group.cancel(io);
 
     const end = std.Io.Clock.Timestamp.now(io, .awake);
     const elapsed_ns = start.durationTo(end).raw.toNanoseconds();
@@ -252,6 +262,8 @@ pub fn main(init: std.process.Init) !void {
         total += worker.messages.load(.monotonic);
         errors += worker.errors.load(.monotonic);
     }
-    const rate = total * std.time.ns_per_s / denominator;
+    const rate_f = @as(f64, @floatFromInt(total)) /
+        (@as(f64, @floatFromInt(denominator)) / 1_000_000_000.0);
+    const rate: u64 = @intFromFloat(rate_f);
     std.debug.print("Final Msg/sec {d} (total {d}, errors {d})\n", .{ rate, total, errors });
 }

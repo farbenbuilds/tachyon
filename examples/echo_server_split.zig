@@ -8,13 +8,13 @@
 //!   zig build examples
 //!   ./zig-out/bin/tachyon-echo-server-split
 //!
-//! Then connect a client to ws://127.0.0.1:8080/.
+//! Then connect a client to ws://127.0.0.1:8080/ (set PORT to change it).
 
 const std = @import("std");
 const tachyon = @import("tachyon");
 
 const bind_host = "127.0.0.1";
-const bind_port: u16 = 8080;
+const default_port: u16 = 8080;
 const max_message_size: usize = 64 * 1024;
 const transport_buffer_len: usize = 16 * 1024;
 const compose_buffer_len: usize = 16 * 1024;
@@ -123,7 +123,11 @@ pub fn main(init: std.process.Init) !void {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const address = try std.Io.net.IpAddress.parse(bind_host, bind_port);
+    const port = if (init.environ_map.get("PORT")) |raw|
+        try std.fmt.parseInt(u16, raw, 10)
+    else
+        default_port;
+    const address = try std.Io.net.IpAddress.parse(bind_host, port);
     var listener = try address.listen(io, .{
         .kernel_backlog = 1024,
         .reuse_address = true,
@@ -133,7 +137,7 @@ pub fn main(init: std.process.Init) !void {
     var group: std.Io.Group = .init;
     defer group.cancel(io);
 
-    std.debug.print("split echo server listening on ws://{s}:{d}/\n", .{ bind_host, bind_port });
+    std.debug.print("split echo server listening on ws://{s}:{d}/\n", .{ bind_host, port });
 
     while (true) {
         const stream = listener.accept(io) catch |err| switch (err) {

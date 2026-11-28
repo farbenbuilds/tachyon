@@ -16,6 +16,8 @@ This installs:
 - `zig-out/bin/tachyon-unmask`
 
 `zig build` remains library-only; the examples and benchmark steps are opt-in.
+These steps require a full repository checkout because the published package
+excludes `examples/` and `benches/`.
 
 ## Load generator
 
@@ -131,34 +133,34 @@ The benchmark runner replaces only the text between these markers. Do not edit
 inside the block by hand.
 
 <!-- bench-results:start -->
-Generated: 2026-11-28T11:05:21.883Z
+Generated: 2026-11-28T11:25:25.861Z
 Duration: 1s per case
 
 | Target | Connections | Payload | Avg Msg/sec |
 | --- | ---: | ---: | ---: |
-| tachyon | 100 | 20 B | 1492383 |
-| uWebSockets | 100 | 20 B | 543937 |
-| fastwebsockets | 100 | 20 B | 1445406 |
-| tokio-tungstenite | 100 | 20 B | 1384563 |
-| rust-websocket | 100 | 20 B | 982077 |
-| tachyon | 10 | 1024 B | 1040150 |
-| uWebSockets | 10 | 1024 B | 528259 |
-| fastwebsockets | 10 | 1024 B | 1051751 |
-| tokio-tungstenite | 10 | 1024 B | 1062053 |
-| rust-websocket | 10 | 1024 B | 459489 |
-| tachyon | 10 | 16384 B | 467630 |
-| uWebSockets | 10 | 16384 B | 236454 |
-| fastwebsockets | 10 | 16384 B | 467167 |
-| tokio-tungstenite | 10 | 16384 B | 463379 |
-| rust-websocket | 10 | 16384 B | 161852 |
-| tachyon | 200 | 16384 B | 453820 |
-| uWebSockets | 200 | 16384 B | 189362 |
-| fastwebsockets | 200 | 16384 B | 454877 |
-| tokio-tungstenite | 200 | 16384 B | 455291 |
-| rust-websocket | 200 | 16384 B | 232210 |
-| tachyon | 500 | 16384 B | 310168 |
-| uWebSockets | 500 | 16384 B | 133700 |
-| fastwebsockets | 500 | 16384 B | 326954 |
-| tokio-tungstenite | 500 | 16384 B | 322438 |
-| rust-websocket | 500 | 16384 B | 199655 |
+| tachyon | 100 | 20 B | 1741040 |
+| uWebSockets | 100 | 20 B | 547231 |
+| fastwebsockets | 100 | 20 B | 530011 |
+| tokio-tungstenite | 100 | 20 B | 881601 |
+| rust-websocket | 100 | 20 B | 1202471 |
+| tachyon | 10 | 1024 B | 1088247 |
+| uWebSockets | 10 | 1024 B | 521743 |
+| fastwebsockets | 10 | 1024 B | 475135 |
+| tokio-tungstenite | 10 | 1024 B | 681821 |
+| rust-websocket | 10 | 1024 B | 490101 |
+| tachyon | 10 | 16384 B | 473796 |
+| uWebSockets | 10 | 16384 B | 236939 |
+| fastwebsockets | 10 | 16384 B | 219436 |
+| tokio-tungstenite | 10 | 16384 B | 376306 |
+| rust-websocket | 10 | 16384 B | 177146 |
+| tachyon | 200 | 16384 B | 489116 |
+| uWebSockets | 200 | 16384 B | 211399 |
+| fastwebsockets | 200 | 16384 B | 151323 |
+| tokio-tungstenite | 200 | 16384 B | 208824 |
+| rust-websocket | 200 | 16384 B | 233538 |
+| tachyon | 500 | 16384 B | 452708 |
+| uWebSockets | 500 | 16384 B | 140965 |
+| fastwebsockets | 500 | 16384 B | 127349 |
+| tokio-tungstenite | 500 | 16384 B | 179531 |
+| rust-websocket | 500 | 16384 B | 223158 |
 <!-- bench-results:end -->
