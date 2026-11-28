@@ -51,6 +51,22 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    const autobahn_server = b.addExecutable(.{
+        .name = "tachyon-autobahn",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/autobahn-test/server.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tachyon", .module = mod },
+            },
+        }),
+    });
+
+    const install_autobahn = b.addInstallArtifact(autobahn_server, .{});
+    const autobahn_step = b.step("autobahn-server", "Build and install the Autobahn echo server");
+    autobahn_step.dependOn(&install_autobahn.step);
+
     const test_debug = b.addTest(.{
         .root_module = testRootModule(b, target, .debug, zslay),
     });

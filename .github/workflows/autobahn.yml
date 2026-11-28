@@ -1,0 +1,59 @@
+name: autobahn
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "**.zig"
+      - "**.zon"
+      - "build.zig"
+      - ".github/workflows/**"
+  push:
+    branches:
+      - main
+    paths:
+      - "**.zig"
+      - "**.zon"
+      - "build.zig"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autobahn-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  autobahn:
+    name: Run Autobahn Tests
+    runs-on: ubuntu-24.04
+    environment: Testing
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.17.1
+
+      - name: Build Autobahn echo server
+        run: zig build autobahn-server -Doptimize=ReleaseSafe
+
+      - name: Run Autobahn testsuite
+        uses: farbenbuilds/autobahn-action@1c4d57b3ca48e1ddf742e5ae1ab4ce5b51625b36 # v1
+        with:
+          url: ws://127.0.0.1:9001
+          server-command: ./zig-out/bin/tachyon-autobahn
+          server-working-directory: .
+          server-ready-timeout: "30"
+          cases: "1.* 2.* 3.* 4.* 5.* 6.* 7.* 9.* 10.*"
+          docker-network: host
+          timeout: "1500"
+          fail-on: failed
+          report-dir: autobahn-reports
+          artifact-name: autobahn-report

@@ -33,7 +33,9 @@ documentation foundation:
 
 - `build.zig` and `build.zig.zon` define the public `tachyon` module, the
   `libtachyon.a` static library, Debug and ReleaseSafe test steps over
-  `tests/main.zig`, the `check` step, and the pinned zslay dependency.
+  `tests/main.zig`, the `check` step, the repository-only `autobahn-server`
+  step, and the pinned zslay dependency. The default `zig build` remains
+  library-only.
 - `src/root.zig` is the module entry point; it re-exports zslay, the frame
   facade, the UTF-8 validator, the WebSocket error model, the chunked message
   reader and writer, the deflate codec, the bounded pub/sub hub, the fragment
@@ -268,7 +270,10 @@ split, native-stream, and handshake re-export tests, and
 `tests/pubsub-test/` holds 41 focused hub tests across core, publish,
 backpressure, reentrancy, and name concerns. The aggregate runs 416 test blocks
 in each of Debug and ReleaseSafe, 832 runs in total. Library sources contain no
-test blocks.
+test blocks. `tests/autobahn-test/server.zig` is a repository-only integration
+fixture built by the `autobahn-server` step and run by
+`.github/workflows/autobahn.yml`; it is not aggregated by `tests/main.zig` and
+adds no test blocks.
 
 ## Target Runtime Flow
 
@@ -607,7 +612,8 @@ policy, and the transmit queue still belong to zslay.
 | `tests/main.zig` | Aggregates every category test file for the Debug and ReleaseSafe test steps. |
 | `tests/support.zig` | Shared fixtures and test-only protocol readers and writers. |
 | `tests/<category>-test/` | Unit coverage grouped by area: module, error, backpressure, frame, UTF-8, stream, pub/sub, fragment, connection, split, native stream, deflate, handshake, and upgrade. |
-| `tests/<integration>-test/` | Planned Autobahn, fuzz, and loopback integration suites; no adapter exists yet. |
+| `tests/autobahn-test/server.zig` | Repository-only Autobahn echo fixture executable, built by the `autobahn-server` step and run by `.github/workflows/autobahn.yml`; not imported by `tests/main.zig`. |
+| `tests/<integration>-test/` | Autobahn fixture and workflow implemented under `tests/autobahn-test/`; fuzz and full loopback suites remain planned. |
 | `src/bench.zig` | Frame, connection, streaming, and extension microbenchmarks. |
 
 The layout follows the fastwebsockets module split, with Zig-specific names and
@@ -620,9 +626,14 @@ unit rather than a strict ordering.
 The unit suite under `tests/` is current, and `tests/main.zig` is its only
 aggregator. The native-stream tests use an ephemeral loopback TCP pair through
 the caller's `std.Io`; they are the only loopback exception in the unit suite.
-Future Autobahn, fuzz, and full loopback echo suites belong under `tests/` as
-new integration category folders; none of those compliance suites is implemented
-yet. Library sources contain no test blocks.
+The Autobahn integration fixture and gate are implemented:
+`tests/autobahn-test/server.zig` is built by the `autobahn-server` step with
+`-Doptimize=ReleaseSafe` (a full checkout is required because the package
+excludes `tests/`), and `.github/workflows/autobahn.yml` runs the configured case
+set, excluding group 8 and compression groups 11-13. Fuzz and full loopback echo
+suites remain planned integration work. A green workflow run is evidence only
+for the configured case set, not a full Autobahn or compression compliance
+claim. Library sources contain no test blocks.
 
 The target layout deliberately contains no `src/close.zig` or `src/mask.zig`.
 The close predicate, payload validator, masking routine, and outgoing close
